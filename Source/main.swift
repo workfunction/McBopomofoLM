@@ -70,7 +70,17 @@ private func install() -> Int32 {
     return 0
 }
 
-let kConnectionName = "McBopomofo_1_Connection"
+// McBopomofoLM side-by-side build: the connection name comes from Info.plist
+// (InputMethodConnectionName = McBopomofoLM_1_Connection) so it can never
+// collide with the live McBopomofo_1_Connection.
+let kConnectionName =
+    Bundle.main.infoDictionary?["InputMethodConnectionName"] as? String
+    ?? "McBopomofoLM_1_Connection"
+
+/// True when this binary is only the host process of the unit-test bundle.
+let kRunningAsTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
+    || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
 
 if CommandLine.arguments.count > 1 {
     if CommandLine.arguments[1] == "install" {
@@ -90,9 +100,17 @@ if !loaded {
     exit(-1)
 }
 
-guard let bundleID = Bundle.main.bundleIdentifier, let server = IMKServer(name: kConnectionName, bundleIdentifier: bundleID) else {
-    NSLog("Fatal error: Cannot initialize input method server with connection \(kConnectionName).")
-    exit(-1)
+// As a unit-test host the process never vends an input method connection:
+// it only runs the test bundle, so it cannot interfere with any input source.
+var server: IMKServer? = nil
+if !kRunningAsTestHost {
+    guard let bundleID = Bundle.main.bundleIdentifier,
+        let imkServer = IMKServer(name: kConnectionName, bundleIdentifier: bundleID)
+    else {
+        NSLog("Fatal error: Cannot initialize input method server with connection \(kConnectionName).")
+        exit(-1)
+    }
+    server = imkServer
 }
 
 Preferences.populateDefaults()

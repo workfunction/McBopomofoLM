@@ -1,0 +1,7 @@
+McBopomofoLM bundles third-party components (side-by-side test build, not for redistribution):
+- SlothE-T 12M model files (slothe-t-12m-256x12.gguf, syl_vocab, syl2legal): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
+- char2id table and libslothe (slothe.cpp): github.com/vieenrose/sloth-zhuyin-linux. That repository has no LICENSE file; license status is unresolved. libslothe carries a local patch (per-length compute-graph cache, SlothE/ThirdParty/slothe/slothe-graph-cache.patch; load errors return instead of exit(), slothe-load-errors.patch).
+- SlothE decoder pred_q35_60m-q4.gguf (Qwen3.5 hybrid, 59.8M params): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
+- ggml (github.com/ggml-org/ggml @ 456172e), MIT (ggml-LICENSE.txt), statically linked for the encoder.
+- llama.cpp (github.com/ggml-org/llama.cpp @ 7ab4ee7) with its bundled ggml, MIT (llama.cpp-LICENSE.txt), statically linked for the decoder.
+- Orthographic variant classes derived from OpenCC TWVariants.txt / HKVariants.txt, Apache-2.0 (OpenCC-LICENSE.txt).

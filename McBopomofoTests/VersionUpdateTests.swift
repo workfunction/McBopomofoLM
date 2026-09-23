@@ -21,6 +21,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 
+// McBopomofoLM: the update checker is compiled out (MCBOPOMOFO_LM_OFFLINE),
+// and this upstream test made a real HTTPS request; it is excluded.
+#if !MCBOPOMOFO_LM_OFFLINE
 import Testing
 
 @testable import McBopomofo
@@ -43,3 +46,4 @@ final class VersionUpdateApiTests {
         }
     }
 }
+#endif

@@ -518,11 +518,13 @@ private struct BasicPreferencesView: View {
                     localized("Beep upon input error"), isOn: $preferences.beepUponInputError)
             }
 
+            #if !MCBOPOMOFO_LM_OFFLINE
             PreferenceRow {
                 Toggle(
                     localized("Check for updates automatically"),
                     isOn: $preferences.checkForUpdatesAutomatically)
             }
+            #endif
         }
     }
 }

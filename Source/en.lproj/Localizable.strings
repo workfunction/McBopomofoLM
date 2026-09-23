@@ -260,3 +260,10 @@
 "You can run a script to use git to backup your phrases. The script will run in the folder of your user phrases folder." = "You can run a script to use git to backup your phrases. The script will run in the folder of your user phrases folder.";
 
 "Quick Text Transform" = "Quick Text Transform";
+
+/* McBopomofoLM (SlothE-T side-by-side test build) */
+"SlothE-T Candidate Reranking" = "SlothE-T Model";
+"(model failed to load)" = "(model failed to load)";
+"(loading)" = "(loading)";
+"SlothE-T: List Current Word Last" = "SlothE-T: List Current Word Last";
+"SlothE Decoder Corrections" = "SlothE Decoder Corrections";

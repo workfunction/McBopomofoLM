@@ -86,6 +86,34 @@ class McBopomofoInputMethodController: IMKInputController {
 
         let inputMode = keyHandler.inputMode
 
+        // McBopomofoLM: SlothE-T candidate reranking toggle.
+        if inputMode == .bopomofo {
+            var title = NSLocalizedString("SlothE-T Candidate Reranking", comment: "")
+            let runtime = SlothERuntime.shared
+            if Preferences.slothERerankEnabled && runtime.loadFailed {
+                title += " " + NSLocalizedString("(model failed to load)", comment: "")
+            } else if Preferences.slothERerankEnabled && !runtime.loaded {
+                title += " " + NSLocalizedString("(loading)", comment: "")
+            }
+            let slothEItem = menu.addItem(
+                withTitle: title, action: #selector(toggleSlothERerank(_:)), keyEquivalent: "")
+            slothEItem.state = Preferences.slothERerankEnabled.state
+            let demoteItem = menu.addItem(
+                withTitle: NSLocalizedString("SlothE-T: List Current Word Last", comment: ""),
+                action: #selector(toggleSlothEDemoteShownCandidate(_:)), keyEquivalent: "")
+            demoteItem.state = Preferences.slothEDemoteShownCandidate.state
+            var decoderTitle = NSLocalizedString("SlothE Decoder Corrections", comment: "")
+            if Preferences.slothERerankEnabled && Preferences.slothEDecoderEnabled && runtime.loaded
+                && !runtime.decoderLoaded
+            {
+                decoderTitle += " " + NSLocalizedString(
+                    runtime.decoderLoadFailed ? "(model failed to load)" : "(loading)", comment: "")
+            }
+            let decoderItem = menu.addItem(
+                withTitle: decoderTitle, action: #selector(toggleSlothEDecoder(_:)), keyEquivalent: "")
+            decoderItem.state = Preferences.slothEDecoderEnabled.state
+        }
+
         // Only Bopomofo mode supports Bopomofo Font Annotation. If support is
         // on, ensure that the user has a way to disable it. Otherwise, only
         // show the item when it is set to show in the input menu.
@@ -155,9 +183,6 @@ class McBopomofoInputMethodController: IMKInputController {
             withTitle: NSLocalizedString("McBopomofo Preferences", comment: ""),
             action: #selector(showPreferences(_:)), keyEquivalent: "")
         menu.addItem(
-            withTitle: NSLocalizedString("Check for Updates…", comment: ""),
-            action: #selector(checkForUpdate(_:)), keyEquivalent: "")
-        menu.addItem(
             withTitle: NSLocalizedString("About McBopomofo…", comment: ""),
             action: #selector(showAbout(_:)), keyEquivalent: "")
         return menu
@@ -177,7 +202,9 @@ class McBopomofoInputMethodController: IMKInputController {
         keyHandler.clear()
         keyHandler.syncWithPreferences()
 
+        #if !MCBOPOMOFO_LM_OFFLINE
         (NSApp.delegate as? AppDelegate)?.checkForUpdate()
+        #endif
     }
 
     override func deactivateServer(_ client: Any!) {
@@ -316,14 +343,30 @@ class McBopomofoInputMethodController: IMKInputController {
                 : NSLocalizedString("Bopomofo Font Annotation Support Off", comment: ""))
     }
 
+    @objc func toggleSlothERerank(_ sender: Any?) {
+        if Preferences.toggleSlothERerankEnabled() {
+            SlothERuntime.shared.startLoading()
+        }
+    }
+
+    @objc func toggleSlothEDemoteShownCandidate(_ sender: Any?) {
+        _ = Preferences.toggleSlothEDemoteShownCandidate()
+    }
+
+    @objc func toggleSlothEDecoder(_ sender: Any?) {
+        _ = Preferences.toggleSlothEDecoderEnabled()
+    }
+
     @objc func togglePhraseReplacement(_ sender: Any?) {
         let enabled = Preferences.togglePhraseReplacementEnabled()
         LanguageModelManager.phraseReplacementEnabled = enabled
     }
 
+    #if !MCBOPOMOFO_LM_OFFLINE
     @objc func checkForUpdate(_ sender: Any?) {
         (NSApp.delegate as? AppDelegate)?.checkForUpdate(forced: true)
     }
+    #endif
 
     @objc func openUserPhrases(_ sender: Any?) {
         (NSApp.delegate as? AppDelegate)?.openUserPhrases(sender)

@@ -100,6 +100,19 @@
 		D4F0BBE1279AF8B30071253C /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F0BBE0279AF8B30071253C /* AppDelegate.swift */; };
 		D4F0BBE4279B08900071253C /* BundleTranslocate.m in Sources */ = {isa = PBXBuildFile; fileRef = D4F0BBE3279B08900071253C /* BundleTranslocate.m */; };
 		D4F0BBE7279B14C20071253C /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = D4F0BBE9279B14C20071253C /* Credits.rtf */; };
+		6EFE9284706E9B473DB24AC9 /* SlothEEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D9F672A805405414466083FB /* SlothEEngine.cpp */; };
+		00C8AF6043D2B00BE070BD9A /* SlothERuntime.mm in Sources */ = {isa = PBXBuildFile; fileRef = 3348ABA1D314184E203DEC43 /* SlothERuntime.mm */; };
+		F8F7D98D8D6B1A8B5769CD53 /* SlothE in Resources */ = {isa = PBXBuildFile; fileRef = AB1CEEED7D980BE117153A7C /* SlothE */; };
+		DE95874FD92EB29E60F9307B /* SlothETests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 60C87A3C9C44E99EEF85E3D5 /* SlothETests.mm */; };
+		495A03BA328A4668A4BE393C /* SlothEKeyHandlerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9B678DEB88BC88B95E47C0E /* SlothEKeyHandlerTests.swift */; };
+		6259DFC1D03147F8E829A4B6 /* SlothEFixtures in Resources */ = {isa = PBXBuildFile; fileRef = 657C968F3D0EC799A7A703FB /* SlothEFixtures */; };
+		A6D49FA9891FD3E9E5283BBE /* SlothEWalk.cpp in Sources */ = {isa = PBXBuildFile; fileRef = FE6EB5E72E7743D999452B99 /* SlothEWalk.cpp */; };
+		DD2AE21E24051C381B4F30D5 /* SlothEInWalkTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 2E90A28BF1692628B4195FB6 /* SlothEInWalkTests.mm */; };
+		D63B87D9C50274C12415C5B8 /* SlothEAsyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11085A74ED96C0C94BB7F319 /* SlothEAsyncTests.swift */; };
+		08FC87A377AD7E5B9E17D9A3 /* SlothEDecoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */; };
+		1AA3C739E35FCD5836806FE6 /* SlothEPipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */; };
+		69939E3A2A48DD1BAD787FB4 /* SlothEDecoderTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */; };
+		90A55C40213AA9BC041C6CD8 /* SlothEPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -127,7 +140,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		6A0D4EA215FC0D2D00ABF4B3 /* McBopomofo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = McBopomofo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		6A0D4EA215FC0D2D00ABF4B3 /* McBopomofoLM.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = McBopomofoLM.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6A0D4EEF15FC0DA600ABF4B3 /* Bopomofo.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = Bopomofo.tiff; sourceTree = "<group>"; };
 		6A0D4EF015FC0DA600ABF4B3 /* Bopomofo@2x.tiff */ = {isa = PBXFileReference; lastKnownFileType = image.tiff; path = "Bopomofo@2x.tiff"; sourceTree = "<group>"; };
 		6A0D4EF515FC0DA600ABF4B3 /* McBopomofo-Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = "McBopomofo-Info.plist"; sourceTree = "<group>"; };
@@ -258,6 +271,24 @@
 		D4F0BBE8279B14C20071253C /* Base */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; name = Base; path = Base.lproj/Credits.rtf; sourceTree = "<group>"; };
 		D4F0BBEA279B14CB0071253C /* en */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; name = en; path = en.lproj/Credits.rtf; sourceTree = "<group>"; };
 		D4F0BBEB279B14D00071253C /* zh-Hant */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; name = "zh-Hant"; path = "zh-Hant.lproj/Credits.rtf"; sourceTree = "<group>"; };
+		B30212ED16436C59893CB233 /* SlothEEngine.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothEEngine.h; sourceTree = "<group>"; };
+		D9F672A805405414466083FB /* SlothEEngine.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEEngine.cpp; sourceTree = "<group>"; };
+		B21AA836A0462B586C131F1B /* SlothERuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothERuntime.h; sourceTree = "<group>"; };
+		3348ABA1D314184E203DEC43 /* SlothERuntime.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothERuntime.mm; sourceTree = "<group>"; };
+		AB1CEEED7D980BE117153A7C /* SlothE */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SlothE; path = SlothE/Bundle/SlothE; sourceTree = SOURCE_ROOT; };
+		60C87A3C9C44E99EEF85E3D5 /* SlothETests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothETests.mm; sourceTree = "<group>"; };
+		B9B678DEB88BC88B95E47C0E /* SlothEKeyHandlerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEKeyHandlerTests.swift; sourceTree = "<group>"; };
+		657C968F3D0EC799A7A703FB /* SlothEFixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; path = SlothEFixtures; sourceTree = "<group>"; };
+		B9816549A3125740B68CAC39 /* SlothEWalk.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothEWalk.h; sourceTree = "<group>"; };
+		FE6EB5E72E7743D999452B99 /* SlothEWalk.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEWalk.cpp; sourceTree = "<group>"; };
+		2E90A28BF1692628B4195FB6 /* SlothEInWalkTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEInWalkTests.mm; sourceTree = "<group>"; };
+		11085A74ED96C0C94BB7F319 /* SlothEAsyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEAsyncTests.swift; sourceTree = "<group>"; };
+		33F8E7B58F939EAA76BC3830 /* SlothEDecoder.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothEDecoder.h; sourceTree = "<group>"; };
+		9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEDecoder.cpp; sourceTree = "<group>"; };
+		A832437AF48A5ED07E2D51D9 /* SlothEPipeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothEPipeline.h; sourceTree = "<group>"; };
+		0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEPipeline.cpp; sourceTree = "<group>"; };
+		08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEDecoderTests.mm; sourceTree = "<group>"; };
+		7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEPipelineTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -322,6 +353,7 @@
 		6A0D4EC215FC0D3C00ABF4B3 /* Source */ = {
 			isa = PBXGroup;
 			children = (
+				7505919FA14E77E6A7CEE79D /* SlothE */,
 				D402D6693002779000CF3746 /* PreferencesUI */,
 				6A38BBDD15FC115800A8A51F /* Data */,
 				6A0D4F1215FC0EB100ABF4B3 /* Engine */,
@@ -524,9 +556,34 @@
 				D449AD602B39506D000C5812 /* ServiceProviderTests.swift */,
 				D4EE67572B39685F00F062DE /* DictionaryServiceTests.swift */,
 				D4C2A9862B4309D700113711 /* UTF8HelperTest.mm */,
+				60C87A3C9C44E99EEF85E3D5 /* SlothETests.mm */,
+				B9B678DEB88BC88B95E47C0E /* SlothEKeyHandlerTests.swift */,
+				2E90A28BF1692628B4195FB6 /* SlothEInWalkTests.mm */,
+				11085A74ED96C0C94BB7F319 /* SlothEAsyncTests.swift */,
+				08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */,
+				7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */,
+				657C968F3D0EC799A7A703FB /* SlothEFixtures */,
 				D4C2A9852B4309D600113711 /* McBopomofoTests-Bridging-Header.h */,
 			);
 			path = McBopomofoTests;
+			sourceTree = "<group>";
+		};
+		7505919FA14E77E6A7CEE79D /* SlothE */ = {
+			isa = PBXGroup;
+			children = (
+				B30212ED16436C59893CB233 /* SlothEEngine.h */,
+				D9F672A805405414466083FB /* SlothEEngine.cpp */,
+				B21AA836A0462B586C131F1B /* SlothERuntime.h */,
+				3348ABA1D314184E203DEC43 /* SlothERuntime.mm */,
+				B9816549A3125740B68CAC39 /* SlothEWalk.h */,
+				FE6EB5E72E7743D999452B99 /* SlothEWalk.cpp */,
+				33F8E7B58F939EAA76BC3830 /* SlothEDecoder.h */,
+				9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */,
+				A832437AF48A5ED07E2D51D9 /* SlothEPipeline.h */,
+				0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */,
+				AB1CEEED7D980BE117153A7C /* SlothE */,
+			);
+			path = SlothE;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -672,6 +729,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F8F7D98D8D6B1A8B5769CD53 /* SlothE in Resources */,
 				6A833E4E2F0A0F7F0086AD0C /* bpmfvs-variants.txt in Resources */,
 				6A833E4F2F0A0F7F0086AD0C /* bpmfvs-pua.txt in Resources */,
 				D4E33D8A27A838CF006DB1CF /* Localizable.strings in Resources */,
@@ -685,7 +743,6 @@
 				6A38BC1515FC117A00A8A51F /* data.txt in Resources */,
 				6A6ED16B2797650A0012872E /* template-phrases-replacement.txt in Resources */,
 				6AFF97F2253B299E007F1C49 /* NonModalAlertWindowController.xib in Resources */,
-				D4EE675A2B39968900F062DE /* dictionary_service.json in Resources */,
 				6AE210B215FC63CC003659FE /* PlainBopomofo.tiff in Resources */,
 				6A7C450C2CC571D00076AECA /* template-data-plain-bpmf.txt in Resources */,
 				D4F0BBE7279B14C20071253C /* Credits.rtf in Resources */,
@@ -716,10 +773,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6259DFC1D03147F8E829A4B6 /* SlothEFixtures in Resources */,
 				D4E569E527A414CB00AC2CEF /* data.txt in Resources */,
 				6A833E4C2F0A0F7F0086AD0C /* bpmfvs-variants.txt in Resources */,
 				6A833E4D2F0A0F7F0086AD0C /* bpmfvs-pua.txt in Resources */,
-				D4EE675B2B399D0200F062DE /* dictionary_service.json in Resources */,
 				D4E569E427A414CB00AC2CEF /* data-plain-bpmf.txt in Resources */,
 				D47D73A927A6C84F00255A50 /* associated-phrases-v2.txt in Resources */,
 			);
@@ -732,6 +789,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6EFE9284706E9B473DB24AC9 /* SlothEEngine.cpp in Sources */,
+				00C8AF6043D2B00BE070BD9A /* SlothERuntime.mm in Sources */,
+				A6D49FA9891FD3E9E5283BBE /* SlothEWalk.cpp in Sources */,
+				08FC87A377AD7E5B9E17D9A3 /* SlothEDecoder.cpp in Sources */,
+				1AA3C739E35FCD5836806FE6 /* SlothEPipeline.cpp in Sources */,
 				D41B626F2B87B5C100583148 /* ServiceProviderInputHelper.mm in Sources */,
 				D427F76C278CA2B0004A2160 /* AppDelegate.swift in Sources */,
 				6ACC3D442793701600F1B140 /* ParselessPhraseDB.cpp in Sources */,
@@ -781,6 +843,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DE95874FD92EB29E60F9307B /* SlothETests.mm in Sources */,
+				495A03BA328A4668A4BE393C /* SlothEKeyHandlerTests.swift in Sources */,
+				DD2AE21E24051C381B4F30D5 /* SlothEInWalkTests.mm in Sources */,
+				D63B87D9C50274C12415C5B8 /* SlothEAsyncTests.swift in Sources */,
+				69939E3A2A48DD1BAD787FB4 /* SlothEDecoderTests.mm in Sources */,
+				90A55C40213AA9BC041C6CD8 /* SlothEPipelineTests.swift in Sources */,
 				D4A8E43627A9E982002F7A07 /* KeyHandlerPlainBopomofoTests.swift in Sources */,
 				D436E23F2CD20BA700C6155D /* AssociatedPhrasesTests.swift in Sources */,
 				D449AD5F2B393C00000C5812 /* InputMacroTests.swift in Sources */,
@@ -962,6 +1030,8 @@
 		6A0D4E9915FC0CFA00ABF4B3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MCBOPOMOFO_LM_OFFLINE";
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ENABLE_MODULES = YES;
@@ -1007,6 +1077,8 @@
 		6A0D4E9A15FC0CFA00ABF4B3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MCBOPOMOFO_LM_OFFLINE";
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ENABLE_MODULES = YES;
@@ -1051,6 +1123,29 @@
 		6A0D4EBE15FC0D2E00ABF4B3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/SlothE/ThirdParty/slothe",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/build/slothe-deps/lib",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lslothe",
+					"-lggml",
+					"-lggml-cpu",
+					"-lggml-base",
+					"-lllama_isolated",
+					"-framework",
+					Accelerate,
+				);
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/SlothE/ThirdParty/llama.cpp/include",
+					"$(SRCROOT)/SlothE/ThirdParty/llama.cpp/ggml/include",
+				);
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
@@ -1099,8 +1194,9 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofo;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofoLM;
+				PRODUCT_MODULE_NAME = McBopomofo;
+				PRODUCT_NAME = McBopomofoLM;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Source/McBopomofo-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -1112,6 +1208,29 @@
 		6A0D4EBF15FC0D2E00ABF4B3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/SlothE/ThirdParty/slothe",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/build/slothe-deps/lib",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lslothe",
+					"-lggml",
+					"-lggml-cpu",
+					"-lggml-base",
+					"-lllama_isolated",
+					"-framework",
+					Accelerate,
+				);
+				SYSTEM_HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/SlothE/ThirdParty/llama.cpp/include",
+					"$(SRCROOT)/SlothE/ThirdParty/llama.cpp/ggml/include",
+				);
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
@@ -1153,8 +1272,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofo;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.inputmethod.McBopomofoLM;
+				PRODUCT_MODULE_NAME = McBopomofo;
+				PRODUCT_NAME = McBopomofoLM;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Source/McBopomofo-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
@@ -1349,15 +1469,15 @@
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cerence.McBopomofoTests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.McBopomofoLMTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "McBopomofoTests/McBopomofoTests-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofo.app/Contents/MacOS/McBopomofo";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofoLM.app/Contents/MacOS/McBopomofoLM";
 			};
 			name = Debug;
 		};
@@ -1396,14 +1516,14 @@
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.cerence.McBopomofoTests;
+				PRODUCT_BUNDLE_IDENTIFIER = org.openvanilla.McBopomofoLMTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "McBopomofoTests/McBopomofoTests-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofo.app/Contents/MacOS/McBopomofo";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/McBopomofoLM.app/Contents/MacOS/McBopomofoLM";
 			};
 			name = Release;
 		};

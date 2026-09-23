@@ -170,6 +170,7 @@ final class PreferencesViewModel: NSObject, ObservableObject {
         }
     }
 
+    #if !MCBOPOMOFO_LM_OFFLINE
     var checkForUpdatesAutomatically: Bool {
         get {
             UserDefaults.standard.object(forKey: "CheckUpdateAutomatically") as? Bool ?? true
@@ -179,6 +180,7 @@ final class PreferencesViewModel: NSObject, ObservableObject {
             UserDefaults.standard.set(newValue, forKey: "CheckUpdateAutomatically")
         }
     }
+    #endif
 
     var useCustomUserPhraseLocation: Bool {
         get { Preferences.useCustomUserPhraseLocation }

@@ -25,6 +25,11 @@ import Cocoa
 import FSEventStreamHelper
 import InputMethodKit
 
+// McBopomofoLM (MCBOPOMOFO_LM_OFFLINE, set for every target of this project):
+// the upstream update checker (URLSession to the UpdateInfoEndpoint in
+// Info.plist) is compiled out, not just switched off, and the endpoint keys
+// are removed from Info.plist. The LM build makes no network requests.
+#if !MCBOPOMOFO_LM_OFFLINE
 private let kCheckUpdateAutomatically = "CheckUpdateAutomatically"
 private let kNextUpdateCheckDateKey = "NextUpdateCheckDate"
 private let kUpdateInfoEndpointKey = "UpdateInfoEndpoint"
@@ -159,14 +164,17 @@ struct VersionUpdateApi {
         return task
     }
 }
+#endif
 
 @objc(AppDelegate)
 class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControllerDelegate {
 
     @IBOutlet weak var window: NSWindow?
     private var preferencesWindowController: PreferencesWindowController?
+    #if !MCBOPOMOFO_LM_OFFLINE
     private var checkTask: URLSessionTask?
     private var updateNextStepURL: URL?
+    #endif
     private var fsStreamHelper: FSEventStreamHelper?
     private var serviceProvider = ServiceProvider()
     private var serviceProviderHelper = ServiceProviderInputHelper()
@@ -188,10 +196,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
         LanguageModelManager.setupDataModelValueConverter()
         updateUserPhrases()
 
+        #if !MCBOPOMOFO_LM_OFFLINE
         if UserDefaults.standard.object(forKey: kCheckUpdateAutomatically) == nil {
             UserDefaults.standard.set(true, forKey: kCheckUpdateAutomatically)
             UserDefaults.standard.synchronize()
         }
+        #endif
 
         if UserDefaults.standard.object(forKey: kBeepUponInputErrorKey) == nil {
             UserDefaults.standard.set(true, forKey: kBeepUponInputErrorKey)
@@ -209,7 +219,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
 
         enableBopomofoFontAnnotationSupportMenuItemIfRelevantFontsInstalled()
 
-        checkForUpdate()
+        // McBopomofoLM side-by-side test build: no update check at all (compiled
+        // out, see MCBOPOMOFO_LM_OFFLINE above). Load SlothE-T in the
+        // background; until it is loaded the input method behaves like stock.
+        if Preferences.slothERerankEnabled && !SlothERuntime.runningUnderXCTest {
+            SlothERuntime.shared.startLoading()
+        }
     }
 
     @MainActor
@@ -220,6 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
         preferencesWindowController?.showAndActivate()
     }
 
+    #if !MCBOPOMOFO_LM_OFFLINE
     @objc(checkForUpdate)
     func checkForUpdate() {
         checkForUpdate(forced: false)
@@ -298,16 +314,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
             }
         }
     }
+    #endif
 
     func nonModalAlertWindowControllerDidConfirm(_ controller: NonModalAlertWindowController) {
+        #if !MCBOPOMOFO_LM_OFFLINE
         if let updateNextStepURL = updateNextStepURL {
             NSWorkspace.shared.open(updateNextStepURL)
         }
         updateNextStepURL = nil
+        #endif
     }
 
     func nonModalAlertWindowControllerDidCancel(_ controller: NonModalAlertWindowController) {
+        #if !MCBOPOMOFO_LM_OFFLINE
         updateNextStepURL = nil
+        #endif
     }
 }
 

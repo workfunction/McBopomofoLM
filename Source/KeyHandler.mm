@@ -29,8 +29,14 @@
 #import "UTF8Helper.h"
 #import "UserOverrideModel.h"
 #import "reading_grid.h"
+#import "SlothERuntime.h"
+#import "SlothEWalk.h"
 
 #import <algorithm>
+#import <atomic>
+#import <chrono>
+#import <memory>
+#import <numeric>
 #import <optional>
 #import <sstream>
 #import <string>
@@ -45,8 +51,8 @@
 @import RomanNumbers;
 @import BopomofoBraille;
 
-InputMode InputModeBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Bopomofo";
-InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.PlainBopomofo";
+InputMode InputModeBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Bopomofo";
+InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo";
 
 @implementation KeyHandler {
     std::shared_ptr<Formosa::Gramambular2::LanguageModel> _emptySharedPtr;
@@ -60,13 +66,33 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
     // user override model
     McBopomofo::UserOverrideModel *_userOverrideModel;
 
-    Formosa::Gramambular2::ReadingGrid *_grid;
+    // McBopomofoLM: a ReadingGrid subclass that adds the in-walk rescoring
+    // (SlothEWalk.h); its own walk() is the unchanged stock walk.
+    McBopomofoSlothE::SlothEGrid *_grid;
     Formosa::Gramambular2::ReadingGrid::WalkResult _latestWalk;
 
     NSString *_inputMode;
+
+    // McBopomofoLM in-walk rescoring state (main thread). Every grid change
+    // bumps _slothGeneration; an asynchronous SlothE-T pass is tagged with it
+    // and its result is used only if the generation is still current.
+    uint64_t _slothGeneration;
+    uint64_t _slothAppliedGeneration;   // generation whose pipeline result is in _latestWalk
+    BOOL _slothAppliedDecoderDone;      // ... including its decoder stage
+    std::shared_ptr<McBopomofoSlothE::PipelineSlot> _slothSlot;
+    // last pass applied (for the provisional re-pick after the next grid change)
+    std::vector<std::string> _slothLastReadings;
+    std::shared_ptr<const McBopomofoSlothE::ForwardResult> _slothLastEncoder;
+    std::vector<McBopomofoSlothE::WalkPin> _slothLastPins;
+    std::chrono::steady_clock::time_point _slothKeyStart;
+    // Inside handleInput the pass is submitted only after the handler returns,
+    // so the model's threads never compete with the key handling itself.
+    BOOL _slothInKeystroke;
+    BOOL _slothSubmitPending;
 }
 
 @synthesize delegate = _delegate;
+@synthesize slothERuntime = _slothERuntime;
 
 - (NSString *)inputMode
 {
@@ -102,9 +128,10 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
             delete _grid;
             // This returns a shared_ptr that in turn points to an unmanaged object.
             std::shared_ptr<Formosa::Gramambular2::LanguageModel> lm(_emptySharedPtr, _languageModel);
-            _grid = new Formosa::Gramambular2::ReadingGrid(lm);
+            _grid = new McBopomofoSlothE::SlothEGrid(lm);
             _grid->setReadingSeparator("-");
         }
+        ++_slothGeneration;
 
         if (!_bpmfReadingBuffer->isEmpty()) {
             _bpmfReadingBuffer->clear();
@@ -114,6 +141,7 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
 
 - (void)dealloc
 {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
     delete _bpmfReadingBuffer;
     delete _grid;
 }
@@ -131,10 +159,15 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
 
         // This returns a shared_ptr that in turn points to an unmanaged object.
         std::shared_ptr<Formosa::Gramambular2::LanguageModel> lm(_emptySharedPtr, _languageModel);
-        _grid = new Formosa::Gramambular2::ReadingGrid(lm);
+        _grid = new McBopomofoSlothE::SlothEGrid(lm);
         _grid->setReadingSeparator("-");
 
         _inputMode = InputModeBopomofo;
+        _slothERuntime = [SlothERuntime sharedRuntime];
+        _slothGeneration = 1;
+        _slothAppliedGeneration = 0;
+        _slothSlot = std::make_shared<McBopomofoSlothE::PipelineSlot>();
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(_slothEPreferencesDidChange:) name:SlothEPreferencesDidChangeNotification object:nil];
     }
     return self;
 }
@@ -300,6 +333,7 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
     _bpmfReadingBuffer->clear();
     _grid->clear();
     _latestWalk = Formosa::Gramambular2::ReadingGrid::WalkResult {};
+    ++_slothGeneration;
 }
 
 - (void)handleForceCommitWithStateCallback:(void (^)(InputState *))stateCallback
@@ -308,6 +342,9 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
         // No-op if both are empty.
         return;
     }
+
+    // McBopomofoLM: commit the in-walk result if it arrives within the commit wait.
+    [self _slothESettleWaiting:YES];
 
     // Upon force-commit, clear the BPMF reading, then "steal" the composing buffer text from the built inputting state.
     _bpmfReadingBuffer->clear();
@@ -325,7 +362,44 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
     return layout;
 }
 
+// McBopomofoLM: times every key event (handler ms, SlothE-T forward/rerank ms,
+// buffer length) for latency.log; the actual handling is unchanged.
 - (BOOL)handleInput:(KeyHandlerInput *)input state:(InputState *)inState stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
+{
+    SlothERuntime *runtime = _slothERuntime;
+    [runtime beginKeystroke];
+    auto start = std::chrono::steady_clock::now();
+    _slothKeyStart = start;
+    InputState *state = inState;
+    // McBopomofoLM: in the plain composing state, bring the in-walk result for
+    // the current buffer in first. Keys that commit or open the candidate
+    // window wait up to commitWaitMilliseconds for a pending result; every
+    // other key only takes a result that is already there (no waiting).
+    // Bopomofo keys are skipped: they compose a syllable, and a completed
+    // syllable replaces the walk anyway, so settling first would be wasted work
+    // on the typing path.
+    if ([inState isMemberOfClass:[InputStateInputting class]] && [self _activeSlothEEngine] != nullptr) {
+        BOOL needsWait = [self _slothEKeyNeedsSettledWalk:input];
+        BOOL composingKey = _bpmfReadingBuffer->isValidKey((char)input.charCode) && !input.isControlHold && !input.isCommandHold && !input.isOptionHold;
+        if ((needsWait || !composingKey) && [self _slothESettleWaiting:needsWait]) {
+            state = [self buildInputtingState];
+        }
+    }
+    _slothInKeystroke = YES;
+    BOOL handled = [self _handleInputUntimed:input state:state stateCallback:stateCallback errorCallback:errorCallback];
+    _slothInKeystroke = NO;
+    double handlerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (handled) {
+        [runtime endKeystrokeWithBufferLength:_grid->length() handlerMilliseconds:handlerMs state:[self _slothEStateName]];
+    }
+    if (_slothSubmitPending) {
+        _slothSubmitPending = NO;
+        [self _slothESubmitPipelineFromKey:YES];
+    }
+    return handled;
+}
+
+- (BOOL)_handleInputUntimed:(KeyHandlerInput *)input state:(InputState *)inState stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
 {
     InputState *state = inState;
     UniChar charCode = input.charCode;
@@ -2530,12 +2604,351 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
 
 - (void)_walk
 {
+    auto start = std::chrono::steady_clock::now();
     _latestWalk = _grid->walk();
+    [_slothERuntime noteStockWalkMilliseconds:std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()];
+    ++_slothGeneration;
+    [self _slothEUpdateForCurrentGrid];
+}
+
+#pragma mark - SlothE-T (McBopomofoLM)
+
+// Non-null only in Bopomofo mode, with the preference on and the model loaded.
+// In every other case the key handler behaves exactly like stock McBopomofo.
+- (McBopomofoSlothE::Engine *)_activeSlothEEngine
+{
+    if (![_inputMode isEqualToString:InputModeBopomofo] || !Preferences.slothERerankEnabled) {
+        return nullptr;
+    }
+    return [_slothERuntime engine];
+}
+
+- (NSString *)_slothEStateName
+{
+    if (![_inputMode isEqualToString:InputModeBopomofo]) {
+        return @"plain";
+    }
+    if (!Preferences.slothERerankEnabled || _slothERuntime == nil) {
+        return @"off";
+    }
+    if (_slothERuntime.loaded) {
+        return @"on";
+    }
+    return _slothERuntime.loadFailed ? @"failed" : @"loading";
+}
+
+- (BOOL)_slothEDecoderActive
+{
+    return Preferences.slothEDecoderEnabled && [_slothERuntime decoder] != nullptr;
+}
+
+// The SlothE-T or decoder switch changed: it takes effect now, not at the next
+// key. Every queued or running pass becomes stale (its result is dropped),
+// model-derived state (last encoder result, decoder pins) is cleared, and the
+// buffer is re-walked: stock when SlothE-T is off; encoder-only in-walk (the
+// previous encoder result, no decoder pins) when only the decoder is off. The
+// composing buffer on screen is refreshed, so the next Return commits exactly
+// what the switch now asks for. User picks are grid state and stay.
+- (void)_slothEPreferencesDidChange:(NSNotification *)notification
+{
+    _slothLastPins.clear();
+    if ([self _activeSlothEEngine] == nullptr) {
+        _slothLastEncoder.reset();
+        _slothLastReadings.clear();
+    }
+    _slothAppliedGeneration = 0;
+    _slothAppliedDecoderDone = NO;
+    _slothSubmitPending = NO;
+    if (_grid->length() == 0) {
+        ++_slothGeneration;
+        _slothSlot->latestRequested.store(_slothGeneration);
+        return;
+    }
+    [self _walk];
+    _slothSlot->latestRequested.store(_slothGeneration);
+    id<KeyHandlerDelegate> delegate = _delegate;
+    if ([delegate respondsToSelector:@selector(keyHandlerCanRefreshComposingBuffer:)] && [delegate keyHandlerCanRefreshComposingBuffer:self] && [delegate respondsToSelector:@selector(keyHandler:didRefreshComposingBufferWithState:)]) {
+        [delegate keyHandler:self didRefreshComposingBufferWithState:[self buildInputtingState]];
+    }
+}
+
+// Replaces _latestWalk with the in-walk walk for the current grid: encoder
+// scores (possibly a provisional view) plus decoder pins.
+- (double)_slothEWalkWithEncoder:(const std::shared_ptr<const McBopomofoSlothE::ForwardResult> &)encoder pins:(const std::vector<McBopomofoSlothE::WalkPin> &)pins engine:(McBopomofoSlothE::Engine *)engine
+{
+    auto start = std::chrono::steady_clock::now();
+    McBopomofoSlothE::InWalkStats stats;
+    _latestWalk = _grid->rescoredWalk(*encoder, engine->vocabulary(), engine->variants(), [_slothERuntime inWalkParams], &stats, pins.empty() ? nullptr : &pins);
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+// Applies a finished pipeline result for the current generation.
+- (double)_slothEApplyPipelineResult:(const McBopomofoSlothE::PipelineResult &)result engine:(McBopomofoSlothE::Engine *)engine
+{
+    std::vector<McBopomofoSlothE::WalkPin> pins;
+    if (result.decoderDone && [self _slothEDecoderActive]) {
+        pins = result.pins;  // never apply decoder pins while the decoder switch is off
+    }
+    double ms = [self _slothEWalkWithEncoder:result.encoder pins:pins engine:engine];
+    _slothAppliedGeneration = _slothGeneration;
+    _slothAppliedDecoderDone = result.decoderDone;
+    _slothLastReadings = _grid->readings();
+    _slothLastEncoder = result.encoder;
+    _slothLastPins = pins;
+    return ms;
+}
+
+// After every grid change: show a provisional re-pick at once (the previous
+// pass's scores for the unchanged positions, and its decoder pins inside
+// them), so words already re-picked do not flip back to the stock choice;
+// then queue the real pass (after the key handler returns, during a key).
+- (void)_slothEUpdateForCurrentGrid
+{
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (engine == nullptr || _grid->length() == 0) {
+        return;
+    }
+    const std::vector<std::string> &readings = _grid->readings();
+    if (_slothLastEncoder != nullptr) {
+        size_t known = 0;
+        std::shared_ptr<const McBopomofoSlothE::ForwardResult> view;
+        if (_slothLastReadings == readings) {
+            view = _slothLastEncoder;
+            known = readings.size();
+        } else {
+            view = McBopomofoSlothE::ProvisionalResult(_slothLastEncoder, _slothLastReadings, readings, &known);
+        }
+        if (view != nullptr) {
+            std::vector<McBopomofoSlothE::WalkPin> carried;
+            if ([self _slothEDecoderActive]) {
+                for (const auto &pin : _slothLastPins) {
+                    if (pin.start + pin.len <= known) {
+                        carried.push_back(pin);
+                    }
+                }
+            }
+            double ms = [self _slothEWalkWithEncoder:view pins:carried engine:engine];
+            [_slothERuntime noteProvisionalMilliseconds:ms];
+        }
+    }
+    [_slothERuntime noteForwardQueued];
+    if (_slothInKeystroke) {
+        _slothSubmitPending = YES;
+        return;
+    }
+    [self _slothESubmitPipelineFromKey:NO];
+}
+
+// Queues one pipeline job (encoder, then decoder) for the grid as it is now,
+// tagged with the current generation. The runtime keeps at most one job
+// waiting (a newer job replaces it, releasing its grid snapshot); jobs that
+// are stale when they start, or become stale before the decoder stage ends,
+// are dropped.
+- (void)_slothESubmitPipelineFromKey:(BOOL)fromKey
+{
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (engine == nullptr || _grid->length() == 0 || (_slothAppliedGeneration == _slothGeneration && _slothAppliedDecoderDone)) {
+        return;
+    }
+    SlothERuntime *runtime = _slothERuntime;
+    uint64_t generation = _slothGeneration;
+    std::shared_ptr<McBopomofoSlothE::PipelineSlot> slot = _slothSlot;
+    slot->latestRequested.store(generation);
+    std::vector<std::string> readings = _grid->readings();
+    McBopomofoSlothE::PipelineConfig config;
+    config.inWalk = [runtime inWalkParams];
+    config.decoder = [runtime decoderParams];
+    config.useDecoder = [self _slothEDecoderActive];
+    config.debugDelayMs = runtime.debugComputeDelayMilliseconds;
+    std::shared_ptr<McBopomofoSlothE::SlothEGrid> snapshot;
+    if (config.useDecoder) {
+        snapshot = _grid->snapshot();
+    }
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    McBopomofoSlothE::DecoderScoreCache *scoreCache = [runtime decoderScoreCache];
+    auto keyStart = fromKey ? _slothKeyStart : std::chrono::steady_clock::now();
+    auto enqueued = std::chrono::steady_clock::now();
+    __weak KeyHandler *weakSelf = self;
+    [runtime submitComputeJob:^{
+        double queueMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - enqueued).count();
+        McBopomofoSlothE::PipelineResult result = McBopomofoSlothE::RunPipeline(engine, decoder, scoreCache, slot.get(), config, generation, readings, snapshot.get(), queueMs);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            KeyHandler *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf _slothEDidFinishPipeline:result readings:readings keyStart:keyStart];
+            (void)runtime;
+        });
+    }];
+}
+
+static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
+{
+    switch (stage) {
+    case McBopomofoSlothE::DecoderStage::kOff:
+        return @"off";
+    case McBopomofoSlothE::DecoderStage::kNone:
+        return @"none";
+    case McBopomofoSlothE::DecoderStage::kScored:
+        return @"scored";
+    case McBopomofoSlothE::DecoderStage::kStale:
+        return @"stale";
+    case McBopomofoSlothE::DecoderStage::kFailed:
+        return @"failed";
+    }
+    return @"off";
+}
+
+- (void)_slothEDidFinishPipeline:(const McBopomofoSlothE::PipelineResult &)result readings:(const std::vector<std::string> &)readings keyStart:(std::chrono::steady_clock::time_point)keyStart
+{
+    SlothERuntime *runtime = _slothERuntime;
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    NSUInteger length = readings.size();
+    NSString *decoderStage = SlothEDecoderStageName(result.decoderStage);
+    auto note = ^(NSString *outcome, double inWalkMs, double e2eMs) {
+        [runtime noteAsyncResult:outcome bufferLength:length queueMilliseconds:result.queueMs forwardMilliseconds:result.forwardMs decoderMilliseconds:result.decoderMs decoderCalls:result.decoderCalls pins:static_cast<NSInteger>(result.pins.size()) decoder:decoderStage inWalkMilliseconds:inWalkMs endToEndMilliseconds:e2eMs];
+    };
+    if (result.skipped) {
+        note(@"skipped", 0, -1);
+        return;
+    }
+    if (engine == nullptr || result.encoder == nullptr) {
+        return;
+    }
+    if (result.stale || result.generation != _slothGeneration || readings != _grid->readings()) {
+        note(@"stale", 0, -1);
+        return;
+    }
+    if (_slothAppliedGeneration == result.generation && (_slothAppliedDecoderDone || !result.decoderDone)) {
+        note(@"consumed", 0, -1);
+        return;
+    }
+    id<KeyHandlerDelegate> delegate = _delegate;
+    if (![delegate respondsToSelector:@selector(keyHandlerCanRefreshComposingBuffer:)] || ![delegate keyHandlerCanRefreshComposingBuffer:self]) {
+        note(@"deferred", 0, -1);
+        return;
+    }
+    std::string before = McBopomofoSlothE::WalkText(_latestWalk);
+    double inWalkMs = [self _slothEApplyPipelineResult:result engine:engine];
+    BOOL changed = McBopomofoSlothE::WalkText(_latestWalk) != before;
+    if (changed && [delegate respondsToSelector:@selector(keyHandler:didRefreshComposingBufferWithState:)]) {
+        [delegate keyHandler:self didRefreshComposingBufferWithState:[self buildInputtingState]];
+    }
+    double e2eMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - keyStart).count();
+    note(changed ? @"applied" : @"unchanged", inWalkMs, e2eMs);
+}
+
+// Keys whose outcome depends on the final walk: commits and candidate windows.
+- (BOOL)_slothEKeyNeedsSettledWalk:(KeyHandlerInput *)input
+{
+    if (input.isEnter || input.charCode == 13) {
+        return YES;
+    }
+    if (!_bpmfReadingBuffer->isEmpty()) {
+        return NO;  // Space and the like still compose a syllable
+    }
+    return input.charCode == 32 || input.isTab || input.isDown || input.isExtraChooseCandidateKey || (input.useVerticalMode && input.isVerticalModeOnlyChooseCandidateKey) || input.isControlHold;
+}
+
+// Makes _latestWalk the final in-walk result (encoder + decoder) for the
+// current grid if it is there, or (wait == YES) arrives within
+// commitWaitMilliseconds in total. If only the encoder stage made it, that is
+// used ("partial"). Returns YES if _latestWalk changed.
+- (BOOL)_slothESettleWaiting:(BOOL)wait
+{
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (engine == nullptr || _grid->length() == 0) {
+        return NO;
+    }
+    BOOL needDecoder = [self _slothEDecoderActive];
+    if (_slothAppliedGeneration == _slothGeneration && (_slothAppliedDecoderDone || !needDecoder)) {
+        return NO;
+    }
+    McBopomofoSlothE::PipelineResult result;
+    auto start = std::chrono::steady_clock::now();
+    BOOL got = _slothSlot->waitFor(_slothGeneration, wait ? _slothERuntime.commitWaitMilliseconds : 0, needDecoder, &result);
+    double waitedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (!got) {
+        if (wait) {
+            [_slothERuntime noteSettle:@"timeout" milliseconds:waitedMs];
+        }
+        return NO;
+    }
+    if (_slothAppliedGeneration == _slothGeneration && !result.decoderDone) {
+        return NO;  // nothing newer than what is applied
+    }
+    double ms = [self _slothEApplyPipelineResult:result engine:engine];
+    [_slothERuntime noteInWalkMilliseconds:ms];
+    NSString *kind = (needDecoder && !result.decoderDone) ? @"partial" : (waitedMs > 0.05 && wait ? @"waited" : @"ready");
+    [_slothERuntime noteSettle:kind milliseconds:waitedMs];
+    return YES;
+}
+
+// Candidate order for the window: candidates whose span equals the walk
+// node's span are sorted by SlothE-T score (sum of per-position log-probs),
+// all others follow in McBopomofo order (run_sloth_rerank.py). Orthographic
+// variants of the walk's form (e.g. 臺 for 台) never move above it. Returns
+// the identity order whenever SlothE-T is inactive or the node is not Zhuyin.
+- (std::vector<size_t>)_slothECandidateOrder:(const std::vector<Formosa::Gramambular2::ReadingGrid::Candidate> &)candidates
+{
+    std::vector<size_t> identity(candidates.size());
+    std::iota(identity.begin(), identity.end(), 0);
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (engine == nullptr || candidates.empty()) {
+        return identity;
+    }
+    auto start = std::chrono::steady_clock::now();
+    size_t cursorPastNode = 0;
+    auto nodeIter = _latestWalk.findNodeAt(static_cast<size_t>(self.actualCandidateCursorIndex), &cursorPastNode);
+    if (nodeIter == _latestWalk.nodes.cend()) {
+        return identity;
+    }
+    const auto &node = *nodeIter;
+    const std::vector<std::string> &readings = _grid->readings();
+    size_t spanLength = node->spanningLength();
+    if (spanLength == 0 || cursorPastNode < spanLength || cursorPastNode > readings.size()) {
+        return identity;
+    }
+    size_t spanStart = cursorPastNode - spanLength;
+    const McBopomofoSlothE::Vocabulary &vocab = engine->vocabulary();
+    for (size_t i = spanStart; i < cursorPastNode; ++i) {
+        if (vocab.mapSyllable(readings[i]).how == McBopomofoSlothE::MapHow::kUnk) {
+            return identity;  // punctuation, symbols, or other non-Zhuyin nodes
+        }
+    }
+    // Never runs the model on the main thread: the pass for this buffer was
+    // queued when the grid changed and the key handler settled it (waiting up
+    // to the commit wait) before building the window. If it is still not
+    // there, the window keeps stock order.
+    std::shared_ptr<const McBopomofoSlothE::ForwardResult> result = engine->lookup(readings);
+    if (result == nullptr || result->length() != readings.size()) {
+        return identity;
+    }
+
+    std::vector<McBopomofoSlothE::RerankItem> items;
+    items.reserve(candidates.size());
+    for (const auto &c : candidates) {
+        McBopomofoSlothE::RerankItem item;
+        item.value = c.value;
+        item.aligned = c.reading == node->reading() && McBopomofoSlothE::Utf8Length(c.value) == spanLength;
+        if (item.aligned) {
+            item.score = McBopomofoSlothE::ScoreCandidate(*result, vocab, spanStart, c.value).score;
+        }
+        items.push_back(std::move(item));
+    }
+    std::vector<size_t> order = McBopomofoSlothE::RerankOrder(items, node->value(), &engine->variants());
+    if (Preferences.slothEDemoteShownCandidate) {
+        order = McBopomofoSlothE::DemoteWalkValue(order, items, node->value(), &engine->variants());
+    }
+    [_slothERuntime noteRerankMilliseconds:std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()];
+    return order;
 }
 
 - (InputStateChoosingCandidate *)_buildCandidateStateFromInputtingState:(InputStateInputting *)inputting useVerticalMode:(BOOL)useVerticalMode
 {
     auto candidates = _grid->candidatesAt(self.actualCandidateCursorIndex);
+    std::vector<size_t> order = [self _slothECandidateOrder:candidates];
 
     std::unordered_map<std::string, size_t> valueCountMap;
     for (const auto& c : candidates) {
@@ -2543,7 +2956,8 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofo.Plai
     }
 
     NSMutableArray *candidatesArray = [[NSMutableArray alloc] init];
-    for (const auto& c : candidates) {
+    for (size_t candidateIndex : order) {
+        const auto& c = candidates[candidateIndex];
         std::string displayText = c.value;
         if (valueCountMap[displayText] > 1) {
             displayText += " (";

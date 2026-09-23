@@ -119,6 +119,11 @@ private struct CharacterInfo: DictionaryService {
 
 }
 
+// McBopomofoLM (MCBOPOMOFO_LM_OFFLINE): the web-dictionary services, which
+// open the selected text in a browser (moedict, Google, MOE dictionaries,
+// ...), are compiled out; only the local services (Speak, Character
+// Information) remain. dictionary_service.json is not bundled.
+#if !MCBOPOMOFO_LM_OFFLINE
 /// The dictionary service that helps to open a website.
 private struct HttpBasedDictionary: DictionaryService, Codable {
     private(set) var name: String
@@ -160,13 +165,16 @@ private struct HttpBasedDictionary: DictionaryService, Codable {
         true
     }
 }
+#endif
 
 /// The facade of the dictionary services.
 class DictionaryServices: NSObject {
 
+    #if !MCBOPOMOFO_LM_OFFLINE
     private struct ServiceWrapper: Codable {
         var services: [HttpBasedDictionary]
     }
+    #endif
 
     /// The singleton object.
     @objc static var shared = DictionaryServices()
@@ -178,6 +186,7 @@ class DictionaryServices: NSObject {
         services.append(Speak())
         services.append(CharacterInfo())
 
+        #if !MCBOPOMOFO_LM_OFFLINE
         let bundle = Bundle(for: DictionaryServices.self)
         if let jsonPath = bundle.url(forResource: "dictionary_service", withExtension: "json"),
             let data = try? Data(contentsOf: jsonPath)
@@ -187,6 +196,7 @@ class DictionaryServices: NSObject {
                 services.append(contentsOf: httpServices.services)
             }
         }
+        #endif
 
         self.services = services
     }

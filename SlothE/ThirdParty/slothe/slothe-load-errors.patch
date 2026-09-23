@@ -1,0 +1,222 @@
+--- a/slothe.cpp (after slothe-graph-cache.patch)	2026-09-22 03:54:13
++++ b/slothe.cpp	2026-09-22 03:55:03
+@@ -11,6 +11,13 @@
+ // per sequence length T (LRU, slothe_set_graph_cache_capacity, default 64) instead of only for
+ // the last T, so typing (T grows by one per syllable) does not rebuild the graph every keystroke.
+ // Graph metadata contexts are sized to the graph instead of a fixed 16 MB. Math is unchanged.
++//
++// McBopomofoLM local patch 2 (2026-09-22, slothe-load-errors.patch): the library path never calls
++// exit(). slothe_load() returns nullptr (after freeing what it allocated) when the GGUF cannot be
++// parsed, its hyperparameters are out of range, a tensor the forward graph needs is missing or has
++// the wrong shape, the weight buffer cannot be allocated, or the file is shorter than its tensor
++// table says. slothe_model::get() throws instead of exit()ing; slothe_load() validates every name
++// and shape the forward graph uses, so slothe_logits() cannot hit it afterwards. Adds slothe_n_syl().
+ 
+ #include "ggml.h"
+ #include "gguf.h"
+@@ -28,6 +35,7 @@
+ #include <map>
+ #include <algorithm>
+ #include <thread>
++#include <stdexcept>
+ 
+ // ---------------- hyperparameters ----------------
+ struct slothe_hparams {
+@@ -82,8 +90,8 @@
+     ggml_tensor * get(const std::string & name) const {
+         auto it = tensors.find(name);
+         if (it == tensors.end()) {
+-            fprintf(stderr, "FATAL: tensor not found: %s\n", name.c_str());
+-            exit(1);
++            // McBopomofoLM patch 2: was fprintf + exit(1). slothe_load() checks every name first.
++            throw std::runtime_error("tensor not found: " + name);
+         }
+         return it->second;
+     }
+@@ -91,9 +99,69 @@
+ };
+ 
+ // ---------------- load ----------------
++void slothe_free(slothe_model * m);
++
++// McBopomofoLM patch 2: shape check for every weight the forward graph reads, so a malformed
++// (but parseable) GGUF is rejected here instead of tripping a GGML_ASSERT (abort) in a ggml op.
++static bool slothe_check_shapes(const slothe_model & m, std::string * why) {
++    const auto & hp = m.hp;
++    auto want = [&](const std::string & name, int64_t ne0, int64_t ne1) {
++        auto it = m.tensors.find(name);
++        if (it == m.tensors.end()) { *why = "missing tensor " + name; return false; }
++        const ggml_tensor * t = it->second;
++        if (t->ne[0] != ne0 || t->ne[1] != ne1 || t->ne[2] != 1 || t->ne[3] != 1) {
++            *why = "bad shape for " + name;
++            return false;
++        }
++        return true;
++    };
++    const int64_t hd = hp.head_dim;
++    const int64_t padd = ((hp.dim + hp.pad_to - 1) / hp.pad_to) * hp.pad_to;
++    const int64_t padf = ((hp.ffn + hp.pad_to - 1) / hp.pad_to) * hp.pad_to;
++    if (!want("token_embd.weight", hp.dim, hp.n_syl)) return false;
++    if (!want("token_embd_norm.weight", hp.dim, 1)) return false;
++    if (!want("output_norm.weight", hp.dim, 1)) return false;
++    if (!want("output.weight", hp.dim, hp.n_char)) return false;
++    char buf[128];
++    for (int il = 0; il < hp.n_layer; ++il) {
++        const bool is_fp = (il == 0) || (il == hp.n_layer - 1);
++        struct lin { const char * name; int64_t in; int64_t pad; int64_t out; };
++        const lin lins[] = {
++            { "attn_q", hp.dim, padd, hp.n_head * hd },
++            { "attn_k", hp.dim, padd, hp.n_head_kv * hd },
++            { "attn_v", hp.dim, padd, hp.n_head_kv * hd },
++            { "attn_output", hp.dim, padd, hp.dim },
++            { "ffn_gate", hp.dim, padd, hp.ffn },
++            { "ffn_up", hp.dim, padd, hp.ffn },
++            { "ffn_down", hp.ffn, padf, hp.dim },
++        };
++        for (const lin & l : lins) {
++            snprintf(buf, sizeof(buf), "blk.%d.%s.weight", il, l.name);
++            // slothe_lin: fp blocks multiply the raw weight, ternary blocks pad to `pad` first
++            // (only when pad > in, as in slothe_lin).
++            const int64_t in = is_fp ? l.in : (l.pad > l.in ? l.pad : l.in);
++            if (!want(buf, in, l.out)) return false;
++            if (!is_fp) {
++                snprintf(buf, sizeof(buf), "blk.%d.%s_subln.weight", il, l.name);
++                if (!want(buf, l.in, 1)) return false;
++            }
++        }
++        snprintf(buf, sizeof(buf), "blk.%d.attn_norm.weight", il);
++        if (!want(buf, hp.dim, 1)) return false;
++        snprintf(buf, sizeof(buf), "blk.%d.ffn_norm.weight", il);
++        if (!want(buf, hp.dim, 1)) return false;
++        snprintf(buf, sizeof(buf), "blk.%d.attn_q_rmsnorm.weight", il);
++        if (!want(buf, hd, 1)) return false;
++        snprintf(buf, sizeof(buf), "blk.%d.attn_k_rmsnorm.weight", il);
++        if (!want(buf, hd, 1)) return false;
++    }
++    return true;
++}
++
+ slothe_model * slothe_load(const char * path) {
+     slothe_model * m = new slothe_model();
+     m->backend = ggml_backend_cpu_init();
++    if (!m->backend) { slothe_free(m); return nullptr; }
+     // parallelize the decode across the device's cores (capped); matches the
+     // engine/slothd copy. Android/NDK has real pthreads.
+     {
+@@ -109,14 +177,24 @@
+ 
+     struct gguf_init_params gp = { /*no_alloc=*/true, /*ctx=*/&m->ctx_w };
+     struct gguf_context * gguf = gguf_init_from_file(path, gp);
+-    if (!gguf) { fprintf(stderr, "failed to open gguf %s\n", path); exit(1); }
++    // McBopomofoLM patch 2: every failure below returns nullptr (was: fprintf + exit(1)).
++    if (!gguf) { fprintf(stderr, "failed to open gguf %s\n", path); slothe_free(m); return nullptr; }
++    auto fail = [&](const char * why) -> slothe_model * {
++        fprintf(stderr, "slothe_load: %s: %s\n", why, path);
++        gguf_free(gguf);
++        slothe_free(m);
++        return nullptr;
++    };
+ 
+     // hparams from the GGUF (pack_gguf.py writes them); fall back to the struct
+     // defaults (the original 25M shape) when a key is absent.
+     {
++        bool type_ok = true;
+         auto u32 = [&](const char * key, int dflt) {
+             int64_t i = gguf_find_key(gguf, key);
+-            return i < 0 ? dflt : (int) gguf_get_val_u32(gguf, i);
++            if (i < 0) return dflt;
++            if (gguf_get_kv_type(gguf, i) != GGUF_TYPE_UINT32) { type_ok = false; return dflt; }
++            return (int) gguf_get_val_u32(gguf, i);
+         };
+         m->hp.dim       = u32("slothe.embedding_length",      m->hp.dim);
+         m->hp.n_layer   = u32("slothe.block_count",           m->hp.n_layer);
+@@ -126,6 +204,14 @@
+         m->hp.fp_boundary = u32("slothe.fp_boundary",         m->hp.fp_boundary);
+         m->hp.n_syl     = u32("slothe.vocab_syl",             m->hp.n_syl);
+         m->hp.n_char    = u32("slothe.vocab_char",            m->hp.n_char);
++        const auto & hp = m->hp;
++        if (!type_ok) return fail("hyperparameter with the wrong type");
++        if (hp.dim <= 0 || hp.dim > 65536 || hp.n_layer < 2 || hp.n_layer > 64 ||
++            hp.n_head <= 0 || hp.n_head_kv <= 0 || hp.dim % hp.n_head != 0 ||
++            hp.n_head % hp.n_head_kv != 0 || hp.ffn <= 0 || hp.ffn > 1 << 20 ||
++            hp.n_syl <= 0 || hp.n_syl > 1 << 24 || hp.n_char <= 0 || hp.n_char > 1 << 24) {
++            return fail("hyperparameters out of range");
++        }
+         m->hp.head_dim  = m->hp.dim / m->hp.n_head;
+     }
+ 
+@@ -133,22 +219,36 @@
+     for (ggml_tensor * t = ggml_get_first_tensor(m->ctx_w); t != nullptr; t = ggml_get_next_tensor(m->ctx_w, t)) {
+         m->tensors[ggml_get_name(t)] = t;
+     }
++    {
++        std::string why;
++        if (!slothe_check_shapes(*m, &why)) return fail(why.c_str());
++    }
+ 
+     // allocate a backend buffer for all weights and fill it from the file
+     m->buf_w = ggml_backend_alloc_ctx_tensors(m->ctx_w, m->backend);
++    if (!m->buf_w) return fail("cannot allocate the weight buffer");
+ 
+     FILE * f = fopen(path, "rb");
++    if (!f) return fail("cannot open");
++    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return fail("seek fail"); }
++    const long file_size = ftell(f);
+     const size_t data_off = gguf_get_data_offset(gguf);
+     const int64_t nt = gguf_get_n_tensors(gguf);
+     std::vector<char> tmp;
+     for (int64_t i = 0; i < nt; ++i) {
+         const char * name = gguf_get_tensor_name(gguf, i);
+-        ggml_tensor * t = m->tensors[name];
++        auto it = m->tensors.find(name);
++        if (it == m->tensors.end()) { fclose(f); return fail("tensor table mismatch"); }
++        ggml_tensor * t = it->second;
+         const size_t off = data_off + gguf_get_tensor_offset(gguf, i);
+         const size_t nb = ggml_nbytes(t);
++        if (file_size < 0 || off > (size_t) file_size || nb > (size_t) file_size - off) {
++            fclose(f);
++            return fail("file shorter than its tensor table (truncated)");
++        }
+         tmp.resize(nb);
+-        if (fseek(f, (long)off, SEEK_SET) != 0) { fprintf(stderr, "seek fail\n"); exit(1); }
+-        if (fread(tmp.data(), 1, nb, f) != nb)   { fprintf(stderr, "read fail %s\n", name); exit(1); }
++        if (fseek(f, (long)off, SEEK_SET) != 0) { fclose(f); return fail("seek fail"); }
++        if (fread(tmp.data(), 1, nb, f) != nb)   { fclose(f); return fail("read fail"); }
+         ggml_backend_tensor_set(t, tmp.data(), 0, nb);
+     }
+     fclose(f);
+@@ -174,6 +274,7 @@
+ }
+ 
+ int slothe_n_char(const slothe_model * m) { return m->hp.n_char; }
++int slothe_n_syl(const slothe_model * m) { return m->hp.n_syl; }  // McBopomofoLM patch 2
+ 
+ // ---------------- graph building ----------------
+ // multiply activation by a (possibly f16) weight vector, broadcasting over ne0.
+@@ -376,6 +477,7 @@
+     if (builds) *builds = m->graph_builds;
+ }
+ 
++#ifndef SLOTHE_NO_MAIN  // McBopomofoLM patch 2: the harness (and its exit() calls) stays out of the library
+ // ================= validation harness =================
+ static std::string BASE; // slothe_port dir
+ 
+@@ -460,7 +562,6 @@
+     ggml_free(ctx);
+ }
+ 
+-#ifndef SLOTHE_NO_MAIN
+ int main(int argc, char ** argv) {
+     BASE = (argc > 1) ? argv[1] : "/tmp/sloth.cpp/slothe_port";
+     std::string gguf = BASE + "/slothe-t-25m.gguf";
+--- a/slothe.h (after slothe-graph-cache.patch)	2026-09-22 03:54:13
++++ b/slothe.h	2026-09-22 03:54:48
+@@ -8,6 +8,8 @@
+ slothe_model * slothe_load(const char * gguf_path);
+ void           slothe_free(slothe_model * m);
+ int            slothe_n_char(const slothe_model * m);
++// McBopomofoLM patch 2: slothe_load returns nullptr on any bad file (never exit()s).
++int            slothe_n_syl(const slothe_model * m);
+ // out_logits: caller-owned buffer of T * n_char floats, row-major [T][n_char].
+ void           slothe_logits(slothe_model * m, const int32_t * syl_ids, int T, float * out_logits);
+ // McBopomofoLM patch: per-length compute-graph cache (LRU) controls and stats.

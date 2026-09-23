@@ -108,6 +108,19 @@ extension McBopomofoInputMethodController: KeyHandlerDelegate {
         return result
     }
 
+    // McBopomofoLM: in-walk rescoring results arrive after the key event; they
+    // may only replace the plain composing buffer, never another state.
+    func keyHandlerCanRefreshComposingBuffer(_ keyHandler: KeyHandler) -> Bool {
+        currentClient != nil && type(of: state) == InputState.Inputting.self
+    }
+
+    func keyHandler(_ keyHandler: KeyHandler, didRefreshComposingBufferWith state: InputState) {
+        guard keyHandlerCanRefreshComposingBuffer(keyHandler) else {
+            return
+        }
+        handle(state: state, client: currentClient)
+    }
+
     func keyHandler(
         _ keyHandler: KeyHandler, didRequestExcludePhrase phrase: String, reading: String
     ) -> Bool {

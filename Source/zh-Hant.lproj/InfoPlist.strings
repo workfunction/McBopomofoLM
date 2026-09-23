@@ -1,5 +1,5 @@
-CFBundleName = "小麥注音";
-CFBundleDisplayName = "小麥注音";
+CFBundleName = "小麥注音 LM";
+CFBundleDisplayName = "小麥注音 LM";
 NSHumanReadableCopyright = "Copyright © 2011-2026 Mengjuei Hsieh et al.\nAll Rights Reserved.";
-"org.openvanilla.inputmethod.McBopomofo.Bopomofo" = "小麥注音";
-"org.openvanilla.inputmethod.McBopomofo.PlainBopomofo" = "傳統注音";
+"org.openvanilla.inputmethod.McBopomofoLM.Bopomofo" = "注音 LM";
+"org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo" = "傳統注音 LM";

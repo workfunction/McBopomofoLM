@@ -7,3 +7,4 @@
 #import "KeyHandler.h"
 #import "LanguageModelManager.h"
 #import "ServiceProviderInputHelper.h"
+#import "SlothERuntime.h"
