@@ -1,0 +1,9 @@
+# McBopomofoLM checks the byte size and sha256 of every file below before loading a model.
+# Any mismatch or missing file = that model is not loaded (encoder -> stock McBopomofo,
+# decoder -> encoder-only in-walk). Format: <sha256> <bytes> <file>
+e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151 10115712 slothe-t-12m-256x12.gguf
+f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d 46035936 pred_q35_60m-q4.gguf
+92057096f9e6a9da6f4a1756f456d948506970205dda1bda1196d25db5000f76 21056 syl_vocab.tsv
+58ccc20614291fc39b7fc6cc2ce4b536a5b787cf62f89bd13fba85bd232569d4 132104 char2id.tsv
+e963ecb0f8aec024889ac4aaadcb0c9d620efbb961d72a744fff9dac3235a978 1605189 syl2legal.bin
+66441790a33019ea34979f3b8c752f996265e7558fc7391d2218fb2a133305a4 644 variants.tsv

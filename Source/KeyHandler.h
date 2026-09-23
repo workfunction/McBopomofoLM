@@ -25,6 +25,7 @@
 
 @class KeyHandlerInput;
 @class InputState;
+@class SlothERuntime;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -41,6 +42,13 @@ extern InputMode InputModePlainBopomofo;
 - (BOOL)keyHandler:(KeyHandler *)keyHandler didRequestBoostScoreForPhrase:(NSString *)phrase reading:(NSString *)reading;
 - (BOOL)keyHandler:(KeyHandler *)keyHandler didRequestExcludePhrase:(NSString *)phrase reading:(NSString *)reading;
 - (BOOL)keyHandlerDidRequestReloadLanguageModel:(KeyHandler *)keyHandler;
+@optional
+/// McBopomofoLM: an in-walk rescoring result arrived for the current buffer.
+/// Return YES only when the plain composing state is showing, so the buffer
+/// can be replaced without disturbing a candidate window or another state.
+- (BOOL)keyHandlerCanRefreshComposingBuffer:(KeyHandler *)keyHandler;
+/// McBopomofoLM: show this refreshed composing state (same buffer, rescored).
+- (void)keyHandler:(KeyHandler *)keyHandler didRefreshComposingBufferWithState:(InputState *)state;
 @end
 
 @interface BuildAssociatedPhraseParams: NSObject
@@ -96,6 +104,9 @@ extern InputMode InputModePlainBopomofo;
 @property (weak, nonatomic) id<KeyHandlerDelegate> delegate;
 @property (assign, nonatomic, readonly) NSInteger actualCandidateCursorIndex;
 @property (assign, nonatomic, readonly) NSInteger cursorIndex;
+/// McBopomofoLM: SlothE-T runtime used for candidate reranking and key timing.
+/// Defaults to SlothERuntime.sharedRuntime; nil disables SlothE-T entirely.
+@property (strong, nonatomic, nullable) SlothERuntime *slothERuntime;
 @end
 
 NS_ASSUME_NONNULL_END

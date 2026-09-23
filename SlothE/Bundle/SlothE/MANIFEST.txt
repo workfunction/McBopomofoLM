@@ -1,0 +1,14 @@
+SlothE-T 12M runtime files for McBopomofoLM
+model: huggingface.co/Luigi/sloth-ime-models @ e7d13c9c451dc01ab9546be53c574f4dbe0fdd54 (slothe-t-12m-256x12.gguf, syl_vocab.json, syl2legal.npz), Apache-2.0
+char2id: github.com/vieenrose/sloth-zhuyin-linux model/slothe_4m_onnx/char2id.json
+variants: OpenCC TWVariants.txt + HKVariants.txt (Apache-2.0), char-level union-find, 80 classes
+source sha256 slothe-t-12m-256x12.gguf: e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151
+source sha256 pred_q35_60m-q4.gguf: f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d
+n_syl=1539 n_char=8342 n_char2id=18756
+
+e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151  slothe-t-12m-256x12.gguf
+f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d  pred_q35_60m-q4.gguf
+92057096f9e6a9da6f4a1756f456d948506970205dda1bda1196d25db5000f76  syl_vocab.tsv
+58ccc20614291fc39b7fc6cc2ce4b536a5b787cf62f89bd13fba85bd232569d4  char2id.tsv
+e963ecb0f8aec024889ac4aaadcb0c9d620efbb961d72a744fff9dac3235a978  syl2legal.bin
+66441790a33019ea34979f3b8c752f996265e7558fc7391d2218fb2a133305a4  variants.tsv

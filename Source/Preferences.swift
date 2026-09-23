@@ -56,6 +56,12 @@ private let kRepeatedPunctuationToSelectCandidateEnabledKey =
     "RepeatedPunctuationToSelectCandidateEnabled"
 private let kUseCustomUserPhraseLocation = "UseCustomUserPhraseLocation"
 private let kCustomUserPhraseLocation = "CustomUserPhraseLocation"
+/// McBopomofoLM: SlothE-T candidate reranking (default on).
+private let kSlothERerankEnabledKey = "SlothERerankEnabled"
+/// McBopomofoLM: in the SlothE-T candidate window, move the word currently shown to the end of its block.
+private let kSlothEDemoteShownCandidateKey = "SlothEDemoteShownCandidate"
+/// McBopomofoLM phase 3: the SlothE decoder's gated corrections on top of the in-walk re-pick.
+private let kSlothEDecoderEnabledKey = "SlothEDecoderEnabled"
 
 private let kDefaultCandidateListTextSize: CGFloat = 16
 private let kMinCandidateListTextSize: CGFloat = 12
@@ -235,6 +241,9 @@ class Preferences: NSObject {
             kRepeatedPunctuationToSelectCandidateEnabledKey,
             kUseCustomUserPhraseLocation,
             kCustomUserPhraseLocation,
+            kSlothERerankEnabledKey,
+            kSlothEDemoteShownCandidateKey,
+            kSlothEDecoderEnabledKey,
         ]
     }
 
@@ -266,6 +275,9 @@ class Preferences: NSObject {
         Preferences.enableUserPhrasesInPlainBopomofo = Preferences.enableUserPhrasesInPlainBopomofo
         Preferences.allowMovingCursorWhenChoosingCandidates =
             Preferences.allowMovingCursorWhenChoosingCandidates
+        Preferences.slothERerankEnabled = Preferences.slothERerankEnabled
+        Preferences.slothEDemoteShownCandidate = Preferences.slothEDemoteShownCandidate
+        Preferences.slothEDecoderEnabled = Preferences.slothEDecoderEnabled
     }
 
     @EnumUserDefault(key: kKeyboardLayoutPreferenceKey, defaultValue: KeyboardLayout.standard)
@@ -454,6 +466,41 @@ extension Preferences {
 
     @UserDefault(key: kRepeatedPunctuationToSelectCandidateEnabledKey, defaultValue: false)
     @objc static var repeatedPunctuationToSelectCandidateEnabled: Bool
+
+    /// McBopomofoLM: when off, SlothE-T is never consulted and the input
+    /// method behaves exactly like stock McBopomofo.
+    @UserDefault(key: kSlothERerankEnabledKey, defaultValue: true)
+    @objc static var slothERerankEnabled: Bool
+
+    @objc static func toggleSlothERerankEnabled() -> Bool {
+        slothERerankEnabled = !slothERerankEnabled
+        // Key handlers drop model state and re-walk at once (KeyHandler.mm).
+        NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
+        return slothERerankEnabled
+    }
+
+    /// McBopomofoLM: when the SlothE-T candidate window opens on a word, list
+    /// that word (and its orthographic variants) after the other candidates of
+    /// the same span. Has no effect while slothERerankEnabled is off.
+    @UserDefault(key: kSlothEDemoteShownCandidateKey, defaultValue: true)
+    @objc static var slothEDemoteShownCandidate: Bool
+
+    @objc static func toggleSlothEDemoteShownCandidate() -> Bool {
+        slothEDemoteShownCandidate = !slothEDemoteShownCandidate
+        return slothEDemoteShownCandidate
+    }
+
+    /// McBopomofoLM: let the SlothE decoder check the encoder's top candidates
+    /// of each word and correct confident mistakes. Has no effect while
+    /// slothERerankEnabled is off.
+    @UserDefault(key: kSlothEDecoderEnabledKey, defaultValue: true)
+    @objc static var slothEDecoderEnabled: Bool
+
+    @objc static func toggleSlothEDecoderEnabled() -> Bool {
+        slothEDecoderEnabled = !slothEDecoderEnabled
+        NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
+        return slothEDecoderEnabled
+    }
 }
 
 @objc enum ControlEnterOutput: Int {
@@ -499,7 +546,8 @@ extension Preferences {
         let paths = NSSearchPathForDirectoriesInDomains(
             .applicationSupportDirectory, .userDomainMask, true)
         let appSupportPath = paths.first!
-        return (appSupportPath as NSString).appendingPathComponent("McBopomofo")
+        // McBopomofoLM side-by-side build: never share the live McBopomofo user-data directory.
+        return (appSupportPath as NSString).appendingPathComponent("McBopomofoLM")
     }
 }
 

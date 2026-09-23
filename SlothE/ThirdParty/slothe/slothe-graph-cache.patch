@@ -1,0 +1,151 @@
+--- slothe.cpp.upstream	2026-09-22 02:02:52
++++ slothe.cpp	2026-09-22 02:15:29
+@@ -6,6 +6,11 @@
+ //   void           slothe_free(slothe_model*);
+ //
+ // Plus a validation `main` that checks against the PyTorch golden reference.
++//
++// McBopomofoLM local patch (2026-09-22, diff vs slothe.cpp.upstream): the compute graph is cached
++// per sequence length T (LRU, slothe_set_graph_cache_capacity, default 64) instead of only for
++// the last T, so typing (T grows by one per syllable) does not rebuild the graph every keystroke.
++// Graph metadata contexts are sized to the graph instead of a fixed 16 MB. Math is unchanged.
+ 
+ #include "ggml.h"
+ #include "gguf.h"
+@@ -58,6 +63,22 @@
+     ggml_tensor  * c_logits= nullptr;
+     int            cached_T = -1;
+ 
++    // McBopomofoLM patch: one cached graph per sequence length, LRU-evicted.
++    struct graph_entry {
++        int            T       = 0;
++        ggml_context * ctx     = nullptr;
++        ggml_gallocr_t galloc  = nullptr;
++        ggml_cgraph  * gf      = nullptr;
++        ggml_tensor  * syl     = nullptr;
++        ggml_tensor  * pos     = nullptr;
++        ggml_tensor  * logits  = nullptr;
++        uint64_t       last_use = 0;
++    };
++    std::vector<graph_entry> graphs;
++    uint64_t graph_clock = 0;
++    int      graph_capacity = 64;   // McBopomofoLM sets 32 (SlothERuntime.mm)
++    uint64_t graph_builds = 0;
++
+     ggml_tensor * get(const std::string & name) const {
+         auto it = tensors.find(name);
+         if (it == tensors.end()) {
+@@ -133,10 +154,17 @@
+     fclose(f);
+     gguf_free(gguf);
+     return m;
++}
++
++static void slothe_free_graph(slothe_model::graph_entry & e) {
++    if (e.galloc) { ggml_gallocr_free(e.galloc); e.galloc = nullptr; }
++    if (e.ctx)    { ggml_free(e.ctx); e.ctx = nullptr; }
+ }
+ 
+ void slothe_free(slothe_model * m) {
+     if (!m) return;
++    for (auto & e : m->graphs) slothe_free_graph(e);
++    m->graphs.clear();
+     if (m->galloc) ggml_gallocr_free(m->galloc);
+     if (m->ctx_c)  ggml_free(m->ctx_c);
+     if (m->buf_w) ggml_backend_buffer_free(m->buf_w);
+@@ -293,31 +321,61 @@
+ 
+ // ---------------- public logits API ----------------
+ void slothe_logits(slothe_model * m, const int32_t * syl_ids, int T, float * out_logits) {
+-    // (Re)build the graph only when T changes. Metadata-only context (no_alloc=true),
+-    // so this is graph structs, not the compute buffer — the galloc owns that and is
+-    // reused across calls of the same length.
+-    if (m->cached_T != T || !m->gf) {
+-        if (m->galloc) { ggml_gallocr_free(m->galloc); m->galloc = nullptr; }
+-        if (m->ctx_c)  { ggml_free(m->ctx_c); m->ctx_c = nullptr; }
+-        ggml_init_params ip = { (size_t)16*1024*1024, nullptr, /*no_alloc=*/true };
+-        m->ctx_c = ggml_init(ip);
+-        fwd_nodes nd;
+-        m->gf = build_forward_graph(m->ctx_c, *m, T, nd);
+-        m->c_syl = nd.syl_in; m->c_pos = nd.pos_in; m->c_logits = nd.logits;
+-        m->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m->backend));
+-        ggml_gallocr_alloc_graph(m->galloc, m->gf);
+-        m->cached_T = T;
++    // McBopomofoLM patch: look up (or build) the graph for this T in a per-length LRU cache.
++    // Metadata-only context (no_alloc=true); each entry's galloc owns its compute buffer.
++    slothe_model::graph_entry * g = nullptr;
++    for (auto & e : m->graphs) {
++        if (e.T == T) { g = &e; break; }
++    }
++    if (!g) {
++        while (!m->graphs.empty() && (int) m->graphs.size() >= m->graph_capacity) {
++            auto lru = std::min_element(m->graphs.begin(), m->graphs.end(),
++                [](const slothe_model::graph_entry & a, const slothe_model::graph_entry & b) { return a.last_use < b.last_use; });
++            slothe_free_graph(*lru);
++            m->graphs.erase(lru);
++        }
++        slothe_model::graph_entry e;
++        e.T = T;
++        ggml_init_params ip = { ggml_tensor_overhead()*GGML_DEFAULT_GRAPH_SIZE + ggml_graph_overhead(), nullptr, /*no_alloc=*/true };
++        e.ctx = ggml_init(ip);
++        fwd_nodes nd;
++        e.gf = build_forward_graph(e.ctx, *m, T, nd);
++        e.syl = nd.syl_in; e.pos = nd.pos_in; e.logits = nd.logits;
++        e.galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(m->backend));
++        ggml_gallocr_alloc_graph(e.galloc, e.gf);
++        m->graphs.push_back(e);
++        g = &m->graphs.back();
++        ++m->graph_builds;
+     }
++    g->last_use = ++m->graph_clock;
+ 
+     std::vector<int32_t> pos(T);
+     for (int i = 0; i < T; ++i) pos[i] = i;
+-    ggml_backend_tensor_set(m->c_syl, syl_ids, 0, T*sizeof(int32_t));
+-    ggml_backend_tensor_set(m->c_pos, pos.data(), 0, T*sizeof(int32_t));
++    ggml_backend_tensor_set(g->syl, syl_ids, 0, T*sizeof(int32_t));
++    ggml_backend_tensor_set(g->pos, pos.data(), 0, T*sizeof(int32_t));
+ 
+-    ggml_backend_graph_compute(m->backend, m->gf);
+-    ggml_backend_tensor_get(m->c_logits, out_logits, 0, (size_t)T*m->hp.n_char*sizeof(float));
++    ggml_backend_graph_compute(m->backend, g->gf);
++    ggml_backend_tensor_get(g->logits, out_logits, 0, (size_t)T*m->hp.n_char*sizeof(float));
+ }
+ 
++void slothe_set_graph_cache_capacity(slothe_model * m, int capacity) {
++    m->graph_capacity = capacity < 1 ? 1 : capacity;
++    while ((int) m->graphs.size() > m->graph_capacity) {
++        auto lru = std::min_element(m->graphs.begin(), m->graphs.end(),
++            [](const slothe_model::graph_entry & a, const slothe_model::graph_entry & b) { return a.last_use < b.last_use; });
++        slothe_free_graph(*lru);
++        m->graphs.erase(lru);
++    }
++}
++
++void slothe_graph_cache_stats(const slothe_model * m, int * n_graphs, size_t * compute_bytes, uint64_t * builds) {
++    size_t bytes = 0;
++    for (const auto & e : m->graphs) bytes += ggml_gallocr_get_buffer_size(e.galloc, 0);
++    if (n_graphs) *n_graphs = (int) m->graphs.size();
++    if (compute_bytes) *compute_bytes = bytes;
++    if (builds) *builds = m->graph_builds;
++}
++
+ // ================= validation harness =================
+ static std::string BASE; // slothe_port dir
+ 
+--- slothe.h.upstream	2026-09-22 02:02:52
++++ slothe.h	2026-09-22 02:03:15
+@@ -1,5 +1,6 @@
+ // slothe.h — reusable core API for the slothe ggml forward pass.
+ #pragma once
++#include <cstddef>
+ #include <cstdint>
+ 
+ struct slothe_model;
+@@ -9,3 +10,6 @@
+ int            slothe_n_char(const slothe_model * m);
+ // out_logits: caller-owned buffer of T * n_char floats, row-major [T][n_char].
+ void           slothe_logits(slothe_model * m, const int32_t * syl_ids, int T, float * out_logits);
++// McBopomofoLM patch: per-length compute-graph cache (LRU) controls and stats.
++void           slothe_set_graph_cache_capacity(slothe_model * m, int capacity);
++void           slothe_graph_cache_stats(const slothe_model * m, int * n_graphs, size_t * compute_bytes, uint64_t * builds);
