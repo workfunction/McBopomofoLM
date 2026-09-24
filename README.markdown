@@ -30,6 +30,39 @@
 - `runtime/`：app 實際打包的檔案，包括編譯好的 `.mlmodelc`、嵌入表和詞表，以及 `runtime-manifest.txt`。
 - `mlpackage/`：可以重新編譯的原檔。encoder 做 2-bit palettize，因為權重是三元的，所以沒有損失；decoder 是 fp16。兩個都是 multifunction，分成多個固定長度的版本。
 
+## 下載安裝（約 5 分鐘，大部分時間在等待）
+
+到 [Releases](https://github.com/workfunction/McBopomofoLM/releases) 下載 `McBopomofoLM-v2.1.1-arm64.zip`，解壓縮後就是 `McBopomofoLM.app`，模型已經包在裡面。需求：Apple Silicon、macOS 15 以上。
+
+0. 先切換到別的輸入法（例如 ABC），等步驟 3 跑完再切回來。
+1. 移除隔離標記。這個 app 只做了 ad-hoc 簽署，沒有經過 Apple 公證，不移除的話 macOS 會擋住：
+   ```bash
+   xattr -dr com.apple.quarantine McBopomofoLM.app
+   ```
+2. 放進輸入法目錄（如果裝過舊版，會先刪掉）：
+   ```bash
+   pkill -x McBopomofoLM; rm -rf ~/Library/Input\ Methods/McBopomofoLM.app
+   ditto McBopomofoLM.app ~/Library/Input\ Methods/McBopomofoLM.app
+   ```
+3. 為 Neural Engine 編譯模型並註冊輸入法（1–3 分鐘，請等它跑完）：
+   ```bash
+   ~/Library/Input\ Methods/McBopomofoLM.app/Contents/MacOS/McBopomofoLM install
+   ```
+   最後一行出現 `both models run on the Neural Engine` 就是成功了。
+4. 到「系統設定 → 鍵盤 → 輸入方式 → 編輯… → ＋ → 繁體中文」，加入「注音 LM」（咖啡色 ㄅ）。
+
+裝好之後不要搬動或改名 app，因為 macOS 的 Neural Engine 編譯快取綁定 app 路徑。
+
+**確認模型跑在 ANE 上**：打開 `~/Library/Application Support/McBopomofoLM/latency.log`，`R` 開頭的行會寫 `encoder ane ok`、`decoder ane ok`，後面是 ANE 執行的運算比例。
+
+**移除**：先在「系統設定 → 鍵盤 → 輸入方式」移除「注音 LM」，然後：
+```bash
+pkill -x McBopomofoLM; rm -rf ~/Library/Input\ Methods/McBopomofoLM.app
+# 選做：連設定、詞庫、快取一起刪
+rm -rf ~/Library/Application\ Support/McBopomofoLM ~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM
+defaults delete org.openvanilla.inputmethod.McBopomofoLM
+```
+
 ## 自行編譯
 
 需求：Apple Silicon、macOS 15 以上（執行）；Xcode 26 以上（編譯）。
@@ -44,8 +77,7 @@
    xcodebuild -project McBopomofo.xcodeproj -scheme McBopomofo -configuration Release \
      -derivedDataPath build/DerivedData -destination 'platform=macOS,arch=arm64' build
    ```
-3. 安裝：把 `McBopomofoLM.app` 放到 `~/Library/Input Methods/`，執行一次 `McBopomofoLM.app/Contents/MacOS/McBopomofoLM install`。這一步會先把模型編譯給 ANE（約 1–3 分鐘），再註冊輸入法。最後一行出現 `both models run on the Neural Engine` 就表示成功。
-4. 到「系統設定 → 鍵盤 → 輸入方式」加入「注音 LM」。
+3. 安裝：編譯產出的 `McBopomofoLM.app` 照上面「下載安裝」的步驟 2–4 安裝（自己編譯的不需要步驟 1）。
 
 安裝後不要搬動或改名 app，因為 macOS 的 ANE 編譯快取綁定 app 路徑。
 
