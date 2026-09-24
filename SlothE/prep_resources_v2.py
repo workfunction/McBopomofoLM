@@ -75,12 +75,12 @@ def main():
     shutil.copyfile(TOKENIZER, OUT / "dec_tokenizer.json")
     assert (OUT / "enc25m_embed_f16.bin").stat().st_size == 1539 * 352 * 2
     (OUT / "NOTICE.txt").write_text(
-        "McBopomofoLM v2 bundles third-party parts (side-by-side test build, not for redistribution):\n"
+        "McBopomofoLM v2 bundles third-party parts (side-by-side build next to stock McBopomofo):\n"
         "- SlothE-T 25M encoder (enc25m.mlmodelc, enc25m_embed_f16.bin; converted to Core ML from the published "
         "weights) and its syl_vocab / syl2legal tables: huggingface.co/Luigi/sloth-ime-models, Apache-2.0.\n"
         "- SlothE decoder pred_q35_60m (dec60m.mlmodelc, dec_tokenizer.json; converted to Core ML from the published "
         "weights): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.\n"
-        "- char2id table: github.com/vieenrose/sloth-zhuyin-linux, which has no LICENSE file; license status unresolved.\n"
+        "- char2id table (char2id.tsv, converted from enc/char2id.json): huggingface.co/spaces/Luigi/slothing-web, Apache-2.0.\n"
         "- Orthographic variant classes derived from OpenCC TWVariants.txt / HKVariants.txt, Apache-2.0 "
         "(OpenCC-LICENSE.txt).\n"
         "v2 runs the models with Core ML on the Apple Neural Engine only. It contains no ggml, llama.cpp or "
