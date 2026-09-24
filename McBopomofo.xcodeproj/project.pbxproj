@@ -1036,6 +1036,8 @@
 		6A0D4E9915FC0CFA00ABF4B3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				LM_CONNECTION_NAME = McBopomofoLM_1_Connection;
+				LM_INPUT_SOURCE_ID = org.openvanilla.inputmethod.McBopomofoLM;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MCBOPOMOFO_LM_OFFLINE";
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -1083,6 +1085,8 @@
 		6A0D4E9A15FC0CFA00ABF4B3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				LM_CONNECTION_NAME = McBopomofoLM_1_Connection;
+				LM_INPUT_SOURCE_ID = org.openvanilla.inputmethod.McBopomofoLM;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) MCBOPOMOFO_LM_OFFLINE";
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -1129,6 +1133,14 @@
 		6A0D4EBE15FC0D2E00ABF4B3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				INFOPLIST_PREPROCESS = YES;
+				INFOPLIST_PREPROCESSOR_DEFINITIONS = "LM_MODE_ID_PREFIX=org.openvanilla.inputmethod.McBopomofoLM.dev";
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"MCBOPOMOFO_LM_DEV_IDS=1",
+				);
+				LM_CONNECTION_NAME = McBopomofoLMDev_1_Connection;
+				LM_INPUT_SOURCE_ID = org.openvanilla.inputmethod.McBopomofoLM.dev;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",
@@ -1197,6 +1209,8 @@
 		6A0D4EBF15FC0D2E00ABF4B3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				INFOPLIST_PREPROCESS = YES;
+				INFOPLIST_PREPROCESSOR_DEFINITIONS = "LM_MODE_ID_PREFIX=org.openvanilla.inputmethod.McBopomofoLM";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",

@@ -6,9 +6,9 @@
 //
 // Core ML falls back to the CPU silently when an ANE compile fails, so
 // placement is verified after load, per function:
-//   * MLComputePlan (macOS 14.4+): the share of the estimated cost that is on
-//     the Neural Engine must be >= minANECostPercent (the models measure
-//     100% encoder, 85-95% decoder; the rest is the decoder's id gather);
+//   * MLComputePlan: the share of each function's estimated cost that is on
+//     the Neural Engine must be >= 99% (encoder; measures 100%) or >= 80%
+//     (decoder; measures 85.6-94.9%, the rest is the token-id gather);
 //   * a latency probe (median of 5 warm predictions of the smallest function)
 //     must be under the model's limit (encoder 10 ms, decoder 15 ms; ANE
 //     measures ~1 and ~3 ms, a decoder CPU fallback 18+ ms).
@@ -32,14 +32,6 @@ namespace McBopomofoSlothE {
 
 enum class ComputeUnits { kCPUAndNeuralEngine, kCPUOnly };  // kCPUOnly: tests only
 
-struct CoreMLLoadOptions {
-  ComputeUnits units = ComputeUnits::kCPUAndNeuralEngine;
-  double minANECostPercent = 50.0;
-  double encoderProbeLimitMs = 10.0;
-  double decoderProbeLimitMs = 15.0;
-  std::function<void(const std::string&)> progress;  // human-readable lines (install)
-};
-
 struct CoreMLLoadInfo {
   bool ok = false;           // loaded AND on the ANE
   std::string reason;        // fixed token: ok, macos, missing, load_error, not_on_ane, probe_slow, ...
@@ -47,16 +39,38 @@ struct CoreMLLoadInfo {
   double loadMs = 0;         // all functions (includes the ANE compile when the cache is cold)
   std::vector<std::pair<std::string, double>> functionLoadMs;
   double aneCostPercent = -1;  // lowest over the functions; -1 = MLComputePlan unavailable
+  std::vector<std::pair<std::string, double>> functionANEPercent;  // per function, as measured
   double planMs = 0;
   double probeMs = -1;
   bool planChecked = false;
+};
+
+struct CoreMLLoadOptions {
+  ComputeUnits units = ComputeUnits::kCPUAndNeuralEngine;
+  // Placement gate (v2.1): share of each function's estimated cost that
+  // MLComputePlan puts on the Neural Engine. Measured: encoder 100% (every
+  // function), decoder 85.6-94.9% (the rest is the token-id gather). Below
+  // the gate = the model is not used.
+  double minEncoderANECostPercent = 99.0;
+  double minDecoderANECostPercent = 80.0;
+  double encoderProbeLimitMs = 10.0;
+  double decoderProbeLimitMs = 15.0;
+  std::function<void(const std::string&)> progress;  // human-readable lines (install)
+  // v2.1 decoder: functions (sequence lengths) loaded up front; empty = all
+  // (install). Others load lazily on first need through runLater (the
+  // runtime's background load queue) and report through onLazyLoad.
+  std::vector<size_t> decoderLengthsAtLoad;
+  std::function<void(std::function<void()>)> runLater;
+  std::function<void(size_t, const CoreMLLoadInfo&)> onLazyLoad;
+  ComputeUnits lazyUnits = ComputeUnits::kCPUAndNeuralEngine;  // tests: kCPUOnly
 };
 
 // enc25m.mlmodelc (functions L8/L16/L32/L64/L256) + enc25m_embed_f16.bin.
 std::unique_ptr<EncoderBackend> LoadCoreMLEncoder(const std::string& resourceDir,
                                                   const CoreMLLoadOptions& options,
                                                   CoreMLLoadInfo* info);
-// dec60m.mlmodelc (functions t16/t32/t64/t96, batch 3).
+// dec60m.mlmodelc (functions t16/t32/t64/t96, batch 3): loads
+// options.decoderLengthsAtLoad (empty = all); the others lazily, see above.
 std::unique_ptr<DecoderBackend> LoadCoreMLDecoder(const std::string& resourceDir,
                                                   const CoreMLLoadOptions& options,
                                                   CoreMLLoadInfo* info);

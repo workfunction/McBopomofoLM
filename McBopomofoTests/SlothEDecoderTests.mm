@@ -646,3 +646,204 @@ static void Damage(NSString *path, SlothEDamage damage)
 }
 
 @end
+
+// v2.1: decoder t32 / t64 / t96 load lazily, on first need, on the background
+// load queue; until then a request that needs one gets no decoder decision.
+// Fresh runtimes (not the shared, fully loaded one), models from the bundle.
+@interface SlothELazyDecoderTests : XCTestCase
+@end
+
+@implementation SlothELazyDecoderTests
+
+static NSString *LazyTempLog(void)
+{
+    NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    return [dir stringByAppendingPathComponent:@"latency.log"];
+}
+
+static NSArray<NSArray<NSString *> *> *RuntimeRows(NSString *log)
+{
+    NSString *text = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSString *line in [text componentsSeparatedByString:@"\n"]) {
+        if ([line hasPrefix:@"R\t"]) {
+            [rows addObject:[line componentsSeparatedByString:@"\t"]];
+        }
+    }
+    return rows;
+}
+
+static BOOL WaitUntil(BOOL (^done)(void), double seconds)
+{
+    auto t0 = std::chrono::steady_clock::now();
+    while (!done()) {
+        if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > seconds) {
+            return NO;
+        }
+        [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    return YES;
+}
+
+- (void)testLongerFunctionsLoadOnFirstNeedAndThenMatchTheReference
+{
+    NSString *log = LazyTempLog();
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:log];
+    auto t0 = std::chrono::steady_clock::now();
+    XCTAssertTrue([runtime loadSynchronously]);
+    double readyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    XCTAssertTrue(runtime.decoderLoaded);
+    XCTAssertEqualObjects(runtime.decoderLoadedLengths, @[ @16 ], @"only t16 at start-up");
+    Decoder *decoder = [runtime decoder];
+    // one reference call per longer function (v2_dec_long.jsonl, same compiled model via coremltools)
+    std::map<size_t, NSDictionary *> byT;
+    for (NSDictionary *row in FixtureRows(@"v2_dec_long.jsonl")) {
+        size_t T = [row[@"T"] unsignedIntegerValue];
+        if (T > 16 && byT.count(T) == 0) {
+            byT[T] = row;
+        }
+    }
+    XCTAssertEqual(byT.size(), 3u);
+    NSMutableArray *report = [NSMutableArray array];
+    NSUInteger requestsBefore = runtime.decoderLazyLoadsRequested;
+    for (const auto &entry : byT) {
+        const size_t T = entry.first;
+        NSDictionary *row = entry.second;
+        std::vector<std::string> cands;
+        for (NSString *c in row[@"cands"]) {
+            cands.emplace_back(c.UTF8String);
+        }
+        std::string ctx([row[@"ctx"] UTF8String]);
+        std::vector<double> scores;
+        DecoderCallStats st;
+        auto trigger = std::chrono::steady_clock::now();
+        XCTAssertFalse(decoder->score(ctx, cands, &scores, &st), @"t%zu must not be loaded yet", T);
+        XCTAssertTrue(st.unavailable);
+        XCTAssertEqual(st.length, T);
+        XCTAssertFalse(decoder->score(ctx, cands, &scores, &st));  // a second request while loading: no second load
+        XCTAssertTrue(WaitUntil(^{ return [runtime.decoderLoadedLengths containsObject:@(T)]; }, 120), @"t%zu never loaded", T);
+        double availableMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - trigger).count();
+        auto p0 = std::chrono::steady_clock::now();
+        XCTAssertTrue(decoder->score(ctx, cands, &scores, &st));
+        double firstCallMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
+        XCTAssertEqual(st.length, T);
+        NSArray *want = row[@"scores"];
+        for (size_t k = 0; k < scores.size(); ++k) {
+            XCTAssertEqual(scores[k], [want[k] doubleValue], @"t%zu cand %zu", T, k);
+        }
+        NSDictionary *info = [runtime lazyLoadSummaryForLength:static_cast<NSInteger>(T)];
+        [report addObject:[NSString stringWithFormat:@"t%zu: trigger->usable %.0f ms (load %.0f, plan %.0f, probe %.2f ms, ANE %.1f%%), first real call %.2f ms",
+                                                     T, availableMs, [info[@"loadMs"] doubleValue], [info[@"planMs"] doubleValue], [info[@"probeMs"] doubleValue],
+                                                     [info[@"aneCostPercent"] doubleValue], firstCallMs]];
+    }
+    XCTAssertEqual(runtime.decoderLazyLoadsRequested - requestsBefore, 3u, @"one load per function");
+    XCTAssertEqual(runtime.decoderLazyLoadsDone, 3u);
+    XCTAssertGreaterThanOrEqual(runtime.decoderUnavailableRequests, 6u);
+    XCTAssertEqualObjects(runtime.decoderLoadedLengths, (@[ @16, @32, @64, @96 ]));
+    [runtime flushLog];
+    NSMutableArray *lazyRows = [NSMutableArray array];
+    for (NSArray<NSString *> *r in RuntimeRows(log)) {
+        if ([r[2] hasPrefix:@"decoder.t"]) {
+            XCTAssertEqualObjects(r[3], @"ane");
+            XCTAssertEqualObjects(r[4], @"ok");
+            [lazyRows addObject:r[2]];
+        }
+    }
+    XCTAssertEqualObjects([lazyRows sortedArrayUsingSelector:@selector(compare:)], (@[ @"decoder.t32", @"decoder.t64", @"decoder.t96" ]));
+    NSLog(@"SLOTHE_V21 start-up to models ready (encoder all + decoder t16, warm cache) %.0f ms | %@ | %@", readyMs, runtime.placementSummary, [report componentsJoinedByString:@" | "]);
+    [NSFileManager.defaultManager removeItemAtPath:log.stringByDeletingLastPathComponent error:nil];
+}
+
+- (void)testPipelineNodeNeedingAnUnloadedFunctionIsEncoderOnlyThenCatchesUp
+{
+    // A 36-syllable buffer: late nodes have > 16 tokens of left context (need t32).
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:nil];
+    XCTAssertTrue([runtime loadSynchronously]);
+    SlothERuntime *full = SlothERuntime.sharedLoadedRuntimeForTesting;  // every function loaded
+    auto lm = std::make_shared<McBopomofo::McBopomofoLM>();
+    lm->loadLanguageModel([NSBundle.mainBundle pathForResource:@"data" ofType:@"txt"].fileSystemRepresentation);
+    std::vector<std::string> readings;
+    NSArray<NSDictionary *> *rows = FixtureRows(@"v2_parity.jsonl");
+    for (NSDictionary *row in rows) {
+        for (NSString *r in row[@"readings"]) {
+            readings.emplace_back(r.UTF8String);
+        }
+        if (readings.size() >= 36) {
+            break;
+        }
+    }
+    auto run = [&](SlothERuntime *rt, std::vector<WalkPin> *pins) {
+        auto grid = std::make_unique<SlothEGrid>(lm);
+        grid->setReadingSeparator("-");
+        for (const auto &r : readings) {
+            grid->insertReading(r);
+        }
+        DecoderScoreCache cache;
+        PipelineSlot slot;
+        slot.latestRequested.store(1);
+        PipelineConfig config;
+        config.useDecoder = true;
+        config.decoder = [rt decoderParams];
+        PipelineResult res = RunPipeline([rt engine], [rt decoder], &cache, &slot, config, 1, readings, grid->snapshot().get(), 0);
+        *pins = res.pins;
+        auto w = grid->rescoredWalk(*res.encoder, [rt engine]->vocabulary(), [rt engine]->variants(), [rt inWalkParams], nullptr, &res.pins, nullptr);
+        return McBopomofoSlothE::WalkText(w);
+    };
+    std::vector<WalkPin> wantPins, firstPins, laterPins;
+    std::string want = run(full, &wantPins);
+    NSUInteger before = runtime.decoderUnavailableRequests;
+    std::string first = run(runtime, &firstPins);
+    NSUInteger refused = runtime.decoderUnavailableRequests - before;
+    XCTAssertGreaterThan(refused, 0u, @"no node needed a longer function; lengthen the buffer");
+    XCTAssertTrue(WaitUntil(^{ return [runtime.decoderLoadedLengths containsObject:@32]; }, 120));
+    std::string later = run(runtime, &laterPins);
+    NSLog(@"SLOTHE_V21 pipeline %zu syllables: first pass %lu requests refused (no function yet), pins %zu vs %zu with all functions; after the lazy load pins %zu, text %s",
+          readings.size(), (unsigned long)refused, firstPins.size(), wantPins.size(), laterPins.size(), later == want ? "equal" : "DIFFERENT");
+    XCTAssertTrue(later == want, @"after the lazy load: %s vs %s", later.c_str(), want.c_str());
+    XCTAssertEqual(laterPins.size(), wantPins.size());
+}
+
+- (void)testLazyFunctionNotOnTheNeuralEngineStaysUnloaded
+{
+    NSString *log = LazyTempLog();
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:log];
+    runtime.lazyCPUOnlyForTesting = YES;
+    XCTAssertTrue([runtime loadSynchronously]);
+    Decoder *decoder = [runtime decoder];
+    NSDictionary *row = nil;
+    for (NSDictionary *r in FixtureRows(@"v2_dec_long.jsonl")) {
+        if ([r[@"T"] integerValue] == 32) {
+            row = r;
+            break;
+        }
+    }
+    std::vector<std::string> cands;
+    for (NSString *c in row[@"cands"]) {
+        cands.emplace_back(c.UTF8String);
+    }
+    std::vector<double> scores;
+    DecoderCallStats st;
+    XCTAssertFalse(decoder->score(std::string([row[@"ctx"] UTF8String]), cands, &scores, &st));
+    XCTAssertTrue(WaitUntil(^{ return runtime.decoderLazyLoadsFailed == 1; }, 120));
+    XCTAssertEqualObjects(runtime.decoderLoadedLengths, @[ @16 ]);
+    NSUInteger requested = runtime.decoderLazyLoadsRequested;
+    for (int k = 0; k < 3; ++k) {
+        XCTAssertFalse(decoder->score(std::string([row[@"ctx"] UTF8String]), cands, &scores, &st));
+        XCTAssertTrue(st.unavailable);
+    }
+    XCTAssertEqual(runtime.decoderLazyLoadsRequested, requested, @"a failed function is not retried");
+    XCTAssertTrue(decoder->score("大家看得到", { "嗎", "媽" }, &scores, &st), @"t16 keeps working");
+    [runtime flushLog];
+    NSArray<NSString *> *r32 = nil;
+    for (NSArray<NSString *> *r in RuntimeRows(log)) {
+        if ([r[2] isEqualToString:@"decoder.t32"]) {
+            r32 = r;
+        }
+    }
+    XCTAssertEqualObjects(r32[3], @"none");
+    XCTAssertEqualObjects(r32[4], @"not_on_ane");
+    NSLog(@"SLOTHE_V21 lazy t32 CPU-only: %@", [r32 componentsJoinedByString:@" "]);
+    [NSFileManager.defaultManager removeItemAtPath:log.stringByDeletingLastPathComponent error:nil];
+}
+
+@end

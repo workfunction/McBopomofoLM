@@ -10,6 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <map>
+#include <mutex>
+#include <set>
 
 namespace McBopomofoSlothE {
 
@@ -168,6 +171,18 @@ class CoreMLEncoderBackend : public EncoderBackend {
 
 constexpr size_t kDecLengths[] = {16, 32, 64, 96};
 
+// Probe limit for a decoder function of length T: 15 ms at t16 (ANE ~3 ms,
+// CPU fallback 18+ ms), scaled with T (ANE t96 ~8 ms).
+double DecoderProbeLimit(const CoreMLLoadOptions &options, size_t T) {
+  return options.decoderProbeLimitMs + (static_cast<double>(T) - 16.0) * 0.3125;
+}
+
+// v2.1: only the functions in options.decoderLengthsAtLoad are loaded up
+// front (t16 at start-up; all of them at install). A request for another
+// length is refused (no decoder decision for that node) and queues a
+// background load of that function via options.runLater; the function is
+// used once it has loaded AND passed its own placement check. A function
+// that fails is kept unloaded for the life of the process (no retry storm).
 class CoreMLDecoderBackend : public DecoderBackend {
  public:
   struct Fn {
@@ -176,18 +191,114 @@ class CoreMLDecoderBackend : public DecoderBackend {
     MLMultiArray *ids = nil;
     id<MLFeatureProvider> input = nil;
   };
-  std::vector<Fn> fns;
+  NSURL *url = nil;
+  CoreMLLoadOptions options;
   std::vector<size_t> lens;
+  mutable std::mutex mu;
+  std::map<size_t, Fn> fns;  // loaded and on the ANE
+  std::set<size_t> pending;
+  std::set<size_t> failed;
 
   const std::vector<size_t> &lengths() const override { return lens; }
 
-  bool logProbs(const std::vector<std::vector<int32_t>> &rows, size_t length,
-                std::vector<std::vector<float>> *lp) override {
-    auto it = std::find_if(fns.begin(), fns.end(), [length](const Fn &f) { return f.length == length; });
-    if (it == fns.end() || rows.size() > Decoder::kBatch) {
+  bool isLoaded(size_t length) const override {
+    std::lock_guard<std::mutex> lock(mu);
+    return fns.count(length) > 0;
+  }
+
+  std::vector<size_t> loadedLengths() const override {
+    std::lock_guard<std::mutex> lock(mu);
+    std::vector<size_t> out;
+    for (const auto &kv : fns) out.push_back(kv.first);
+    return out;
+  }
+
+  void requestLoad(size_t length) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      if (fns.count(length) || pending.count(length) || failed.count(length) || !options.runLater) {
+        return;
+      }
+      pending.insert(length);
+    }
+    options.runLater([this, length] {
+      CoreMLLoadInfo info;
+      bool ok = false;
+      if (@available(macOS 15.0, *)) {
+        ok = loadFunction(length, options.lazyUnits, &info);
+      }
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        pending.erase(length);
+        if (!ok) failed.insert(length);
+      }
+      if (options.onLazyLoad) options.onLazyLoad(length, info);
+    });
+  }
+
+  // Loads one function and checks its placement (MLComputePlan + probe).
+  bool loadFunction(size_t T, ComputeUnits units, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
+    CoreMLLoadOptions o = options;
+    o.units = units;
+    NSString *name = [NSString stringWithFormat:@"t%zu", T];
+    auto f0 = std::chrono::steady_clock::now();
+    NSError *error = nil;
+    MLModel *model = [MLModel modelWithContentsOfURL:url configuration:Config(o, name) error:&error];
+    double ms = MsSince(f0);
+    if (model == nil) {
+      info->reason = "load_error";
+      info->detail = error != nil ? std::string(error.localizedDescription.UTF8String) : "load failed";
       return false;
     }
-    Fn &f = *it;
+    info->functionLoadMs.emplace_back(name.UTF8String, ms);
+    info->loadMs += ms;
+    Progress(o, [NSString stringWithFormat:@"  decoder %@ ready in %.1f s", name, ms / 1000.0]);
+    Fn f;
+    f.length = T;
+    f.model = model;
+    f.ids = [[MLMultiArray alloc] initWithShape:@[ @(Decoder::kBatch), @(T) ] dataType:MLMultiArrayDataTypeInt32 error:&error];
+    if (f.ids == nil) {
+      info->reason = "load_error";
+      info->detail = "cannot allocate the inputs";
+      return false;
+    }
+    f.input = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"ids" : f.ids} error:&error];
+    std::vector<std::vector<float>> scratch;
+    std::vector<std::vector<int32_t>> rows(Decoder::kBatch, std::vector<int32_t>(T, 0));
+    for (size_t r = 0; r < rows.size(); ++r) {
+      rows[r][0] = 1;
+      rows[r][1] = static_cast<int32_t>(366 + r);
+    }
+    CheckPlacement(url, std::vector<NSString *> {name}, o, o.minDecoderANECostPercent, DecoderProbeLimit(o, T),
+                   [this, &f, &rows, &scratch] { return predict(f, rows, &scratch); }, info);
+    if (!info->ok) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    fns[T] = f;
+    return true;
+  }
+
+  bool logProbs(const std::vector<std::vector<int32_t>> &rows, size_t length,
+                std::vector<std::vector<float>> *lp) override {
+    Fn f;
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      auto it = fns.find(length);
+      if (it == fns.end()) {
+        return false;
+      }
+      f = it->second;
+    }
+    return predict(f, rows, lp);
+  }
+
+  bool predict(const Fn &f, const std::vector<std::vector<int32_t>> &rows,
+               std::vector<std::vector<float>> *lp) {
+    size_t length = f.length;
+    if (rows.size() > Decoder::kBatch) {
+      return false;
+    }
     @autoreleasepool {
       auto *x = static_cast<int32_t *>(f.ids.dataPointer);
       NSInteger r0 = f.ids.strides[0].integerValue;
@@ -223,14 +334,19 @@ class CoreMLDecoderBackend : public DecoderBackend {
       return ok;
     }
   }
+
+  template <typename Probe>
+  static void CheckPlacement(NSURL *url, const std::vector<NSString *> &functions, const CoreMLLoadOptions &options,
+                             double minPercent, double probeLimitMs, Probe probe, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0));
 };
 
 // Placement for every function of a loaded model + the latency probe.
 template <typename Probe>
 void CheckPlacement(NSURL *url, const std::vector<NSString *> &functions, const CoreMLLoadOptions &options,
-                    double probeLimitMs, Probe probe, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
+                    double minPercent, double probeLimitMs, Probe probe, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
   auto t0 = std::chrono::steady_clock::now();
   double lowest = 101;
+  NSMutableArray *parts = [NSMutableArray array];
   for (NSString *fn : functions) {
     double pct = 0;
     std::string err;
@@ -240,14 +356,16 @@ void CheckPlacement(NSURL *url, const std::vector<NSString *> &functions, const 
       return;
     }
     lowest = std::min(lowest, pct);
+    info->functionANEPercent.emplace_back(fn.UTF8String, pct);
+    [parts addObject:[NSString stringWithFormat:@"%@ %.1f%%", fn, pct]];
   }
   info->planChecked = true;
   info->aneCostPercent = lowest;
   info->planMs = MsSince(t0);
-  Progress(options, [NSString stringWithFormat:@"  placement (MLComputePlan): %.1f%% of the estimated cost on the Neural Engine (lowest function), %.1f s", lowest, info->planMs / 1000.0]);
-  if (lowest < options.minANECostPercent) {
+  Progress(options, [NSString stringWithFormat:@"  placement (MLComputePlan), estimated cost on the Neural Engine: %@ (gate %.0f%%), %.1f s", [parts componentsJoinedByString:@", "], minPercent, info->planMs / 1000.0]);
+  if (lowest < minPercent) {
     info->reason = "not_on_ane";
-    info->detail = "MLComputePlan puts the model on the CPU";
+    info->detail = "MLComputePlan puts part of the model on the CPU/GPU above the gate";
     return;
   }
   probe();  // warm (wake) call
@@ -270,6 +388,12 @@ void CheckPlacement(NSURL *url, const std::vector<NSString *> &functions, const 
   }
   info->ok = true;
   info->reason = "ok";
+}
+
+template <typename Probe>
+void CoreMLDecoderBackend::CheckPlacement(NSURL *url, const std::vector<NSString *> &functions, const CoreMLLoadOptions &options,
+                                          double minPercent, double probeLimitMs, Probe probe, CoreMLLoadInfo *info) {
+  McBopomofoSlothE::CheckPlacement(url, functions, options, minPercent, probeLimitMs, probe, info);
 }
 
 }  // namespace
@@ -324,7 +448,7 @@ std::unique_ptr<EncoderBackend> LoadCoreMLEncoder(const std::string &dir, const 
     info->loadMs = MsSince(t0);
     CoreMLEncoderBackend *b = backend.get();
     std::vector<float> scratch;
-    CheckPlacement(url, names, options, options.encoderProbeLimitMs,
+    CheckPlacement(url, names, options, options.minEncoderANECostPercent, options.encoderProbeLimitMs,
                    [b, &scratch] { return b->logits(std::vector<int32_t> {1}, &scratch); }, info);
     if (!info->ok) {
       return nullptr;
@@ -341,49 +465,34 @@ std::unique_ptr<DecoderBackend> LoadCoreMLDecoder(const std::string &dir, const 
   *info = CoreMLLoadInfo();
   if (@available(macOS 15.0, *)) {
     auto backend = std::make_unique<CoreMLDecoderBackend>();
-    NSURL *url = [NSURL fileURLWithPath:Path(dir, kDecoderModelName)];
+    backend->url = [NSURL fileURLWithPath:Path(dir, kDecoderModelName)];
+    backend->options = options;
+    backend->lens.assign(std::begin(kDecLengths), std::end(kDecLengths));
+    std::vector<size_t> atLoad = options.decoderLengthsAtLoad.empty() ? backend->lens : options.decoderLengthsAtLoad;
     auto t0 = std::chrono::steady_clock::now();
-    std::vector<NSString *> names;
-    for (size_t T : kDecLengths) {
-      NSString *fn = [NSString stringWithFormat:@"t%zu", T];
-      auto f0 = std::chrono::steady_clock::now();
-      NSError *error = nil;
-      MLModel *model = [MLModel modelWithContentsOfURL:url configuration:Config(options, fn) error:&error];
-      double ms = MsSince(f0);
-      if (model == nil) {
-        info->reason = "load_error";
-        info->detail = error != nil ? std::string(error.localizedDescription.UTF8String) : "load failed";
+    double lowest = 101;
+    double planMs = 0;
+    double probeMs = -1;
+    for (size_t T : atLoad) {
+      CoreMLLoadInfo one;
+      if (!backend->loadFunction(T, options.units, &one)) {
+        *info = one;
+        info->loadMs = MsSince(t0);
         return nullptr;
       }
-      info->functionLoadMs.emplace_back(fn.UTF8String, ms);
-      Progress(options, [NSString stringWithFormat:@"  decoder %@ ready in %.1f s", fn, ms / 1000.0]);
-      CoreMLDecoderBackend::Fn f;
-      f.length = T;
-      f.model = model;
-      f.ids = [[MLMultiArray alloc] initWithShape:@[ @(Decoder::kBatch), @(T) ] dataType:MLMultiArrayDataTypeInt32 error:&error];
-      if (f.ids == nil) {
-        info->reason = "load_error";
-        info->detail = "cannot allocate the inputs";
-        return nullptr;
-      }
-      f.input = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"ids" : f.ids} error:&error];
-      backend->fns.push_back(f);
-      backend->lens.push_back(T);
-      names.push_back(fn);
+      info->functionLoadMs.insert(info->functionLoadMs.end(), one.functionLoadMs.begin(), one.functionLoadMs.end());
+      info->functionANEPercent.insert(info->functionANEPercent.end(), one.functionANEPercent.begin(), one.functionANEPercent.end());
+      lowest = std::min(lowest, one.aneCostPercent);
+      planMs += one.planMs;
+      if (T == atLoad.front()) probeMs = one.probeMs;
     }
+    info->ok = true;
+    info->reason = "ok";
+    info->planChecked = true;
+    info->aneCostPercent = lowest;
+    info->planMs = planMs;
+    info->probeMs = probeMs;
     info->loadMs = MsSince(t0);
-    CoreMLDecoderBackend *b = backend.get();
-    std::vector<std::vector<float>> scratch;
-    std::vector<std::vector<int32_t>> probeRows(Decoder::kBatch, std::vector<int32_t>(16, 0));
-    for (size_t r = 0; r < probeRows.size(); ++r) {
-      probeRows[r][0] = 1;
-      probeRows[r][1] = static_cast<int32_t>(366 + r);
-    }
-    CheckPlacement(url, names, options, options.decoderProbeLimitMs,
-                   [b, &scratch, &probeRows] { return b->logProbs(probeRows, 16, &scratch); }, info);
-    if (!info->ok) {
-      return nullptr;
-    }
     return backend;
   }
   info->reason = "macos";

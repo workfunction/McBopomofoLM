@@ -18,6 +18,7 @@
 #ifndef SOURCE_SLOTHE_SLOTHEDECODER_H_
 #define SOURCE_SLOTHE_SLOTHEDECODER_H_
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -64,12 +65,17 @@ class DecoderBackend {
   virtual bool logProbs(const std::vector<std::vector<int32_t>>& rows,
                         size_t length,
                         std::vector<std::vector<float>>* lp) = 0;
+  // v2.1 lazy functions: a length may be listed but not loaded yet.
+  virtual bool isLoaded(size_t length) const { return true; }
+  virtual std::vector<size_t> loadedLengths() const { return lengths(); }
+  virtual void requestLoad(size_t length) {}
 };
 
 struct DecoderCallStats {
   double milliseconds = 0;
   size_t length = 0;      // model function used (16 / 32 / 64 / 96)
   size_t maxTokens = 0;   // longest sequence, <bos> included
+  bool unavailable = false;  // the function for `length` is not loaded (yet): no scores
 };
 
 class Decoder {
@@ -94,6 +100,10 @@ class Decoder {
       const std::vector<std::string>& candidates) const;
   // One throw-away call (prewarm after idle): <bos> + tokenize("的").
   bool prewarm(double* milliseconds);
+  // v2.1: requests refused because their function was not loaded yet (each
+  // one queued a background load of that function).
+  uint64_t unavailableCount() const { return unavailable_.load(); }
+  std::vector<size_t> loadedLengths() const;
 
   static constexpr size_t kMaxContextChars = 64;
   static constexpr size_t kBatch = 3;
@@ -104,6 +114,7 @@ class Decoder {
   int32_t bos_ = 1;
   int32_t pad_ = 0;
   std::mutex mutex_;
+  std::atomic<uint64_t> unavailable_{0};
 };
 
 // The last maxChars code points of s.
