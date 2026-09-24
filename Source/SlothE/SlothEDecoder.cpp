@@ -1,21 +1,17 @@
-// SlothE decoder scorer for McBopomofoLM (phase 3). See SlothEDecoder.h.
-// Line references are to scratch/ime-lm-poc/walk2/dec_inc.cpp.
+// SlothE decoder for McBopomofoLM v2 (Core ML backend). See SlothEDecoder.h.
 
 #include "SlothEDecoder.h"
+
+#include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdint>
 #include <limits>
-
-#include "llama.h"
 
 namespace McBopomofoSlothE {
 
 namespace {
-
-std::once_flag gBackendOnce;
 
 size_t Utf8Lead(unsigned char c) {
   if (c < 0x80) {
@@ -33,7 +29,68 @@ size_t Utf8Lead(unsigned char c) {
   return 1;
 }
 
-// The last maxChars code points of s.
+std::string EncodeUtf8(uint32_t cp) {
+  std::string out;
+  if (cp < 0x80) {
+    out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+  return out;
+}
+
+// One code point of s at byte i (invalid bytes decode to themselves).
+uint32_t DecodeAt(const std::string& s, size_t i, size_t* len) {
+  auto c = static_cast<unsigned char>(s[i]);
+  size_t n = Utf8Lead(c);
+  if (n == 1 || i + n > s.size()) {
+    *len = 1;
+    return c;
+  }
+  uint32_t cp = c & (0xFF >> (n + 1));
+  for (size_t k = 1; k < n; ++k) {
+    cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+  }
+  *len = n;
+  return cp;
+}
+
+// Unicode classes of the GPT-2 pattern, from CoreFoundation's predefined sets:
+// \p{L} = letter (L* + M*) minus non-base (M*); \p{N} = alphanumeric (L* M* N*)
+// minus letter; \s = whitespace-and-newline (Z*, U+0009..U+000D, U+0085).
+enum class CharClass { kLetter, kNumber, kSpace, kOther };
+
+CharClass ClassOf(uint32_t cp) {
+  static CFCharacterSetRef letter = CFCharacterSetGetPredefined(kCFCharacterSetLetter);
+  static CFCharacterSetRef nonBase = CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
+  static CFCharacterSetRef alnum = CFCharacterSetGetPredefined(kCFCharacterSetAlphaNumeric);
+  static CFCharacterSetRef space = CFCharacterSetGetPredefined(kCFCharacterSetWhitespaceAndNewline);
+  auto c = static_cast<UTF32Char>(cp);
+  if (CFCharacterSetIsLongCharacterMember(space, c)) {
+    return CharClass::kSpace;
+  }
+  bool isLetterOrMark = CFCharacterSetIsLongCharacterMember(letter, c);
+  if (isLetterOrMark && !CFCharacterSetIsLongCharacterMember(nonBase, c)) {
+    return CharClass::kLetter;
+  }
+  if (!isLetterOrMark && CFCharacterSetIsLongCharacterMember(alnum, c)) {
+    return CharClass::kNumber;
+  }
+  return CharClass::kOther;
+}
+
+}  // namespace
+
 std::string TailChars(const std::string& s, size_t maxChars) {
   std::vector<size_t> starts;
   for (size_t i = 0; i < s.size();) {
@@ -46,264 +103,277 @@ std::string TailChars(const std::string& s, size_t maxChars) {
   return s.substr(starts[starts.size() - maxChars]);
 }
 
-}  // namespace
+// ------------------------------------------------------------- BpeTokenizer
 
-struct Decoder::Impl {
-  llama_model* model = nullptr;
-  llama_context* ctx = nullptr;
-  const llama_vocab* vocab = nullptr;
-  llama_memory_t mem = nullptr;
-  llama_batch batch{};
-  int nVocab = 0;
-  int nCtx = 0;
-  int nSeq = 0;
-  std::vector<llama_token> held;     // tokens held by seq 0 (incl. <bos>)
-  std::vector<float> lastLogp;       // log-softmax at held.back()
-
-  ~Impl() {
-    if (batch.token != nullptr) {
-      llama_batch_free(batch);
-    }
-    if (ctx != nullptr) {
-      llama_free(ctx);
-    }
-    if (model != nullptr) {
-      llama_model_free(model);
-    }
+void BpeTokenizer::load(
+    std::unordered_map<std::string, int32_t> vocab,
+    const std::vector<std::pair<std::string, std::string>>& merges,
+    const std::vector<std::pair<std::string, int32_t>>& special, int32_t unk) {
+  vocab_ = std::move(vocab);
+  ranks_.clear();
+  for (size_t r = 0; r < merges.size(); ++r) {
+    ranks_.emplace(merges[r].first + '\x01' + merges[r].second, static_cast<int32_t>(r));
   }
-
-  std::vector<llama_token> tokenize(const std::string& text) const {
-    std::vector<llama_token> v(text.size() + 8);
-    int n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), v.data(),
-                           static_cast<int32_t>(v.size()), false, false);
-    if (n < 0) {
-      v.resize(static_cast<size_t>(-n));
-      n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()), v.data(),
-                         static_cast<int32_t>(v.size()), false, false);
-    }
-    v.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return v;
-  }
-
-  void logSoftmax(const float* logits, std::vector<float>* out) const {
-    out->resize(static_cast<size_t>(nVocab));
-    float mx = logits[0];
-    for (int i = 1; i < nVocab; ++i) {
-      mx = std::max(mx, logits[i]);
-    }
-    double z = 0;
-    for (int i = 0; i < nVocab; ++i) {
-      z += std::exp(static_cast<double>(logits[i]) - mx);
-    }
-    auto lz = static_cast<float>(mx + std::log(z));
-    for (int i = 0; i < nVocab; ++i) {
-      (*out)[static_cast<size_t>(i)] = logits[i] - lz;
-    }
-  }
-
-  // dec_inc extend(): decode toks on seq 0 from position pos0, keep the last logits.
-  bool extend(const std::vector<llama_token>& toks, int pos0) {
-    batch.n_tokens = 0;
-    for (size_t i = 0; i < toks.size(); ++i) {
-      int j = batch.n_tokens++;
-      batch.token[j] = toks[i];
-      batch.pos[j] = pos0 + static_cast<int>(i);
-      batch.n_seq_id[j] = 1;
-      batch.seq_id[j][0] = 0;
-      batch.logits[j] = i + 1 == toks.size();
-    }
-    if (llama_decode(ctx, batch) != 0) {
-      return false;
-    }
-    logSoftmax(llama_get_logits_ith(ctx, batch.n_tokens - 1), &lastLogp);
-    return true;
-  }
-
-  void clearAll() {
-    llama_memory_clear(mem, true);
-    held.clear();
-    lastLogp.clear();
-  }
-};
-
-Decoder::Decoder() = default;
-Decoder::~Decoder() = default;
-
-bool Decoder::isLoaded() const { return impl_ != nullptr; }
-
-bool Decoder::load(const std::string& ggufPath, int threads, int nCtx, int nSeq,
-                   std::string* error) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (impl_ != nullptr) {
-    return true;
-  }
-  std::call_once(gBackendOnce, [] {
-    llama_backend_init();
-    llama_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
+  special_ = special;
+  std::stable_sort(special_.begin(), special_.end(), [](const auto& a, const auto& b) {
+    return a.first.size() > b.first.size();
   });
-  auto impl = std::make_unique<Impl>();
-  llama_model_params mp = llama_model_default_params();
-  mp.n_gpu_layers = 0;
-  impl->model = llama_model_load_from_file(ggufPath.c_str(), mp);
-  if (impl->model == nullptr) {
-    *error = "cannot load decoder model " + ggufPath;
+  unk_ = unk;
+  // GPT-2 bytes_to_unicode
+  std::vector<int> bs;
+  for (int b = '!'; b <= '~'; ++b) bs.push_back(b);
+  for (int b = 0xA1; b <= 0xAC; ++b) bs.push_back(b);
+  for (int b = 0xAE; b <= 0xFF; ++b) bs.push_back(b);
+  std::vector<bool> direct(256, false);
+  for (int b : bs) direct[static_cast<size_t>(b)] = true;
+  int n = 0;
+  for (int b = 0; b < 256; ++b) {
+    uint32_t cp = direct[static_cast<size_t>(b)] ? static_cast<uint32_t>(b) : static_cast<uint32_t>(256 + n++);
+    byteSymbol_[b] = EncodeUtf8(cp);
+  }
+  std::lock_guard<std::mutex> lock(cacheMutex_);
+  cache_.clear();
+}
+
+int32_t BpeTokenizer::tokenId(const std::string& token) const {
+  auto it = vocab_.find(token);
+  return it == vocab_.end() ? -1 : it->second;
+}
+
+// 's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+std::vector<std::string> BpeTokenizer::PreTokenize(const std::string& s) {
+  std::vector<uint32_t> cps;
+  std::vector<size_t> at;
+  for (size_t i = 0; i < s.size();) {
+    size_t len = 0;
+    cps.push_back(DecodeAt(s, i, &len));
+    at.push_back(i);
+    i += len;
+  }
+  at.push_back(s.size());
+  std::vector<CharClass> cls(cps.size());
+  for (size_t i = 0; i < cps.size(); ++i) cls[i] = ClassOf(cps[i]);
+  size_t n = cps.size();
+  std::vector<std::string> out;
+  auto emit = [&](size_t a, size_t b) { out.push_back(s.substr(at[a], at[b] - at[a])); };
+  auto run = [&](size_t i, CharClass c) {
+    while (i < n && cls[i] == c) ++i;
+    return i;
+  };
+  size_t i = 0;
+  while (i < n) {
+    // contractions
+    if (cps[i] == '\'' && i + 1 < n) {
+      static const char* kSuffix[] = {"s", "t", "re", "ve", "m", "ll", "d"};
+      size_t best = 0;
+      for (const char* suf : kSuffix) {
+        size_t len = std::char_traits<char>::length(suf);
+        bool ok = i + len < n;
+        for (size_t k = 0; ok && k < len; ++k) {
+          ok = cps[i + 1 + k] == static_cast<uint32_t>(suf[k]);
+        }
+        if (ok) {
+          best = len;
+          break;  // ordered alternation: first that matches
+        }
+      }
+      if (best > 0) {
+        emit(i, i + 1 + best);
+        i += 1 + best;
+        continue;
+      }
+    }
+    bool sp = cps[i] == ' ' && i + 1 < n;
+    CharClass next = sp ? cls[i + 1] : cls[i];
+    CharClass self = cls[i];
+    // ' ?\p{L}+' then ' ?\p{N}+'
+    if (sp && (next == CharClass::kLetter || next == CharClass::kNumber)) {
+      size_t e = run(i + 1, next);
+      emit(i, e);
+      i = e;
+      continue;
+    }
+    if (self == CharClass::kLetter || self == CharClass::kNumber) {
+      size_t e = run(i, self);
+      emit(i, e);
+      i = e;
+      continue;
+    }
+    // ' ?[^\s\p{L}\p{N}]+'
+    if (sp && next == CharClass::kOther) {
+      size_t e = run(i + 1, CharClass::kOther);
+      emit(i, e);
+      i = e;
+      continue;
+    }
+    if (self == CharClass::kOther) {
+      size_t e = run(i, CharClass::kOther);
+      emit(i, e);
+      i = e;
+      continue;
+    }
+    // whitespace: '\s+(?!\S)' backs off one char when a non-space follows; else '\s+'
+    size_t e = run(i, CharClass::kSpace);
+    if (e < n && e - i >= 2) {
+      emit(i, e - 1);
+      i = e - 1;
+    } else {
+      emit(i, e);
+      i = e;
+    }
+  }
+  return out;
+}
+
+void BpeTokenizer::encodePiece(const std::string& piece, std::vector<int32_t>* out) const {
+  {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    auto it = cache_.find(piece);
+    if (it != cache_.end()) {
+      out->insert(out->end(), it->second.begin(), it->second.end());
+      return;
+    }
+  }
+  std::vector<std::string> sym;
+  for (unsigned char b : piece) sym.push_back(byteSymbol_[b]);
+  while (sym.size() > 1) {
+    int32_t best = std::numeric_limits<int32_t>::max();
+    for (size_t k = 0; k + 1 < sym.size(); ++k) {
+      auto it = ranks_.find(sym[k] + '\x01' + sym[k + 1]);
+      if (it != ranks_.end() && it->second < best) best = it->second;
+    }
+    if (best == std::numeric_limits<int32_t>::max()) break;
+    std::vector<std::string> merged;
+    for (size_t k = 0; k < sym.size();) {
+      if (k + 1 < sym.size()) {
+        auto it = ranks_.find(sym[k] + '\x01' + sym[k + 1]);
+        if (it != ranks_.end() && it->second == best) {
+          merged.push_back(sym[k] + sym[k + 1]);
+          k += 2;
+          continue;
+        }
+      }
+      merged.push_back(sym[k]);
+      ++k;
+    }
+    sym.swap(merged);
+  }
+  std::vector<int32_t> ids;
+  for (const std::string& t : sym) {
+    auto it = vocab_.find(t);
+    ids.push_back(it == vocab_.end() ? unk_ : it->second);
+  }
+  out->insert(out->end(), ids.begin(), ids.end());
+  std::lock_guard<std::mutex> lock(cacheMutex_);
+  if (cache_.size() > 20000) cache_.clear();
+  cache_.emplace(piece, std::move(ids));
+}
+
+std::vector<int32_t> BpeTokenizer::encode(const std::string& text) const {
+  std::vector<int32_t> out;
+  size_t start = 0;
+  auto flush = [&](size_t end) {
+    if (end > start) {
+      for (const std::string& p : PreTokenize(text.substr(start, end - start))) encodePiece(p, &out);
+    }
+  };
+  for (size_t i = 0; i < text.size();) {
+    const std::pair<std::string, int32_t>* hit = nullptr;
+    for (const auto& sp : special_) {  // longest first
+      if (text.compare(i, sp.first.size(), sp.first) == 0) {
+        hit = &sp;
+        break;
+      }
+    }
+    if (hit != nullptr) {
+      flush(i);
+      out.push_back(hit->second);
+      i += hit->first.size();
+      start = i;
+    } else {
+      i += Utf8Lead(static_cast<unsigned char>(text[i]));
+    }
+  }
+  flush(text.size());
+  return out;
+}
+
+// ------------------------------------------------------------------ Decoder
+
+bool Decoder::load(std::unique_ptr<DecoderBackend> backend,
+                   std::shared_ptr<const BpeTokenizer> tokenizer, int32_t bos,
+                   int32_t pad, std::string* error) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (backend == nullptr || backend->lengths().empty() || tokenizer == nullptr ||
+      !tokenizer->isLoaded()) {
+    *error = "decoder backend or tokenizer missing";
     return false;
   }
-  impl->vocab = llama_model_get_vocab(impl->model);
-  llama_context_params cp = llama_context_default_params();
-  cp.n_ctx = static_cast<uint32_t>(nCtx);
-  cp.n_batch = static_cast<uint32_t>(nCtx);
-  cp.n_ubatch = static_cast<uint32_t>(nCtx);
-  cp.n_seq_max = static_cast<uint32_t>(nSeq);
-  cp.n_threads = threads;
-  cp.n_threads_batch = threads;
-  cp.kv_unified = true;
-  cp.n_rs_seq = 0;  // no recurrent-state rollback snapshots (walk2: wrong scores)
-  impl->ctx = llama_init_from_model(impl->model, cp);
-  if (impl->ctx == nullptr) {
-    *error = "cannot create decoder context";
-    return false;
-  }
-  impl->mem = llama_get_memory(impl->ctx);
-  impl->nVocab = llama_vocab_n_tokens(impl->vocab);
-  impl->nCtx = nCtx;
-  impl->nSeq = nSeq;
-  impl->batch = llama_batch_init(nCtx, 0, nSeq);
-  impl_ = std::move(impl);
+  backend_ = std::move(backend);
+  tokenizer_ = std::move(tokenizer);
+  bos_ = bos;
+  pad_ = pad;
   return true;
 }
 
-void Decoder::reset() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (impl_ != nullptr) {
-    impl_->clearAll();
+std::vector<std::vector<int32_t>> Decoder::sequences(
+    const std::string& rawContext, const std::vector<std::string>& candidates) const {
+  std::string context = TailChars(rawContext, kMaxContextChars);
+  std::vector<std::vector<int32_t>> seqs;
+  for (const std::string& c : candidates) {
+    std::vector<int32_t> s {bos_};
+    std::vector<int32_t> t = tokenizer_->encode(context + c);
+    s.insert(s.end(), t.begin(), t.end());
+    seqs.push_back(std::move(s));
   }
+  return seqs;
 }
 
 bool Decoder::score(const std::string& context,
                     const std::vector<std::string>& candidates,
                     std::vector<double>* scores, DecoderCallStats* stats) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return scoreLocked(context, candidates, false, scores, stats);
-}
-
-bool Decoder::scoreFull(const std::string& context,
-                        const std::vector<std::string>& candidates,
-                        std::vector<double>* scores, DecoderCallStats* stats) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return scoreLocked(context, candidates, true, scores, stats);
-}
-
-// dec_inc score() (:84) without the rollback branch.
-bool Decoder::scoreLocked(const std::string& rawContext,
-                          const std::vector<std::string>& candidates, bool full,
-                          std::vector<double>* scores, DecoderCallStats* stats) {
   auto t0 = std::chrono::steady_clock::now();
-  DecoderCallStats st;
   scores->clear();
-  if (impl_ == nullptr || candidates.empty()) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (backend_ == nullptr || candidates.empty() || candidates.size() > kBatch) {
     return false;
   }
-  Impl& d = *impl_;
-  std::string context = TailChars(rawContext, kMaxContextChars);
-
-  std::vector<std::vector<llama_token>> T;
-  size_t minLen = std::numeric_limits<size_t>::max();
-  for (const std::string& c : candidates) {
-    T.push_back(d.tokenize(context + c));
-    minLen = std::min(minLen, T.back().size());
-  }
-  if (minLen == 0) {
-    return false;
-  }
-  size_t L = minLen - 1;
-  for (size_t k = 1; k < T.size(); ++k) {
-    size_t l = 0;
-    while (l < L && T[k][l] == T[0][l]) {
-      ++l;
-    }
-    L = l;
-  }
-  std::vector<llama_token> P = {llama_vocab_bos(d.vocab)};
-  P.insert(P.end(), T[0].begin(), T[0].begin() + static_cast<std::ptrdiff_t>(L));
+  std::vector<std::vector<int32_t>> seqs = sequences(context, candidates);
   size_t longest = 0;
-  for (const auto& t : T) {
-    longest = std::max(longest, t.size() - L);
+  for (const auto& s : seqs) longest = std::max(longest, s.size());
+  const std::vector<size_t>& lengths = backend_->lengths();
+  auto it = std::find_if(lengths.begin(), lengths.end(), [longest](size_t T) { return T >= longest; });
+  if (longest < 2 || it == lengths.end()) {
+    return false;  // does not fit the largest function (context guard)
   }
-  if (P.size() + longest + 1 > static_cast<size_t>(d.nCtx)) {
-    return false;  // does not fit the IME-sized context
+  size_t T = *it;
+  std::vector<std::vector<int32_t>> rows(kBatch, std::vector<int32_t>(T, pad_));
+  for (size_t r = 0; r < seqs.size(); ++r) {
+    std::copy(seqs[r].begin(), seqs[r].end(), rows[r].begin());
   }
-
-  size_t same = 0;
-  while (same < d.held.size() && same < P.size() && d.held[same] == P[same]) {
-    ++same;
+  std::vector<std::vector<float>> lp;
+  if (!backend_->logProbs(rows, T, &lp) || lp.size() < seqs.size()) {
+    return false;
   }
-  if (full || d.held.empty() || same < d.held.size()) {
-    // new sentence, or the context changed: re-decode from <bos>
-    d.clearAll();
-    st.mode = 2;
-    st.newTokens = static_cast<int>(P.size());
-    if (!d.extend(P, 0)) {
-      d.clearAll();
-      return false;
-    }
-    d.held = P;
-  } else if (same < P.size()) {
-    std::vector<llama_token> add(P.begin() + static_cast<std::ptrdiff_t>(same), P.end());
-    st.newTokens = static_cast<int>(add.size());
-    if (!d.extend(add, static_cast<int>(same))) {
-      d.clearAll();
-      return false;
-    }
-    d.held = P;
-  }  // else: same prefix, reuse lastLogp
-
-  // candidates (:140)
-  scores->assign(candidates.size(), 0.0);
-  d.batch.n_tokens = 0;
-  std::vector<std::vector<int>> idx(candidates.size());
-  for (size_t k = 0; k < candidates.size(); ++k) {
-    const auto& t = T[k];
-    (*scores)[k] = d.lastLogp[static_cast<size_t>(t[L])];
-    if (t.size() - L < 2) {
-      continue;  // a single own token: no decode
-    }
-    int s = static_cast<int>(k) + 1;
-    llama_memory_seq_rm(d.mem, s, -1, -1);
-    llama_memory_seq_cp(d.mem, 0, s, -1, -1);
-    for (size_t i = L; i + 1 < t.size(); ++i) {
-      int j = d.batch.n_tokens++;
-      d.batch.token[j] = t[i];
-      d.batch.pos[j] = static_cast<int>(P.size() + (i - L));
-      d.batch.n_seq_id[j] = 1;
-      d.batch.seq_id[j][0] = s;
-      d.batch.logits[j] = 1;
-      idx[k].push_back(j);
-    }
+  for (size_t r = 0; r < seqs.size(); ++r) {
+    double sum = 0;
+    for (size_t k = 0; k + 1 < seqs[r].size(); ++k) sum += static_cast<double>(lp[r][k]);
+    scores->push_back(sum);
   }
-  if (d.batch.n_tokens > 0) {
-    if (llama_decode(d.ctx, d.batch) != 0) {
-      d.clearAll();
-      return false;
-    }
-    std::vector<float> lp;
-    for (size_t k = 0; k < candidates.size(); ++k) {
-      for (size_t q = 0; q < idx[k].size(); ++q) {
-        d.logSoftmax(llama_get_logits_ith(d.ctx, idx[k][q]), &lp);
-        (*scores)[k] += lp[static_cast<size_t>(T[k][L + q + 1])];
-      }
-    }
-    for (size_t k = 0; k < candidates.size(); ++k) {
-      if (!idx[k].empty()) {
-        llama_memory_seq_rm(d.mem, static_cast<int>(k) + 1, -1, -1);
-      }
-    }
-  }
-  st.milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   if (stats != nullptr) {
-    *stats = st;
+    stats->milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    stats->length = T;
+    stats->maxTokens = longest;
   }
   return true;
+}
+
+bool Decoder::prewarm(double* milliseconds) {
+  std::vector<double> s;
+  DecoderCallStats st;
+  bool ok = score("", std::vector<std::string> {"的"}, &s, &st);
+  *milliseconds = st.milliseconds;
+  return ok;
 }
 
 }  // namespace McBopomofoSlothE

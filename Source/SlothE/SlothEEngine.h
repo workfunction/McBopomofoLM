@@ -1,5 +1,5 @@
-// SlothE-T (12M ternary Zhuyin encoder) scoring for the McBopomofoLM
-// side-by-side test build.
+// SlothE-T (Zhuyin encoder; v2: the 25M model on Core ML / ANE) scoring for
+// the McBopomofoLM side-by-side test build.
 //
 // Behavior mirrors the offline PoC code in scratch/ime-lm-poc/sloth/:
 //   * syllable mapping    = zhuyin_fmt.py (normalize, exact -> toneless -> <unk>)
@@ -22,8 +22,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-struct slothe_model;
 
 namespace McBopomofoSlothE {
 
@@ -139,22 +137,34 @@ std::vector<size_t> RerankOrder(const std::vector<RerankItem>& items,
                                 const std::string& walkValue,
                                 const VariantTable* guard);
 
+// Per-position logits of the encoder for syllable ids (v2: Core ML on the
+// ANE, SlothECoreML.mm). logits() fills [ids.size()][charCount] floats.
+class EncoderBackend {
+ public:
+  virtual ~EncoderBackend() = default;
+  virtual int32_t charCount() const = 0;
+  virtual int32_t syllableCount() const = 0;
+  virtual size_t maxLength() const = 0;  // longest sequence it takes
+  virtual bool logits(const std::vector<int32_t>& ids, std::vector<float>* out) = 0;
+};
+
 // Thread safety: every public method may be called from any thread. Model
 // passes are serialized internally; lookup() never runs the model.
 class Engine {
  public:
   Engine() = default;
-  ~Engine();
+  ~Engine() = default;
   Engine(const Engine&) = delete;
   Engine& operator=(const Engine&) = delete;
 
-  // Loads vocabulary, mask, variants and the GGUF from resourceDir. Never
-  // aborts the process: a missing or malformed file returns false (the
-  // vendored loader is patched to return instead of exit(), and a probe pass
-  // must give finite logits). Integrity (size + sha256) is checked by the
-  // caller with VerifyRuntimeFiles before this.
-  bool load(const std::string& resourceDir, std::string* error);
-  bool isLoaded() const { return model_ != nullptr; }
+  // Loads vocabulary, mask and variants from resourceDir and takes the
+  // backend. Never aborts the process: a malformed file, a backend whose
+  // vocabulary sizes differ, or a probe pass with non-finite logits returns
+  // false. Integrity (size + sha256) is checked by the caller with
+  // VerifyRuntimeFiles before this.
+  bool load(const std::string& resourceDir,
+            std::unique_ptr<EncoderBackend> backend, std::string* error);
+  bool isLoaded() const { return backend_ != nullptr; }
 
   // Runs one forward pass over the readings, or reuses a cached one keyed by
   // the exact reading sequence. forwardMs = model time (0 on a cache hit).
@@ -170,40 +180,43 @@ class Engine {
   std::shared_ptr<const ForwardResult> waitFor(
       const std::vector<std::string>& readings, double timeoutMs) const;
 
-  // libslothe per-length compute-graph cache.
-  void setGraphCacheCapacity(int capacity);
-  void graphCacheStats(int* graphs, size_t* computeBytes,
-                       uint64_t* builds) const;
+  // One throw-away pass over a single syllable (prewarm after idle). Not cached.
+  bool prewarm(double* milliseconds);
 
   const Vocabulary& vocabulary() const { return vocab_; }
   const VariantTable& variants() const { return variants_; }
   static constexpr size_t kCacheCapacity = 8;
-  static constexpr size_t kMaxReadings = 256;
+  static constexpr size_t kMaxReadings = 256;  // the encoder's L256 function
 
  private:
   std::shared_ptr<const ForwardResult> lookupLocked(
       const std::string& key) const;
 
-  slothe_model* model_ = nullptr;
+  std::unique_ptr<EncoderBackend> backend_;
   Vocabulary vocab_;
   VariantTable variants_;
-  mutable std::mutex modelMutex_;  // guards model_ passes + syllableIds_
+  mutable std::mutex modelMutex_;  // guards backend_ passes + syllableIds_
   mutable std::mutex cacheMutex_;  // guards cache_
   mutable std::condition_variable cacheChanged_;
   mutable std::list<std::pair<std::string, std::shared_ptr<const ForwardResult>>> cache_;
   std::unordered_map<std::string, int32_t> syllableIds_;
 };
 
-// Runtime file integrity (phase 4): SlothE/runtime-manifest.txt lists
-// "<sha256> <bytes> <file>" for every runtime input. A model is loaded only
-// after each of its files matches its listed size and sha256; anything else
+// Runtime file integrity: SlothE/runtime-manifest.txt lists
+// "<sha256> <bytes> <path>" for every runtime input, including every file
+// inside the compiled .mlmodelc directories. A model is loaded only after
+// each of its files matches its listed size and sha256; anything else
 // (missing file, missing manifest entry, size or hash mismatch) is a load
 // failure with a reason in *error.
 constexpr char kRuntimeManifestName[] = "runtime-manifest.txt";
-constexpr char kEncoderModelFileName[] = "slothe-t-12m-256x12.gguf";
-constexpr char kDecoderModelFileName[] = "pred_q35_60m-q4.gguf";
-// Files the encoder (Engine::load) reads.
+constexpr char kEncoderModelName[] = "enc25m.mlmodelc";
+constexpr char kEncoderEmbeddingName[] = "enc25m_embed_f16.bin";
+constexpr char kDecoderModelName[] = "dec60m.mlmodelc";
+constexpr char kDecoderTokenizerName[] = "dec_tokenizer.json";
+// Runtime paths the encoder / decoder need (a directory = every manifest
+// entry under it, at least one required).
 std::vector<std::string> EncoderRuntimeFiles();
+std::vector<std::string> DecoderRuntimeFiles();
 // Hex sha256 of a file; false when it cannot be read.
 bool Sha256File(const std::string& path, std::string* hexDigest,
                 uint64_t* size);

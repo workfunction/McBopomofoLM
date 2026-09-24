@@ -7,6 +7,7 @@
 // build makes no network requests (SlothEOfflineTests).
 
 import CandidateUI
+import CoreML
 import XCTest
 
 @testable import McBopomofo
@@ -53,10 +54,11 @@ class SlothEPipelineTests: XCTestCase {
 
     // MARK: helpers
 
-    func loadedRuntime(delayMs: Double = 0, commitWaitMs: Double = 30) -> SlothERuntime {
-        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
-        XCTAssertTrue(runtime.loadSynchronously())
-        XCTAssertTrue(runtime.decoderLoaded, "decoder did not load")
+    func loadedRuntime(delayMs: Double = 0, commitWaitMs: Double = 30, logPath: String? = nil) -> SlothERuntime {
+        // v2: the models are loaded on the ANE once per test process and shared
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: logPath)
+        XCTAssertTrue(runtime.loaded, runtime.loadError ?? "")
+        XCTAssertTrue(runtime.decoderLoaded, "decoder did not load: \(runtime.decoderLoadError ?? "")")
         runtime.debugComputeDelayMilliseconds = delayMs
         runtime.commitWaitMilliseconds = commitWaitMs
         return runtime
@@ -109,8 +111,12 @@ class SlothEPipelineTests: XCTestCase {
         return String(format: "%.2f %.2f %.2f", l[0], l[1], l[2])
     }
 
-    // 大家看得到嗎: stock 大家看得到嗎, in-walk alone 大家看得到媽, decoder corrects to 大家看得到嗎.
+    // 大家看得到嗎 (config A', 25M): stock, in-walk and decoder all show 大家看得到嗎.
     let dajia = ["ㄉㄚˋ", "ㄐㄧㄚ", "ㄎㄢˋ", "ㄉㄜˊ", "ㄉㄠˋ", "ㄇㄚ"]
+    // 大家看得到嗎我們: stock 大家看得到嗎我們, in-walk alone 大家看得到媽我們, the decoder corrects to 嗎.
+    var dajiaWomen: [String] { dajia + ["ㄨㄛˇ", "ㄇㄣ˙"] }
+    // 新莊廟街商圈 (dev cv08367): stock 新莊妙接商圈, in-walk alone 新莊妙街商圈, decoder 新莊廟街商圈.
+    let xinzhuang = ["ㄒㄧㄣ", "ㄓㄨㄤ", "ㄇㄧㄠˋ", "ㄐㄧㄝ", "ㄕㄤ", "ㄑㄩㄢ"]
 
     // MARK: tests
 
@@ -118,18 +124,18 @@ class SlothEPipelineTests: XCTestCase {
         let runtime = loadedRuntime()
         let delegate = SlothETestDelegate()
         let handler = makeHandler(runtime, delegate)
-        type(keys(dajia), into: handler, delegate: delegate)
-        spin(until: { runtime.decoderRunCount >= 1 && self.buffer(delegate) == "大家看得到嗎" })
-        XCTAssertEqual(buffer(delegate), "大家看得到嗎")
+        type(keys(dajiaWomen), into: handler, delegate: delegate)
+        spin(until: { runtime.decoderPinCount >= 1 && self.buffer(delegate) == "大家看得到嗎我們" })
+        XCTAssertEqual(buffer(delegate), "大家看得到嗎我們")
         XCTAssertGreaterThanOrEqual(runtime.decoderRunCount, 1)
 
-        // decoder switched off: the in-walk alone (phase 2) keeps 媽
+        // decoder switched off: the in-walk alone keeps 媽
         Preferences.slothEDecoderEnabled = false
         let d2 = SlothETestDelegate()
         let h2 = makeHandler(runtime, d2)
-        type(keys(dajia), into: h2, delegate: d2)
-        spin(until: { self.buffer(d2) == "大家看得到媽" })
-        XCTAssertEqual(buffer(d2), "大家看得到媽")
+        type(keys(dajiaWomen), into: h2, delegate: d2)
+        spin(until: { self.buffer(d2) == "大家看得到媽我們" })
+        XCTAssertEqual(buffer(d2), "大家看得到媽我們")
         NSLog("SLOTHE_PIPELINE decoder_on=%@ decoder_off=%@", buffer(delegate), buffer(d2))
     }
 
@@ -181,10 +187,11 @@ class SlothEPipelineTests: XCTestCase {
         XCTAssertEqual(buffer(delegate), "大家看得到媽")
         spin(until: { false }, timeout: 0.3)  // decoder passes for the picked buffer
         XCTAssertEqual(buffer(delegate), "大家看得到媽", "decoder undid the pick")
-        // typing on: ㄨㄛˇ ㄇㄣ˙ (我們)
+        // typing on: ㄨㄛˇ ㄇㄣ˙ (我們) -- here the decoder alone would pick 嗎 (大家看得到嗎我們)
         type(keys(["ㄨㄛˇ", "ㄇㄣ˙"]), into: handler, delegate: delegate)
         spin(until: { false }, timeout: 0.3)
         XCTAssertTrue(buffer(delegate).hasPrefix("大家看得到媽"), buffer(delegate))
+        XCTAssertTrue(buffer(delegate).hasSuffix("我們"), buffer(delegate))
         NSLog("SLOTHE_PIPELINE pick_kept=%@ decoder_runs=%lu", buffer(delegate), runtime.decoderRunCount)
     }
 
@@ -294,8 +301,7 @@ class SlothEPipelineTests: XCTestCase {
         let logPath = (logDir as NSString).appendingPathComponent("latency.log")
         func run(_ on: Bool) -> (handler: [Double], e2e: [Double], runtime: SlothERuntime) {
             Preferences.slothERerankEnabled = on
-            let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: on ? logPath : nil)
-            XCTAssertTrue(runtime.loadSynchronously())
+            let runtime = loadedRuntime(logPath: on ? logPath : nil)
             var times: [Double] = []
             for readings in sentences {
                 let delegate = SlothETestDelegate()
@@ -346,10 +352,7 @@ class SlothEPipelineTests: XCTestCase {
 
     }
 
-    // MARK: phase 4
-
-    // 一人做事一人當: stock 一人做事一人當; SlothE-T (encoder, and encoder + decoder) 一人作是一人當.
-    let yiren = ["ㄧ", "ㄖㄣˊ", "ㄗㄨㄛˋ", "ㄕˋ", "ㄧ", "ㄖㄣˊ", "ㄉㄤ"]
+    // MARK: phase 4 (v2: examples re-chosen for config A')
 
     func stockText(_ readings: [String], runtime: SlothERuntime) -> String {
         let on = Preferences.slothERerankEnabled
@@ -363,14 +366,14 @@ class SlothEPipelineTests: XCTestCase {
 
     func testTogglingSlothEOffCommitsStockAtOnce() {
         let runtime = loadedRuntime()
-        let stock = stockText(yiren, runtime: runtime)
-        XCTAssertEqual(stock, "一人做事一人當")
+        let stock = stockText(xinzhuang, runtime: runtime)
+        XCTAssertEqual(stock, "新莊妙接商圈")
         // (a) the model's result is on screen; switch off -> stock on screen now, Return commits stock
         let delegate = SlothETestDelegate()
         let handler = makeHandler(runtime, delegate)
-        type(keys(yiren), into: handler, delegate: delegate)
-        spin(until: { self.buffer(delegate) == "一人作是一人當" && runtime.decoderRunCount >= 1 })
-        XCTAssertEqual(buffer(delegate), "一人作是一人當")
+        type(keys(xinzhuang), into: handler, delegate: delegate)
+        spin(until: { self.buffer(delegate) == "新莊廟街商圈" && runtime.decoderPinCount >= 1 })
+        XCTAssertEqual(buffer(delegate), "新莊廟街商圈")
         XCTAssertFalse(Preferences.toggleSlothERerankEnabled())  // the menu item's action
         XCTAssertEqual(buffer(delegate), stock, "not re-walked at once")
         pressReturn(into: handler, delegate: delegate)
@@ -380,7 +383,7 @@ class SlothEPipelineTests: XCTestCase {
         runtime.debugComputeDelayMilliseconds = 150
         let d2 = SlothETestDelegate()
         let h2 = makeHandler(runtime, d2)
-        type(keys(yiren), into: h2, delegate: d2)
+        type(keys(xinzhuang), into: h2, delegate: d2)
         let staleBefore = runtime.staleCount + runtime.skippedCount
         XCTAssertFalse(Preferences.toggleSlothERerankEnabled())
         spin(until: { false }, timeout: 0.5)  // the in-flight pass finishes meanwhile
@@ -395,27 +398,27 @@ class SlothEPipelineTests: XCTestCase {
 
     func testTogglingDecoderOffDropsItsCorrectionsAtOnce() {
         let runtime = loadedRuntime()
-        // (a) decoder correction on screen (嗎); decoder off -> encoder-only 媽 at once, Return commits it
+        // (a) decoder correction on screen (廟); decoder off -> encoder-only 妙 at once, Return commits it
         let delegate = SlothETestDelegate()
         let handler = makeHandler(runtime, delegate)
-        type(keys(dajia), into: handler, delegate: delegate)
-        spin(until: { self.buffer(delegate) == "大家看得到嗎" && runtime.decoderPinCount >= 1 })
-        XCTAssertEqual(buffer(delegate), "大家看得到嗎")
+        type(keys(xinzhuang), into: handler, delegate: delegate)
+        spin(until: { self.buffer(delegate) == "新莊廟街商圈" && runtime.decoderPinCount >= 1 })
+        XCTAssertEqual(buffer(delegate), "新莊廟街商圈")
         XCTAssertFalse(Preferences.toggleSlothEDecoderEnabled())
-        XCTAssertEqual(buffer(delegate), "大家看得到媽", "decoder pin kept after the switch")
+        XCTAssertEqual(buffer(delegate), "新莊妙街商圈", "decoder pin kept after the switch")
         pressReturn(into: handler, delegate: delegate)
-        XCTAssertEqual(delegate.committed.last, "大家看得到媽")
+        XCTAssertEqual(delegate.committed.last, "新莊妙街商圈")
         XCTAssertTrue(Preferences.toggleSlothEDecoderEnabled())
         // (b) decoder result still pending when the switch goes off: never applied
         runtime.debugComputeDelayMilliseconds = 150
         let d2 = SlothETestDelegate()
         let h2 = makeHandler(runtime, d2)
-        type(keys(dajia), into: h2, delegate: d2)
+        type(keys(xinzhuang), into: h2, delegate: d2)
         XCTAssertFalse(Preferences.toggleSlothEDecoderEnabled())
         spin(until: { false }, timeout: 0.6)
-        XCTAssertEqual(buffer(d2), "大家看得到媽")
+        XCTAssertEqual(buffer(d2), "新莊妙街商圈")
         pressReturn(into: h2, delegate: d2)
-        XCTAssertEqual(d2.committed.last, "大家看得到媽")
+        XCTAssertEqual(d2.committed.last, "新莊妙街商圈")
         XCTAssertTrue(Preferences.toggleSlothEDecoderEnabled())
     }
 
@@ -461,24 +464,43 @@ class SlothEPipelineTests: XCTestCase {
         XCTAssertLessThan(runtime.startedComputeJobs, runtime.submittedComputeJobs)
         XCTAssertLessThanOrEqual(maxSnapshots - snapshotsBefore, 2)
         XCTAssertEqual(SlothERuntime.liveGridSnapshots(), snapshotsBefore)
-        XCTAssertLessThan(Double(footprintPeak) - Double(footprintBefore), 8 * 1048576)
         // the buffer still settles on the final pass
         pressReturn(into: handler, delegate: delegate)
         XCTAssertFalse((delegate.committed.last ?? "").isEmpty)
+        // v2: the first burst also warms Core ML's per-function output buffers (one-time growth);
+        // a second identical burst must not grow the footprint -- no backlog of any kind.
+        spin(until: { false }, timeout: 0.2)
+        let before2 = SlothERuntime.physFootprintBytes()
+        for key in burst {
+            let input = KeyHandlerInput(inputText: key, keyCode: 0, charCode: charCode(key), flags: [], isVerticalMode: false)
+            _ = handler.handle(input: input, state: delegate.state) { delegate.take($0) } errorCallback: {}
+            maxSnapshots = max(maxSnapshots, SlothERuntime.liveGridSnapshots())
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        let peak2 = SlothERuntime.physFootprintBytes()
+        spin(until: { runtime.pendingComputeJobs == 0 && SlothERuntime.liveGridSnapshots() == snapshotsBefore }, timeout: 3)
+        NSLog("SLOTHE_P4 burst 2: footprint %.1f -> %.1f MB (first burst %+.1f MB), live snapshots max %lld",
+              Double(before2) / 1048576, Double(peak2) / 1048576, (Double(footprintPeak) - Double(footprintBefore)) / 1048576, maxSnapshots)
+        XCTAssertLessThanOrEqual(maxSnapshots - snapshotsBefore, 2)
+        XCTAssertLessThan(Double(peak2) - Double(before2), 8 * 1048576)
+        XCTAssertLessThan(Double(footprintPeak) - Double(footprintBefore), 32 * 1048576)
+        pressReturn(into: handler, delegate: delegate)
     }
 
     enum Damage: String, CaseIterable { case truncated, corruptBody, missing, wrongHash }
 
-    // Clone of the bundled SlothE resources (APFS clone, cheap) with one file damaged.
-    func damagedResources(_ file: String, _ damage: Damage) throws -> String {
-        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("slothe-damaged-" + UUID().uuidString)
-        try FileManager.default.copyItem(atPath: Self.resourcePath, toPath: dir)
+    /// Damages `file` inside `dir` (a clone of the bundled resources) and returns an undo closure.
+    func damage(_ file: String, in dir: String, _ kind: Damage) throws -> () -> Void {
         let path = (dir as NSString).appendingPathComponent(file)
+        let backup = path + ".orig"
+        let manifest = (dir as NSString).appendingPathComponent("runtime-manifest.txt")
+        let manifestText = try String(contentsOfFile: manifest, encoding: .utf8)
+        try FileManager.default.copyItem(atPath: path, toPath: backup)
         let size = (try FileManager.default.attributesOfItem(atPath: path)[.size] as! NSNumber).uint64Value
-        switch damage {
+        switch kind {
         case .truncated:
             XCTAssertEqual(truncate(path, off_t(size / 2)), 0)
-        case .corruptBody:  // same size, GGUF magic intact, 64 KB of the body overwritten
+        case .corruptBody:  // same size, 64 KB of the body overwritten
             let h = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
             try h.seek(toOffset: size / 2)
             h.write(Data((0..<65536).map { UInt8(truncatingIfNeeded: $0 &* 7 &+ 13) }))
@@ -486,57 +508,319 @@ class SlothEPipelineTests: XCTestCase {
         case .missing:
             try FileManager.default.removeItem(atPath: path)
         case .wrongHash:  // file intact, the manifest lists another sha256
-            let manifest = (dir as NSString).appendingPathComponent("runtime-manifest.txt")
-            let text = try String(contentsOfFile: manifest, encoding: .utf8)
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            let lines = manifestText.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
                 line.hasSuffix(" " + file) ? String(repeating: "0", count: 64) + line.dropFirst(64) : String(line)
             }
             try lines.joined(separator: "\n").write(toFile: manifest, atomically: true, encoding: .utf8)
         }
-        return dir
+        return {
+            try? FileManager.default.removeItem(atPath: path)
+            try? FileManager.default.moveItem(atPath: backup, toPath: path)
+            try? manifestText.write(toFile: manifest, atomically: true, encoding: .utf8)
+        }
     }
 
     func testDamagedModelFilesFallBackWithoutExiting() throws {
         // Encoder file damaged -> SlothE-T off, stock McBopomofo (and no decoder).
-        // Decoder file damaged -> encoder-only in-walk (intended, config A).
+        // Decoder file damaged -> encoder-only in-walk (intended, config A robustness).
         // The process must not exit in any case: this test running to the end is the check.
-        let reference = loadedRuntime()
-        let stockYiren = stockText(yiren, runtime: reference)
-        for (file, isEncoder) in [("slothe-t-12m-256x12.gguf", true), ("pred_q35_60m-q4.gguf", false)] {
-            for damage in Damage.allCases {
-                let dir = try damagedResources(file, damage)
-                defer { try? FileManager.default.removeItem(atPath: dir) }
+        // One clone per target, damaged case by case, so the encoder's ANE compile for the
+        // clone's path happens once.
+        let stock = stockText(xinzhuang, runtime: loadedRuntime())
+        for (file, isEncoder) in [("enc25m.mlmodelc/weights/weight.bin", true), ("dec60m.mlmodelc/weights/weight.bin", false),
+                                  ("enc25m_embed_f16.bin", true), ("dec_tokenizer.json", false)] {
+            let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("slothe-damaged-" + (isEncoder ? "enc" : "dec"))
+            if !FileManager.default.fileExists(atPath: dir) {
+                try FileManager.default.copyItem(atPath: Self.resourcePath, toPath: dir)
+            }
+            for kind in Damage.allCases {
+                let undo = try damage(file, in: dir, kind)
+                defer { undo() }
                 let runtime = SlothERuntime(resourcePath: dir, logPath: nil)
                 let t0 = Date()
                 let loaded = runtime.loadSynchronously()
                 let ms = Date().timeIntervalSince(t0) * 1000
                 let delegate = SlothETestDelegate()
                 let handler = makeHandler(runtime, delegate)
+                type(keys(xinzhuang), into: handler, delegate: delegate)
                 if isEncoder {
-                    XCTAssertFalse(loaded, "\(file) \(damage)")
+                    XCTAssertFalse(loaded, "\(file) \(kind)")
                     XCTAssertTrue(runtime.loadFailed)
+                    XCTAssertEqual(runtime.loadReason, "integrity")
                     XCTAssertFalse(runtime.decoderLoaded)
-                    type(keys(yiren), into: handler, delegate: delegate)
                     spin(until: { false }, timeout: 0.15)
-                    XCTAssertEqual(buffer(delegate), stockYiren, "\(file) \(damage)")
+                    XCTAssertEqual(buffer(delegate), stock, "\(file) \(kind)")
                     pressReturn(into: handler, delegate: delegate)
-                    XCTAssertEqual(delegate.committed.last, stockYiren)
-                    NSLog("SLOTHE_P4 damaged %@ %@: encoder failed (%@) in %.1f ms -> stock %@",
-                          file, damage.rawValue, runtime.loadError ?? "", ms, delegate.committed.last ?? "")
+                    XCTAssertEqual(delegate.committed.last, stock)
+                    NSLog("SLOTHE_V2 damaged %@ %@: encoder not used (%@) in %.1f ms -> stock %@",
+                          file, kind.rawValue, runtime.loadError ?? "", ms, delegate.committed.last ?? "")
                 } else {
-                    XCTAssertTrue(loaded, "\(file) \(damage)")
-                    XCTAssertTrue(runtime.decoderLoadFailed, "\(file) \(damage)")
+                    XCTAssertTrue(loaded, "\(file) \(kind)")
+                    XCTAssertTrue(runtime.decoderLoadFailed, "\(file) \(kind)")
+                    XCTAssertEqual(runtime.decoderLoadReason, "integrity")
                     XCTAssertFalse(runtime.decoderLoaded)
-                    type(keys(dajia), into: handler, delegate: delegate)
-                    spin(until: { self.buffer(delegate) == "大家看得到媽" })
-                    XCTAssertEqual(buffer(delegate), "大家看得到媽", "\(file) \(damage)")
+                    spin(until: { self.buffer(delegate) == "新莊妙街商圈" })
+                    XCTAssertEqual(buffer(delegate), "新莊妙街商圈", "\(file) \(kind)")
                     pressReturn(into: handler, delegate: delegate)
-                    XCTAssertEqual(delegate.committed.last, "大家看得到媽")
-                    NSLog("SLOTHE_P4 damaged %@ %@: decoder failed (%@) in %.1f ms -> encoder-only %@",
-                          file, damage.rawValue, runtime.decoderLoadError ?? "", ms, delegate.committed.last ?? "")
+                    XCTAssertEqual(delegate.committed.last, "新莊妙街商圈")
+                    NSLog("SLOTHE_V2 damaged %@ %@: decoder not used (%@) in %.1f ms -> encoder-only %@",
+                          file, kind.rawValue, runtime.decoderLoadError ?? "", ms, delegate.committed.last ?? "")
                 }
             }
         }
+        for tag in ["enc", "dec"] {
+            try? FileManager.default.removeItem(atPath: (NSTemporaryDirectory() as NSString).appendingPathComponent("slothe-damaged-" + tag))
+        }
+    }
+
+    // MARK: v2 (Core ML / ANE only)
+
+    func testNotOnTheNeuralEngineMeansNoModel() {
+        // Both models loaded with Core ML CPU_ONLY: the placement check must reject them -> stock.
+        let stock = stockText(xinzhuang, runtime: loadedRuntime())
+        let cpu = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
+        cpu.computeUnitsCPUOnlyForTesting = true
+        XCTAssertFalse(cpu.loadSynchronously())
+        XCTAssertEqual(cpu.loadReason, "not_on_ane")
+        XCTAssertFalse(cpu.decoderLoaded)
+        let pct = (cpu.placementSummary["encoderANECostPercent"] ?? -1).doubleValue
+        XCTAssertLessThan(pct, 50)
+        let d = SlothETestDelegate()
+        let h = makeHandler(cpu, d)
+        type(keys(xinzhuang), into: h, delegate: d)
+        spin(until: { false }, timeout: 0.15)
+        XCTAssertEqual(buffer(d), stock)
+        pressReturn(into: h, delegate: d)
+        XCTAssertEqual(d.committed.last, stock)
+        // Decoder alone off the ANE: the encoder stays, encoder-only choices.
+        let half = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
+        half.decoderCPUOnlyForTesting = true
+        XCTAssertTrue(half.loadSynchronously())
+        XCTAssertEqual(half.decoderLoadReason, "not_on_ane")
+        XCTAssertFalse(half.decoderLoaded)
+        let d2 = SlothETestDelegate()
+        let h2 = makeHandler(half, d2)
+        type(keys(xinzhuang), into: h2, delegate: d2)
+        spin(until: { self.buffer(d2) == "新莊妙街商圈" })
+        XCTAssertEqual(buffer(d2), "新莊妙街商圈")
+        NSLog("SLOTHE_V2 cpu-only: encoder %@ (ANE %.1f%% of cost), decoder %@ (ANE %.1f%%)",
+              cpu.loadReason ?? "", pct, half.decoderLoadReason ?? "", (half.placementSummary["decoderANECostPercent"] ?? -1).doubleValue)
+    }
+
+    func testPrewarmFiresOncePerNewBufferAfterIdle() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = loadedRuntime(logPath: log)
+        XCTAssertEqual(runtime.prewarmIdleSeconds, 1.0)
+        let delegate = SlothETestDelegate()
+        let handler = makeHandler(runtime, delegate)
+        spin(until: { false }, timeout: 1.2)  // models idle > 1 s
+        // (1) first key of a new buffer after idle: one prewarm, off the main thread
+        type("v", into: handler, delegate: delegate)  // ㄒ
+        XCTAssertEqual(runtime.prewarmCount, 1)
+        spin(until: { runtime.prewarmsCompleted >= 1 })
+        XCTAssertEqual(runtime.prewarmsCompleted, 1)
+        // (2) the rest of the buffer: no more prewarms
+        type(String(keys(xinzhuang).dropFirst()), into: handler, delegate: delegate)
+        spin(until: { self.buffer(delegate) == "新莊廟街商圈" })
+        XCTAssertEqual(runtime.prewarmCount, 1)
+        // (3) commit, new buffer right away (models just ran): no prewarm
+        pressReturn(into: handler, delegate: delegate)
+        type(keys(dajia), into: handler, delegate: delegate)
+        XCTAssertEqual(runtime.prewarmCount, 1)
+        spin(until: { false }, timeout: 0.3)
+        pressReturn(into: handler, delegate: delegate)
+        // (4) idle again, new buffer: a second prewarm
+        spin(until: { false }, timeout: 1.2)
+        type(keys(dajia), into: handler, delegate: delegate)
+        XCTAssertEqual(runtime.prewarmCount, 2)
+        spin(until: { runtime.prewarmsCompleted >= 2 })
+        // (5) model switched off: no prewarm
+        Preferences.slothERerankEnabled = false
+        pressReturn(into: handler, delegate: delegate)
+        spin(until: { false }, timeout: 1.2)
+        type(keys(dajia), into: handler, delegate: delegate)
+        Preferences.slothERerankEnabled = true
+        XCTAssertEqual(runtime.prewarmCount, 2)
+        runtime.flushLog()
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        let pRows = text.split(separator: "\n").filter { $0.hasPrefix("P\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false) }
+        XCTAssertEqual(pRows.count, 2)
+        XCTAssertTrue(pRows.allSatisfy { $0.count == 5 && Double($0[2])! > 1000 && Double($0[3]) != nil && Double($0[4]) != nil }, "\(pRows)")
+        XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII })
+        NSLog("SLOTHE_V2 prewarm rows %@", pRows.map { $0.joined(separator: " ") }.joined(separator: " | "))
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testInstallLoadsModelsAndReportsPlacement() throws {
+        // The code path `McBopomofoLM install` runs (main.swift) before it registers the input source.
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: log)
+        runtime.keepANECacheForTesting = true  // the cleared-cache compile is testInstallFromAClearedCache (opt-in)
+        var lines: [String] = []
+        let t0 = Date()
+        let ok = runtime.loadForInstall { lines.append($0) }
+        let seconds = Date().timeIntervalSince(t0)
+        XCTAssertTrue(ok, lines.joined(separator: "\n"))
+        for needle in ["files verified", "encoder L8 ready", "encoder L256 ready", "decoder t16 ready", "decoder t96 ready",
+                       "placement (MLComputePlan)", "latency probe", "encoder ON the Neural Engine", "decoder ON the Neural Engine",
+                       "Models ready in"] {
+            XCTAssertTrue(lines.contains { $0.contains(needle) }, "missing progress line: \(needle)")
+        }
+        XCTAssertTrue(runtime.loaded && runtime.decoderLoaded)
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        XCTAssertTrue(text.hasPrefix("# McBopomofoLM latency log v4"))
+        let rRows = text.split(separator: "\n").filter { $0.hasPrefix("R\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false) }
+        XCTAssertEqual(rRows.map { String($0[2]) }, ["encoder", "decoder"])
+        XCTAssertTrue(rRows.allSatisfy { $0[3] == "ane" && $0[4] == "ok" }, "\(rRows)")
+        NSLog("SLOTHE_V2 install path %.1f s:\n%@", seconds, lines.joined(separator: "\n"))
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testInstallFromAClearedCache() throws {
+        // What `McBopomofoLM install` really does: clear this app's ANE compile cache, then compile
+        // and load both models from their in-bundle paths. Measures the first-install compile.
+        // Opt-in (a few minutes): TEST_RUNNER_SLOTHE_BENCH=1.
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SLOTHE_BENCH"] == "1", "set TEST_RUNNER_SLOTHE_BENCH=1")
+        let la0 = Self.loadAvg()
+        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
+        var lines: [String] = []
+        let t0 = Date()
+        let ok = runtime.loadForInstall { lines.append($0) }
+        NSLog("SLOTHE_V2 install from a cleared cache: %.1f s, ok=%d, load %@ -> %@, cache %@:\n%@", Date().timeIntervalSince(t0), ok, la0, Self.loadAvg(),
+              SlothERuntime.aneCachePath ?? "-", lines.joined(separator: "\n"))
+        XCTAssertTrue(ok)
+        XCTAssertTrue(lines.contains { $0.contains("Cleared this app's Neural Engine compile cache") })
+    }
+
+    func testStaleCacheAfterReplacingTheModelsSelfHeals() throws {
+        // The app replaced at the same path (new files, same content) with the old cache kept:
+        // if MLComputePlan fails, the runtime clears its cache once and compiles again.
+        // Opt-in (compiles twice): TEST_RUNNER_SLOTHE_BENCH=1.
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SLOTHE_BENCH"] == "1", "set TEST_RUNNER_SLOTHE_BENCH=1")
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("slothe-replaced")
+        try? FileManager.default.removeItem(atPath: dir)
+        try FileManager.default.copyItem(atPath: Self.resourcePath, toPath: dir)
+        let first = SlothERuntime(resourcePath: dir, logPath: nil)
+        XCTAssertTrue(first.loadSynchronously())
+        // replace every file with a fresh copy (what `rm -rf` + `ditto` of a new app build does)
+        try FileManager.default.removeItem(atPath: dir)
+        try FileManager.default.copyItem(atPath: Self.resourcePath, toPath: dir)
+        let logDir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (logDir as NSString).appendingPathComponent("latency.log")
+        let second = SlothERuntime(resourcePath: dir, logPath: log)
+        second.simulatePlanFailureOnceForTesting = true  // force the self-heal path even if Core ML copes
+        let t0 = Date()
+        let ok = second.loadSynchronously()
+        second.flushLog()
+        let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+        NSLog("SLOTHE_V2 replaced models: second load %.1f s ok=%d decoder=%d cache_cleared=%d reasons %@/%@",
+              Date().timeIntervalSince(t0), ok, second.decoderLoaded, text.contains("compile cache cleared"),
+              second.loadReason ?? "", second.decoderLoadReason ?? "")
+        XCTAssertTrue(ok && second.decoderLoaded)
+        XCTAssertTrue(text.contains("Neural Engine compile cache cleared (encoder plan_failed)"))
+        try? FileManager.default.removeItem(atPath: dir)
+        try? FileManager.default.removeItem(atPath: logDir)
+    }
+
+    func testFootprintThroughTheLoad() throws {
+        // phys_footprint at every load step of one runtime (opt-in; run alone for clean totals).
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SLOTHE_BENCH"] == "1", "set TEST_RUNNER_SLOTHE_BENCH=1")
+        LanguageModelManager.loadDataModels()
+        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
+        runtime.keepANECacheForTesting = true
+        var lines: [String] = [String(format: "start: footprint %.1f MB", Double(SlothERuntime.physFootprintBytes()) / 1048576)]
+        XCTAssertTrue(runtime.loadForInstall { lines.append(String(format: "%@  [footprint %.1f MB]", $0, Double(SlothERuntime.physFootprintBytes()) / 1048576)) })
+        let d = SlothETestDelegate()
+        let h = makeHandler(runtime, d)
+        type(keys(xinzhuang), into: h, delegate: d)
+        spin(until: { self.buffer(d) == "新莊廟街商圈" })
+        lines.append(String(format: "after one sentence: footprint %.1f MB", Double(SlothERuntime.physFootprintBytes()) / 1048576))
+        NSLog("SLOTHE_V2 footprint:\n%@", lines.joined(separator: "\n"))
+    }
+
+    @available(macOS 15.0, *)
+    func testFootprintPerCoreMLInstance() throws {
+        // Is the footprint per MLModel instance? Load decoder t16 twice, then release. Opt-in.
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SLOTHE_BENCH"] == "1", "set TEST_RUNNER_SLOTHE_BENCH=1")
+        func fp() -> Double { Double(SlothERuntime.physFootprintBytes()) / 1048576 }
+        let url = URL(fileURLWithPath: (Self.resourcePath as NSString).appendingPathComponent("dec60m.mlmodelc"))
+        var lines = [String(format: "start %.1f MB", fp())]
+        var keep: [MLModel] = []
+        for (i, f) in ["t16", "t16", "t32"].enumerated() {
+            let cfg = MLModelConfiguration()
+            cfg.computeUnits = .cpuAndNeuralEngine
+            cfg.functionName = f
+            keep.append(try MLModel(contentsOf: url, configuration: cfg))
+            lines.append(String(format: "instance %d (%@) -> %.1f MB", i + 1, f, fp()))
+        }
+        keep.removeAll()
+        lines.append(String(format: "released -> %.1f MB", fp()))
+        NSLog("SLOTHE_V2 per-instance footprint: %@", lines.joined(separator: " | "))
+    }
+
+    func testEndToEndLatencyWithIdleGaps() throws {
+        // Per-syllable key -> final result applied (encoder + decoder + re-walk + refresh), after an
+        // idle gap of 0 / 0.2 / 2 / 10 s before the syllable, with and without the prewarm.
+        // Opt-in (about 5 minutes): TEST_RUNNER_SLOTHE_BENCH=1 xcodebuild test ...
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SLOTHE_BENCH"] == "1", "set TEST_RUNNER_SLOTHE_BENCH=1")
+        let bundle = Bundle(for: SlothEPipelineTests.self)
+        let path = (bundle.resourcePath! as NSString).appendingPathComponent("SlothEFixtures/inwalk_parity.jsonl")
+        let lines = (try? String(contentsOfFile: path, encoding: .utf8))?.split(separator: "\n") ?? []
+        let sentences: [[String]] = lines.compactMap { line in
+            let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            return obj?["readings"] as? [String]
+        }
+        func p(_ v: [Double], _ q: Double) -> Double { let s = v.sorted(); return s.isEmpty ? .nan : s[min(s.count - 1, Int((Double(s.count - 1) * q).rounded()))] }
+        var report: [String] = []
+        var cursor = 0
+        for (gap, events) in [(0.0, 60), (0.2, 30), (2.0, 12), (10.0, 8)] {
+            for prewarm in [false, true] {
+                let runtime = loadedRuntime()
+                runtime.prewarmIdleSeconds = prewarm ? 1.0 : 1e9
+                var e2e: [Double] = []
+                let la0 = Self.loadAvg()
+                let delegate = SlothETestDelegate()
+                var handler = makeHandler(runtime, delegate)
+                for _ in 0..<events {
+                    let readings = sentences[cursor % sentences.count]
+                    cursor += 1
+                    if gap > 0 {
+                        // new buffer after the idle gap; measure its first syllable
+                        pressReturn(into: handler, delegate: delegate)
+                        handler = makeHandler(runtime, delegate)
+                        spin(until: { false }, timeout: gap)
+                        let before = runtime.recentEndToEndMilliseconds.count
+                        let k = Array(keys([readings[0]])).map { String($0) }
+                        for (i, key) in k.enumerated() {
+                            type(key, into: handler, delegate: delegate)
+                            if i + 1 < k.count { spin(until: { false }, timeout: 0.08) }  // ~typing speed
+                        }
+                        spin(until: { runtime.recentEndToEndMilliseconds.count > before }, timeout: 2)
+                        if let v = runtime.recentEndToEndMilliseconds.last, runtime.recentEndToEndMilliseconds.count > before { e2e.append(v.doubleValue) }
+                    } else {
+                        // continuous typing inside one buffer: every syllable
+                        for syl in readings.prefix(6) {
+                            let before = runtime.recentEndToEndMilliseconds.count
+                            type(keys([syl]), into: handler, delegate: delegate)
+                            spin(until: { runtime.recentEndToEndMilliseconds.count > before }, timeout: 2)
+                            if let v = runtime.recentEndToEndMilliseconds.last, runtime.recentEndToEndMilliseconds.count > before { e2e.append(v.doubleValue) }
+                            spin(until: { false }, timeout: 0.03)
+                        }
+                        pressReturn(into: handler, delegate: delegate)
+                        handler = makeHandler(runtime, delegate)
+                    }
+                }
+                let row = String(format: "gap %5.1f s prewarm %@ n=%3d e2e P50 %6.2f P95 %6.2f max %6.2f ms | prewarms %lu | load %@ -> %@",
+                                 gap, prewarm ? "on " : "off", e2e.count, p(e2e, 0.5), p(e2e, 0.95), e2e.max() ?? .nan,
+                                 runtime.prewarmCount, la0, Self.loadAvg())
+                report.append(row)
+                NSLog("SLOTHE_V2_E2E %@", row)
+                if gap == 0 { break }  // prewarm only acts after idle
+            }
+        }
+        NSLog("SLOTHE_V2_E2E summary\n%@", report.joined(separator: "\n"))
     }
 }
 

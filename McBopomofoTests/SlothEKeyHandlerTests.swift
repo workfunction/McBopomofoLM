@@ -9,8 +9,8 @@ import XCTest
 class SlothEKeyHandlerTests: XCTestCase {
     static let resourcePath = (Bundle.main.resourcePath! as NSString).appendingPathComponent("SlothE")
     static let loadedRuntime: SlothERuntime = {
-        let runtime = SlothERuntime(resourcePath: resourcePath, logPath: nil)
-        _ = runtime.loadSynchronously()
+        // v2: one Core ML (ANE) load per test process, shared by every test runtime
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: nil)
         // Opening the window waits for the pending in-walk pass; allow more than
         // the 30 ms default so a loaded test machine cannot turn this into a
         // stock-order window (the 30 ms bound has its own test).
@@ -40,7 +40,7 @@ class SlothEKeyHandlerTests: XCTestCase {
         // (the demotion has its own tests in SlothEAsyncTests / SlothEInWalkTests).
         Preferences.slothEDemoteShownCandidate = false
         LanguageModelManager.loadDataModels()
-        XCTAssertTrue(Self.loadedRuntime.loaded, "bundled SlothE-T model did not load")
+        XCTAssertTrue(Self.loadedRuntime.loaded, "bundled SlothE-T model did not load: \(Self.loadedRuntime.loadError ?? "")")
     }
 
     override func tearDownWithError() throws {
@@ -74,9 +74,9 @@ class SlothEKeyHandlerTests: XCTestCase {
         return choosing.candidates.map { $0.value }
     }
 
-    // ㄏㄨㄟˊ ㄈㄨˋ: 12M prefers 回覆 (-0.19) over 回復 (-2.92).
+    // ㄏㄨㄟˊ ㄈㄨˋ: the 25M (Core ML) prefers 回覆 (-0.23) over 回復 (-2.84).
     let huifu = "cjo6zj4"
-    // ㄊㄞˊ ㄨㄢ: 12M prefers 臺灣 (-0.002) over 台灣 (-8.53); variant guard applies.
+    // ㄊㄞˊ ㄨㄢ: the 25M prefers 臺灣 (-0.005) over 台灣 (-7.77); variant guard applies.
     let taiwan = "w96j0 "
     // ㄨㄛˇ ㄐㄧㄣ ㄊㄧㄢ ㄑㄩˋ ㄕˋ ㄔㄤˇ
     let market = "ji3rup wu0 fm4g4t;3"
@@ -140,8 +140,8 @@ class SlothEKeyHandlerTests: XCTestCase {
     func testKeyEventsAreLoggedWithoutText() throws {
         let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
         let log = (dir as NSString).appendingPathComponent("latency.log")
-        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: log)
-        XCTAssertTrue(runtime.loadSynchronously())
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: log)
+        XCTAssertTrue(runtime.loaded)
         runtime.commitWaitMilliseconds = 2000
         _ = candidates(market, runtime: runtime)
         runtime.flushLog()

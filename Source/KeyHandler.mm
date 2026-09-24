@@ -385,9 +385,15 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
             state = [self buildInputtingState];
         }
     }
+    BOOL bufferWasEmpty = _grid->length() == 0 && _bpmfReadingBuffer->isEmpty();
     _slothInKeystroke = YES;
     BOOL handled = [self _handleInputUntimed:input state:state stateCallback:stateCallback errorCallback:errorCallback];
     _slothInKeystroke = NO;
+    // McBopomofoLM: the first key of a new buffer wakes the Neural Engine
+    // (one dummy call per model, off the main thread) if the models idled.
+    if (bufferWasEmpty && (_grid->length() > 0 || !_bpmfReadingBuffer->isEmpty()) && [self _activeSlothEEngine] != nullptr) {
+        [runtime prewarmIfIdle];
+    }
     double handlerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     if (handled) {
         [runtime endKeystrokeWithBufferLength:_grid->length() handlerMilliseconds:handlerMs state:[self _slothEStateName]];
@@ -2634,7 +2640,7 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     if (_slothERuntime.loaded) {
         return @"on";
     }
-    return _slothERuntime.loadFailed ? @"failed" : @"loading";
+    return _slothERuntime.loadFailed ? @"none" : @"loading";
 }
 
 - (BOOL)_slothEDecoderActive

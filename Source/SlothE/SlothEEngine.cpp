@@ -17,13 +17,11 @@
 
 #include <sys/stat.h>
 
-#include "slothe.h"
 
 namespace McBopomofoSlothE {
 
 namespace {
 
-constexpr const char* kModelFileName = kEncoderModelFileName;
 constexpr double kNegInf = -std::numeric_limits<double>::infinity();
 
 size_t Utf8SequenceLength(unsigned char lead) {
@@ -507,16 +505,15 @@ std::vector<size_t> RerankOrder(const std::vector<RerankItem>& items,
 
 // -------------------------------------------------------------------- Engine
 
-Engine::~Engine() {
-  if (model_ != nullptr) {
-    slothe_free(model_);
-    model_ = nullptr;
-  }
-}
-
-bool Engine::load(const std::string& resourceDir, std::string* error) {
-  if (model_ != nullptr) {
+bool Engine::load(const std::string& resourceDir,
+                  std::unique_ptr<EncoderBackend> backend, std::string* error) {
+  std::lock_guard<std::mutex> modelLock(modelMutex_);
+  if (backend_ != nullptr) {
     return true;
+  }
+  if (backend == nullptr) {
+    *error = "no encoder backend";
+    return false;
   }
   if (!vocab_.load(resourceDir, error)) {
     return false;
@@ -524,42 +521,25 @@ bool Engine::load(const std::string& resourceDir, std::string* error) {
   if (!variants_.load(JoinPath(resourceDir, "variants.tsv"), error)) {
     return false;
   }
-  // Cheap first check; the loader itself (patched, slothe-load-errors.patch)
-  // returns nullptr on any malformed file instead of exit()ing.
-  std::string path = JoinPath(resourceDir, kModelFileName);
-  {
-    std::ifstream f(path, std::ios::binary);
-    char magic[4] = {0, 0, 0, 0};
-    if (!f || !f.read(magic, 4) || std::memcmp(magic, "GGUF", 4) != 0) {
-      *error = "missing or invalid model file " + path;
-      return false;
-    }
-  }
-  slothe_model* m = slothe_load(path.c_str());
-  if (m == nullptr) {
-    *error = "slothe_load failed";
-    return false;
-  }
-  if (slothe_n_char(m) != vocab_.charCount() ||
-      slothe_n_syl(m) != vocab_.syllableCount()) {
-    slothe_free(m);
+  if (backend->charCount() != vocab_.charCount() ||
+      backend->syllableCount() != vocab_.syllableCount()) {
     *error = "model / vocabulary size mismatch";
     return false;
   }
-  // Probe pass: damaged weights that still parse give NaN/inf logits.
-  {
-    const int32_t probe[2] = {1, 1};
-    std::vector<float> logits(2 * static_cast<size_t>(vocab_.charCount()));
-    slothe_logits(m, probe, 2, logits.data());
-    for (float v : logits) {
-      if (!std::isfinite(v)) {
-        slothe_free(m);
-        *error = "model probe gave non-finite logits";
-        return false;
-      }
+  // Probe pass: a damaged model that still loads gives NaN/inf logits.
+  std::vector<float> logits;
+  if (!backend->logits(std::vector<int32_t> {1, 1}, &logits) ||
+      logits.size() != 2 * static_cast<size_t>(vocab_.charCount())) {
+    *error = "model probe failed";
+    return false;
+  }
+  for (float v : logits) {
+    if (!std::isfinite(v)) {
+      *error = "model probe gave non-finite logits";
+      return false;
     }
   }
-  model_ = m;
+  backend_ = std::move(backend);
   return true;
 }
 
@@ -619,8 +599,8 @@ std::shared_ptr<const ForwardResult> Engine::forward(
     bool* cacheHit) {
   *forwardMs = 0;
   *cacheHit = false;
-  if (model_ == nullptr || readings.empty() ||
-      readings.size() > kMaxReadings) {
+  if (backend_ == nullptr || readings.empty() ||
+      readings.size() > std::min(kMaxReadings, backend_->maxLength())) {
     return nullptr;
   }
   std::string key = CacheKey(readings);
@@ -648,9 +628,10 @@ std::shared_ptr<const ForwardResult> Engine::forward(
     }
     r->ids.push_back(cached->second);
   }
-  r->logits.resize(r->ids.size() * static_cast<size_t>(r->charCount));
-  slothe_logits(model_, r->ids.data(), static_cast<int>(r->ids.size()),
-                r->logits.data());
+  if (!backend_->logits(r->ids, &r->logits) ||
+      r->logits.size() != r->ids.size() * static_cast<size_t>(r->charCount)) {
+    return nullptr;
+  }
   ComputeLogZ(r.get(), vocab_);
   auto t1 = std::chrono::steady_clock::now();
   *forwardMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -667,30 +648,24 @@ std::shared_ptr<const ForwardResult> Engine::forward(
   return result;
 }
 
-void Engine::setGraphCacheCapacity(int capacity) {
+bool Engine::prewarm(double* milliseconds) {
+  auto t0 = std::chrono::steady_clock::now();
   std::lock_guard<std::mutex> modelLock(modelMutex_);
-  if (model_ != nullptr) {
-    slothe_set_graph_cache_capacity(model_, capacity);
-  }
-}
-
-void Engine::graphCacheStats(int* graphs, size_t* computeBytes,
-                             uint64_t* builds) const {
-  std::lock_guard<std::mutex> modelLock(modelMutex_);
-  if (model_ == nullptr) {
-    *graphs = 0;
-    *computeBytes = 0;
-    *builds = 0;
-    return;
-  }
-  slothe_graph_cache_stats(model_, graphs, computeBytes, builds);
+  std::vector<float> scratch;
+  bool ok = backend_ != nullptr && backend_->logits(std::vector<int32_t> {1}, &scratch);
+  *milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  return ok;
 }
 
 // ---------------------------------------------------------- runtime manifest
 
 std::vector<std::string> EncoderRuntimeFiles() {
-  return {kEncoderModelFileName, "syl_vocab.tsv", "char2id.tsv",
+  return {kEncoderModelName, kEncoderEmbeddingName, "syl_vocab.tsv", "char2id.tsv",
           "syl2legal.bin", "variants.tsv"};
+}
+
+std::vector<std::string> DecoderRuntimeFiles() {
+  return {kDecoderModelName, kDecoderTokenizerName};
 }
 
 bool Sha256File(const std::string& path, std::string* hexDigest,
@@ -750,19 +725,14 @@ bool VerifyRuntimeFiles(const std::string& resourceDir,
     }
     listed[name] = {sha, std::strtoull(sizeText.c_str(), nullptr, 10)};
   }
-  for (const std::string& name : names) {
-    auto it = listed.find(name);
-    if (it == listed.end()) {
-      *error = name + " is not in the manifest";
-      return false;
-    }
+  auto check = [&](const std::string& name, const std::pair<std::string, uint64_t>& want) {
     std::string path = JoinPath(resourceDir, name);
     struct stat st;
-    if (::stat(path.c_str(), &st) != 0) {
+    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
       *error = "missing " + name;
       return false;
     }
-    if (static_cast<uint64_t>(st.st_size) != it->second.second) {
+    if (static_cast<uint64_t>(st.st_size) != want.second) {
       *error = "size mismatch for " + name;
       return false;
     }
@@ -772,8 +742,33 @@ bool VerifyRuntimeFiles(const std::string& resourceDir,
       *error = "cannot read " + name;
       return false;
     }
-    if (size != it->second.second || sha != it->second.first) {
+    if (size != want.second || sha != want.first) {
       *error = "sha256 mismatch for " + name;
+      return false;
+    }
+    return true;
+  };
+  for (const std::string& name : names) {
+    auto it = listed.find(name);
+    if (it != listed.end()) {
+      if (!check(name, it->second)) {
+        return false;
+      }
+      continue;
+    }
+    // a directory (compiled model): every listed file under it
+    std::string prefix = name + "/";
+    size_t found = 0;
+    for (const auto& [path, want] : listed) {
+      if (path.compare(0, prefix.size(), prefix) == 0) {
+        ++found;
+        if (!check(path, want)) {
+          return false;
+        }
+      }
+    }
+    if (found == 0) {
+      *error = name + " is not in the manifest";
       return false;
     }
   }

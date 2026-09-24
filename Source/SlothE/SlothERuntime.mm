@@ -4,6 +4,8 @@
 
 #include <mach/mach.h>
 
+#include "SlothECoreML.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -14,26 +16,33 @@
 #include <vector>
 
 static NSString *const kLatencyLogHeader =
-    @"# McBopomofoLM latency log v3. No typed text is recorded; buf_len = number of readings in the buffer.\n"
+    @"# McBopomofoLM latency log v4 (Core ML / ANE build). No typed text is recorded; buf_len = number of readings.\n"
     @"# K = one key event handled by the input method:\n"
     @"#   K time buf_len handler_ms walk_ms inwalk_ms prov_ms fwd rerank_ms settle settle_ms lm\n"
     @"#   walk_ms = stock walk; inwalk_ms = exact re-pick during the key; prov_ms = provisional re-pick with the\n"
     @"#   previous pass (anti-flicker); fwd = queued / none; settle = none / ready / waited / partial / timeout\n"
-    @"#   (commit or candidate window waiting up to 30 ms for encoder+decoder); lm = on/off/loading/failed/plain\n"
+    @"#   (commit or candidate window waiting up to 30 ms for encoder+decoder); lm = on / off / loading / none\n"
+    @"#   (no usable model: see the R lines) / plain\n"
     @"# A = one background pass (SlothE-T encoder, then the decoder) finished:\n"
     @"#   A time buf_len queue_ms fwd_ms dec_ms dec_calls pins inwalk_ms e2e_ms result decoder\n"
     @"#   e2e_ms = key event to result applied; result = applied / unchanged / stale / skipped / deferred / consumed;\n"
-    @"#   decoder = off / none (no node to check) / scored / stale (abandoned, buffer changed) / failed\n";
+    @"#   decoder = off / none (no node to check) / scored / stale (abandoned, buffer changed) / failed\n"
+    @"# R = model runtime after a load attempt (encoder, then decoder):\n"
+    @"#   R time model runtime reason load_ms plan_ane_pct probe_ms plan_ms\n"
+    @"#   runtime = ane / none; reason = ok / integrity / missing / load_error / not_on_ane / probe_slow / plan_failed /\n"
+    @"#   macos / vocab / probe_failed / no_encoder; load_ms includes the ANE compile when its cache is cold;\n"
+    @"#   plan_ane_pct = lowest share of estimated cost on the Neural Engine over the model's functions (MLComputePlan)\n"
+    @"# P = prewarm: first key of a new buffer after the models idled > 1 s; one dummy call on each model:\n"
+    @"#   P time idle_ms enc_ms dec_ms\n";
+static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
 static const unsigned long long kMaxLatencyLogBytes = 4ull * 1024ull * 1024ull;
-static const int kWarmGraphLengths = 8;
-static const int kGraphCacheCapacity = 8;
 static const size_t kMaxEndToEndSamples = 4096;
 
 @implementation SlothERuntime {
-    std::unique_ptr<McBopomofoSlothE::Engine> _engine;
-    std::unique_ptr<McBopomofoSlothE::Decoder> _decoder;
+    std::shared_ptr<McBopomofoSlothE::Engine> _engine;
+    std::shared_ptr<McBopomofoSlothE::Decoder> _decoder;
     McBopomofoSlothE::DecoderScoreCache _scoreCache;
     std::atomic<bool> _decoderLoadedFlag;
     std::atomic<bool> _decoderFailedFlag;
@@ -44,8 +53,16 @@ static const size_t kMaxEndToEndSamples = 4096;
     std::atomic<bool> _failedFlag;
     NSString *_loadErrorString;
     NSString *_decoderLoadErrorString;
+    NSString *_loadReason;
+    NSString *_decoderLoadReason;
     double _loadMs;
     double _verifyMs;
+    McBopomofoSlothE::CoreMLLoadInfo _encInfo;
+    McBopomofoSlothE::CoreMLLoadInfo _decInfo;
+    std::atomic<uint64_t> _lastPrewarmNs;
+    NSUInteger _prewarmCount;
+    std::atomic<NSUInteger> _prewarmDone;
+    BOOL _aneCacheCleared;
     dispatch_queue_t _loadQueue;
     dispatch_queue_t _logQueue;
     NSFileHandle *_logHandle;              // log queue only
@@ -79,6 +96,12 @@ static const size_t kMaxEndToEndSamples = 4096;
 @synthesize computeQueue = _computeQueue;
 @synthesize debugComputeDelayMilliseconds = _debugComputeDelayMilliseconds;
 @synthesize commitWaitMilliseconds = _commitWaitMilliseconds;
+@synthesize prewarmIdleSeconds = _prewarmIdleSeconds;
+@synthesize computeUnitsCPUOnlyForTesting = _computeUnitsCPUOnlyForTesting;
+@synthesize decoderCPUOnlyForTesting = _decoderCPUOnlyForTesting;
+@synthesize installProgress = _installProgress;
+@synthesize keepANECacheForTesting = _keepANECacheForTesting;
+@synthesize simulatePlanFailureOnceForTesting = _simulatePlanFailureOnceForTesting;
 @synthesize appliedCount = _appliedCount;
 @synthesize unchangedCount = _unchangedCount;
 @synthesize staleCount = _staleCount;
@@ -132,8 +155,44 @@ static const size_t kMaxEndToEndSamples = 4096;
         _logQueue = dispatch_queue_create("org.openvanilla.McBopomofoLM.slothe.log", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
         _computeQueue = dispatch_queue_create("org.openvanilla.McBopomofoLM.slothe.compute", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         _commitWaitMilliseconds = 30;
+        _prewarmIdleSeconds = 1.0;
+        _lastPrewarmNs.store(0);
+        _prewarmDone.store(0);
+        _computeUnitsCPUOnlyForTesting = NO;
         _ksForward = @"none";
         _ksSettle = @"none";
+    }
+    return self;
+}
+
++ (SlothERuntime *)sharedLoadedRuntimeForTesting
+{
+    static SlothERuntime *shared;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *resources = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
+        shared = [[SlothERuntime alloc] initWithResourcePath:resources logPath:nil];
+        [shared loadSynchronously];
+    });
+    return shared;
+}
+
+- (instancetype)initSharingModelsOf:(SlothERuntime *)other logPath:(nullable NSString *)logPath
+{
+    self = [self initWithResourcePath:other.resourcePath logPath:logPath];
+    if (self) {
+        _engine = other->_engine;
+        _decoder = other->_decoder;
+        _loadMs = other->_loadMs;
+        _decoderLoadMs = other->_decoderLoadMs;
+        _encInfo = other->_encInfo;
+        _decInfo = other->_decInfo;
+        _loadReason = other->_loadReason;
+        _decoderLoadReason = other->_decoderLoadReason;
+        _loadedFlag.store(other->_loadedFlag.load());
+        _failedFlag.store(other->_failedFlag.load());
+        _decoderLoadedFlag.store(other->_decoderLoadedFlag.load());
+        _decoderFailedFlag.store(other->_decoderFailedFlag.load());
     }
     return self;
 }
@@ -201,8 +260,8 @@ static const size_t kMaxEndToEndSamples = 4096;
 - (McBopomofoSlothE::DecoderParams)decoderParams
 {
     McBopomofoSlothE::DecoderParams params;
-    params.lambda = 3.0;  // final config A (walk2/frozen_final.json); v1 was 1.5
-    params.tau = 0.9;
+    params.lambda = 2.0;  // config A' (walk2/frozen_final2.json); v1 was lambda 3, tau 0.9
+    params.tau = 0.5;
     params.topK = 3;
     return params;
 }
@@ -340,6 +399,37 @@ static const size_t kMaxEndToEndSamples = 4096;
     return _loadedFlag.load();
 }
 
+- (McBopomofoSlothE::CoreMLLoadOptions)_loadOptionsForDecoder:(BOOL)decoder
+{
+    McBopomofoSlothE::CoreMLLoadOptions options;
+    BOOL cpuOnly = _computeUnitsCPUOnlyForTesting || (decoder && _decoderCPUOnlyForTesting);
+    options.units = cpuOnly ? McBopomofoSlothE::ComputeUnits::kCPUOnly : McBopomofoSlothE::ComputeUnits::kCPUAndNeuralEngine;
+    void (^progress)(NSString *) = _installProgress;
+    if (progress != nil) {
+        options.progress = [progress](const std::string &line) { progress(@(line.c_str())); };
+    }
+    return options;
+}
+
+- (void)_progress:(NSString *)line
+{
+    if (_installProgress != nil) {
+        _installProgress(line);
+    }
+}
+
+- (void)_logRuntime:(NSString *)model info:(const McBopomofoSlothE::CoreMLLoadInfo &)info reason:(NSString *)reason
+{
+    NSString *pct = info.aneCostPercent >= 0 ? [NSString stringWithFormat:@"%.1f", info.aneCostPercent] : @"";
+    NSString *probe = info.probeMs >= 0 ? [NSString stringWithFormat:@"%.2f", info.probeMs] : @"";
+    NSString *plan = info.planChecked ? [NSString stringWithFormat:@"%.0f", info.planMs] : @"";
+    NSString *tail = [NSString stringWithFormat:@"\t%@\t%@\t%@\t%.0f\t%@\t%@\t%@\n", model, [reason isEqualToString:@"ok"] ? @"ane" : @"none", reason, info.loadMs, pct, probe, plan];
+    [self _appendTimestampedLine:@"R" tail:tail];
+}
+
+// Encoder first (its result alone already drives the in-walk), then the
+// decoder. Core ML only, CPU_AND_NE; a model that fails integrity, does not
+// load, or is not placed on the ANE is not used -- no CPU fallback.
 - (void)_loadOnLoadQueue
 {
     if (_loadedFlag.load() || _failedFlag.load()) {
@@ -347,92 +437,257 @@ static const size_t kMaxEndToEndSamples = 4096;
         return;
     }
     auto t0 = std::chrono::steady_clock::now();
-    auto engine = std::make_unique<McBopomofoSlothE::Engine>();
-    std::string error;
     std::string dir(_resourcePath.fileSystemRepresentation);
-    // Size + sha256 of every encoder input against runtime-manifest.txt first:
-    // a damaged or swapped file never reaches the loader. Failure = stock.
+    std::string error;
+    NSString *reason = @"ok";
+    std::unique_ptr<McBopomofoSlothE::Engine> engine;
+    [self _progress:@"SlothE-T 25M encoder (enc25m.mlmodelc):"];
     bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::EncoderRuntimeFiles(), &error);
     _verifyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    ok = ok && engine->load(dir, &error);
-    if (ok) {
-        // Warm up the compute threads once; the result stays in the cache.
-        double ms = 0;
-        bool hit = false;
-        engine->forward(std::vector<std::string> { "ㄅㄚ" }, &ms, &hit);
+    _encInfo = McBopomofoSlothE::CoreMLLoadInfo();
+    if (!ok) {
+        reason = @"integrity";
+        [self _progress:[NSString stringWithFormat:@"  integrity check failed: %s", error.c_str()]];
+    } else {
+        [self _progress:[NSString stringWithFormat:@"  files verified (size + sha256) in %.0f ms", _verifyMs]];
+        auto backend = McBopomofoSlothE::LoadCoreMLEncoder(dir, [self _loadOptionsForDecoder:NO], &_encInfo);
+        if (backend != nullptr && _simulatePlanFailureOnceForTesting) {
+            _simulatePlanFailureOnceForTesting = NO;
+            backend.reset();
+            _encInfo.ok = false;
+            _encInfo.reason = "plan_failed";
+            _encInfo.detail = "simulated for a test";
+        }
+        if (backend == nullptr && _encInfo.reason == "plan_failed" && [self _clearANECacheOnce:@"encoder plan_failed"]) {
+            [self _progress:@"  MLComputePlan failed (stale Neural Engine cache?): cache cleared, compiling again"];
+            backend = McBopomofoSlothE::LoadCoreMLEncoder(dir, [self _loadOptionsForDecoder:NO], &_encInfo);
+        }
+        if (backend == nullptr) {
+            ok = false;
+            reason = @(_encInfo.reason.c_str());
+            error = _encInfo.detail;
+        } else {
+            engine = std::make_unique<McBopomofoSlothE::Engine>();
+            if (!engine->load(dir, std::move(backend), &error)) {
+                ok = false;
+                reason = [@(error.c_str()) hasPrefix:@"model probe"] ? @"probe_failed" : @"vocab";
+                engine.reset();
+            }
+        }
     }
     double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    [self _logRuntime:@"encoder" info:_encInfo reason:reason];
     if (ok) {
         _loadMs = elapsed;
         _engine = std::move(engine);
+        _loadReason = @"ok";
         _loadedFlag.store(true, std::memory_order_release);
-        [self _appendLogLine:[NSString stringWithFormat:@"# %@ SlothE-T 12M loaded in %.1f ms (files verified in %.1f ms)\n", [NSDate date], elapsed, _verifyMs]];
-        // Pre-build the per-length compute graphs for typical buffer lengths so
-        // the first keystrokes do not pay for graph construction. Runs after
-        // `loaded` is set; the engine serializes these with real passes.
-        _engine->setGraphCacheCapacity(kGraphCacheCapacity);
-        auto warm0 = std::chrono::steady_clock::now();
-        std::vector<std::string> warm;
-        for (int t = 2; t <= kWarmGraphLengths; ++t) {
-            warm.assign(static_cast<size_t>(t), "ㄅㄚ");
-            double ms = 0;
-            bool hit = false;
-            _engine->forward(warm, &ms, &hit);
-        }
-        int graphs = 0;
-        size_t bytes = 0;
-        uint64_t builds = 0;
-        _engine->graphCacheStats(&graphs, &bytes, &builds);
-        double warmMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - warm0).count();
-        [self _appendLogLine:[NSString stringWithFormat:@"# %@ warmed %d compute graphs (%.1f MB) in %.1f ms\n", [NSDate date], graphs, static_cast<double>(bytes) / 1048576.0, warmMs]];
+        [self _progress:[NSString stringWithFormat:@"  encoder ON the Neural Engine: loaded in %.1f s (ANE compile included when not cached)", elapsed / 1000.0]];
         [self _loadDecoderOnLoadQueue];
     } else {
-        _loadErrorString = @(error.c_str());
+        _loadReason = reason;
+        _loadErrorString = [NSString stringWithFormat:@"%@: %s", reason, error.c_str()];
         _failedFlag.store(true, std::memory_order_release);
-        NSLog(@"McBopomofoLM: SlothE-T load failed: %@", _loadErrorString);
-        [self _appendLogLine:[NSString stringWithFormat:@"# %@ SlothE-T load failed; stock McBopomofo behaviour\n", [NSDate date]]];
+        NSLog(@"McBopomofoLM: SlothE-T encoder not used (%@); stock McBopomofo behaviour", _loadErrorString);
+        [self _progress:[NSString stringWithFormat:@"  encoder NOT used (%@): the input method behaves like stock McBopomofo", _loadErrorString]];
+        _decoderLoadReason = @"no_encoder";
+        _decoderFailedFlag.store(true, std::memory_order_release);
     }
     _loadingFlag.store(false, std::memory_order_release);
 }
 
-// The SlothE decoder (phase 3), after the encoder; until it is loaded the
-// key handler runs the encoder-only (phase 2) path.
+// The decoder, after the encoder; until it is loaded (or if it cannot be)
+// the key handler runs the encoder-only in-walk path.
 - (void)_loadDecoderOnLoadQueue
 {
-    NSString *path = [_resourcePath stringByAppendingPathComponent:@(McBopomofoSlothE::kDecoderModelFileName)];
     auto t0 = std::chrono::steady_clock::now();
+    std::string dir(_resourcePath.fileSystemRepresentation);
     std::string error;
-    // Same integrity check as the encoder; any failure leaves the encoder-only
-    // in-walk path running (decoder missing/failed -> encoder-only by design).
-    bool ok = McBopomofoSlothE::VerifyRuntimeFiles(std::string(_resourcePath.fileSystemRepresentation),
-        std::vector<std::string> { McBopomofoSlothE::kDecoderModelFileName }, &error);
-    double verifyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    NSString *reason = @"ok";
+    [self _progress:@"SlothE decoder (dec60m.mlmodelc):"];
+    _decInfo = McBopomofoSlothE::CoreMLLoadInfo();
     auto decoder = std::make_unique<McBopomofoSlothE::Decoder>();
-    ok = ok && decoder->load(std::string(path.fileSystemRepresentation), 4, 128, 4, &error);
-    if (ok) {
-        std::vector<double> scores;
-        McBopomofoSlothE::DecoderCallStats stats;
-        ok = decoder->score("", std::vector<std::string> { "今天", "天氣" }, &scores, &stats);  // warm-up + probe
-        for (double v : scores) {
-            ok = ok && std::isfinite(v) && v < 0.0;
+    bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), &error);
+    if (!ok) {
+        reason = @"integrity";
+    } else {
+        [self _progress:@"  files verified (size + sha256)"];
+        int32_t bos = 0;
+        int32_t pad = 0;
+        auto tokenizer = McBopomofoSlothE::LoadDecoderTokenizer(dir, &bos, &pad, &error);
+        auto backend = tokenizer != nullptr ? McBopomofoSlothE::LoadCoreMLDecoder(dir, [self _loadOptionsForDecoder:YES], &_decInfo) : nullptr;
+        if (tokenizer != nullptr && backend == nullptr && _decInfo.reason == "plan_failed" && [self _clearANECacheOnce:@"decoder plan_failed"]) {
+            [self _progress:@"  MLComputePlan failed (stale Neural Engine cache?): cache cleared, compiling again"];
+            backend = McBopomofoSlothE::LoadCoreMLDecoder(dir, [self _loadOptionsForDecoder:YES], &_decInfo);
         }
-        if (!ok) {
-            error = "decoder probe gave invalid scores";
+        if (tokenizer == nullptr) {
+            ok = false;
+            reason = @"missing";
+        } else if (backend == nullptr) {
+            ok = false;
+            reason = @(_decInfo.reason.c_str());
+            error = _decInfo.detail;
+        } else if (!decoder->load(std::move(backend), tokenizer, bos, pad, &error)) {
+            ok = false;
+            reason = @"load_error";
+        } else {
+            std::vector<double> scores;
+            McBopomofoSlothE::DecoderCallStats stats;
+            ok = decoder->score("", std::vector<std::string> { "今天", "天氣" }, &scores, &stats);
+            for (double v : scores) {
+                ok = ok && std::isfinite(v) && v < 0.0;
+            }
+            if (!ok) {
+                reason = @"probe_failed";
+                error = "decoder probe gave invalid scores";
+            }
         }
-        decoder->reset();
     }
     double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    [self _logRuntime:@"decoder" info:_decInfo reason:reason];
     if (ok) {
         _decoderLoadMs = elapsed;
         _decoder = std::move(decoder);
+        _decoderLoadReason = @"ok";
         _decoderLoadedFlag.store(true, std::memory_order_release);
-        [self _appendLogLine:[NSString stringWithFormat:@"# %@ SlothE decoder loaded in %.1f ms (file verified in %.1f ms)\n", [NSDate date], elapsed, verifyMs]];
+        [self _progress:[NSString stringWithFormat:@"  decoder ON the Neural Engine: loaded in %.1f s", elapsed / 1000.0]];
     } else {
-        _decoderLoadErrorString = @(error.c_str());
+        _decoderLoadReason = reason;
+        _decoderLoadErrorString = [NSString stringWithFormat:@"%@: %s", reason, error.c_str()];
         _decoderFailedFlag.store(true, std::memory_order_release);
-        NSLog(@"McBopomofoLM: SlothE decoder load failed: %s", error.c_str());
-        [self _appendLogLine:[NSString stringWithFormat:@"# %@ SlothE decoder load failed; encoder-only in-walk stays on\n", [NSDate date]]];
+        NSLog(@"McBopomofoLM: SlothE decoder not used (%@); encoder-only in-walk", _decoderLoadErrorString);
+        [self _progress:[NSString stringWithFormat:@"  decoder NOT used (%@): encoder-only choices", _decoderLoadErrorString]];
     }
+}
+
+// Core ML keeps its Neural Engine compile cache for this app in
+// ~/Library/Caches/<bundle id>/com.apple.e5rt.e5bundlecache, keyed by model
+// path. After the app is replaced at the same path, stale entries made
+// MLComputePlan fail ("internal failure") until the cache was cleared
+// (observed 2026-09-23). Only this app's own cache directory is removed.
++ (nullable NSString *)aneCachePath
+{
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+    NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (bundleID.length == 0 || caches == nil) {
+        return nil;
+    }
+    return [[caches stringByAppendingPathComponent:bundleID] stringByAppendingPathComponent:@"com.apple.e5rt.e5bundlecache"];
+}
+
+- (BOOL)_clearANECacheOnce:(NSString *)why
+{
+    if (_aneCacheCleared) {
+        return NO;
+    }
+    _aneCacheCleared = YES;
+    NSString *path = [SlothERuntime aneCachePath];
+    if (path == nil) {
+        return NO;
+    }
+    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    [self _appendLogLine:[NSString stringWithFormat:@"# %@ Neural Engine compile cache cleared (%@)\n", [NSDate date], why]];
+    return YES;
+}
+
+- (BOOL)loadForInstallWithProgress:(void (^)(NSString *line))progress
+{
+    _installProgress = [progress copy];
+    // A (re)install compiles from scratch: entries left by a previous copy of the
+    // app at this path can make the placement check fail.
+    if (!_keepANECacheForTesting) {
+        [self _clearANECacheOnce:@"install"];
+        _aneCacheCleared = NO;  // the load may still self-heal once
+        if (progress != nil) {
+            progress(@"Cleared this app's Neural Engine compile cache: the models compile from scratch.");
+        }
+    }
+    _loadingFlag.store(true);
+    auto t0 = std::chrono::steady_clock::now();
+    dispatch_sync(_loadQueue, ^{
+        [self _loadOnLoadQueue];
+    });
+    double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (progress != nil) {
+        progress([NSString stringWithFormat:@"Models ready in %.1f s: encoder %@, decoder %@.", s,
+                  _loadedFlag.load() ? @"on the Neural Engine" : [@"not used: " stringByAppendingString:(_loadReason != nil ? _loadReason : @"?")],
+                  _decoderLoadedFlag.load() ? @"on the Neural Engine" : [@"not used: " stringByAppendingString:(_decoderLoadReason != nil ? _decoderLoadReason : @"?")]]);
+    }
+    _installProgress = nil;
+    [self flushLog];
+    return _loadedFlag.load() && _decoderLoadedFlag.load();
+}
+
+#pragma mark - Prewarm
+
+- (NSUInteger)prewarmCount
+{
+    return _prewarmCount;
+}
+
+- (NSUInteger)prewarmsCompleted
+{
+    return _prewarmDone.load();
+}
+
+- (BOOL)prewarmIfIdle
+{
+    McBopomofoSlothE::Engine *engine = [self engine];
+    if (engine == nullptr) {
+        return NO;
+    }
+    uint64_t now = McBopomofoSlothE::MonotonicNanoseconds();
+    uint64_t last = std::max(McBopomofoSlothE::LastModelUseNanoseconds(), _lastPrewarmNs.load());
+    double idleMs = last == 0 ? -1 : static_cast<double>(now - last) / 1e6;
+    if (last != 0 && idleMs <= _prewarmIdleSeconds * 1000.0) {
+        return NO;
+    }
+    _lastPrewarmNs.store(now);
+    ++_prewarmCount;
+    McBopomofoSlothE::Decoder *decoder = [self decoder];
+    dispatch_async(_computeQueue, ^{
+        double encMs = 0;
+        double decMs = -1;
+        engine->prewarm(&encMs);
+        if (decoder != nullptr) {
+            decoder->prewarm(&decMs);
+        }
+        self->_prewarmDone.fetch_add(1);
+        NSString *dec = decMs >= 0 ? [NSString stringWithFormat:@"%.2f", decMs] : @"";
+        [self _appendTimestampedLine:@"P" tail:[NSString stringWithFormat:@"\t%.0f\t%.2f\t%@\n", idleMs, encMs, dec]];
+    });
+    return YES;
+}
+
+- (nullable NSString *)loadReason
+{
+    return _loadReason;
+}
+
+- (nullable NSString *)decoderLoadReason
+{
+    return _decoderLoadReason;
+}
+
+- (NSDictionary<NSString *, NSNumber *> *)placementSummary
+{
+    NSMutableDictionary *d = [NSMutableDictionary dictionary];
+    d[@"encoderANECostPercent"] = @(_encInfo.aneCostPercent);
+    d[@"encoderProbeMs"] = @(_encInfo.probeMs);
+    d[@"encoderLoadMs"] = @(_encInfo.loadMs);
+    d[@"encoderPlanMs"] = @(_encInfo.planMs);
+    d[@"decoderANECostPercent"] = @(_decInfo.aneCostPercent);
+    d[@"decoderProbeMs"] = @(_decInfo.probeMs);
+    d[@"decoderLoadMs"] = @(_decInfo.loadMs);
+    d[@"decoderPlanMs"] = @(_decInfo.planMs);
+    d[@"verifyMs"] = @(_verifyMs);
+    for (const auto &[fn, ms] : _encInfo.functionLoadMs) {
+        d[[@"encoderLoadMs." stringByAppendingString:@(fn.c_str())]] = @(ms);
+    }
+    for (const auto &[fn, ms] : _decInfo.functionLoadMs) {
+        d[[@"decoderLoadMs." stringByAppendingString:@(fn.c_str())]] = @(ms);
+    }
+    return d;
 }
 
 #pragma mark - Key event timing
@@ -608,6 +863,17 @@ static const size_t kMaxEndToEndSamples = 4096;
         return NO;
     }
     NSDictionary *attrs = [fm attributesOfItemAtPath:_logPath error:nil];
+    if (attrs != nil) {  // a log from another format version (v1-v3 build) is kept aside, not appended to
+        NSFileHandle *h = [NSFileHandle fileHandleForReadingAtPath:_logPath];
+        NSData *head = [h readDataOfLength:kLatencyLogVersionPrefix.length];
+        [h closeFile];
+        if (![[[NSString alloc] initWithData:head encoding:NSUTF8StringEncoding] isEqualToString:kLatencyLogVersionPrefix]) {
+            NSString *old = [_logPath stringByAppendingPathExtension:@"pre-v4"];
+            [fm removeItemAtPath:old error:nil];
+            [fm moveItemAtPath:_logPath toPath:old error:nil];
+            attrs = nil;
+        }
+    }
     if (attrs != nil && attrs.fileSize > kMaxLatencyLogBytes) {
         NSString *rotated = [_logPath stringByAppendingPathExtension:@"1"];
         [fm removeItemAtPath:rotated error:nil];
