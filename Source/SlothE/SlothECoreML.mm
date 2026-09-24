@@ -224,7 +224,11 @@ class CoreMLDecoderBackend : public DecoderBackend {
     options.runLater([this, length] {
       CoreMLLoadInfo info;
       bool ok = false;
-      if (@available(macOS 15.0, *)) {
+      std::string error;
+      if (options.verifyBeforeLazyLoad && !options.verifyBeforeLazyLoad(&error)) {
+        info.reason = "integrity";  // changed since start-up: never hand the files to Core ML
+        info.detail = error;
+      } else if (@available(macOS 15.0, *)) {
         ok = loadFunction(length, options.lazyUnits, &info);
       }
       {
