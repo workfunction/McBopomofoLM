@@ -17,6 +17,7 @@
 #define SOURCE_SLOTHE_SLOTHEWALK_H_
 
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -100,9 +101,60 @@ double InWalkNeuralScore(const ForwardResult& r, const Vocabulary& vocab,
 std::string WalkText(
     const Formosa::Gramambular2::ReadingGrid::WalkResult& walk);
 
+// v3.0 candidate window "C" (PLAN.md §12 W2, reports/window3b.md): the
+// jump-ahead threshold delta, in the in-walk's total path score (nats).
+constexpr double kJumpAheadDelta = 3.0;
+// v3.0.1: wall-time budget for the pinned walks at window open (r14 review);
+// over it, C is skipped and the window keeps the v2 order.
+constexpr double kJumpAheadBudgetMs = 16.0;
+
+// One candidate-window entry with the walk a user pick of it gives
+// (walk2/window3_cli "A"): its node span, and the in-walk re-run on a grid copy
+// with overrideCandidate(loc, entry), no decoder pins. score = sum over that
+// walk's picks of LM + beta * neural, the picked node at its real LM score
+// (not the override score); -inf and "" when the pick fails.
+struct PinnedEntry {
+  size_t start = 0;
+  size_t len = 0;
+  std::string value;
+  double score = 0;
+  std::string text;
+};
+
+// Displayed char per reading position (walk2 cv.chars_of): "" where a node's
+// value is not one char per syllable.
+std::vector<std::string> DisplayedChars(
+    const Formosa::Gramambular2::ReadingGrid::WalkResult& walk, size_t n);
+
+// walk2/window3b.py order_c: starting from `order` (the v2 window order), move
+// X to rank 1 when A(X) - A(S*) >= delta, or when there is no S*.
+//   S* = best-A entry on the node's span [nodeStart, nodeStart+nodeLen) other
+//        than nodeValue and its variant-only swaps;
+//   X  = best-A entry on any other span whose value differs from the displayed
+//        text over its own span and whose pinned text differs from the
+//        displayed sentence (when every position has a displayed char).
+// Ties go to the smaller window index. Everything else keeps `order`.
+std::vector<size_t> JumpAheadOrder(const std::vector<size_t>& order,
+                                   const std::vector<PinnedEntry>& entries,
+                                   size_t nodeStart, size_t nodeLen,
+                                   const std::string& nodeValue,
+                                   const std::vector<std::string>& shownChars,
+                                   const VariantTable* variants,
+                                   double delta = kJumpAheadDelta);
+
 class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
  public:
   using ReadingGrid::ReadingGrid;
+
+  // PinnedEntry for each of `candidates` (= candidatesAt(loc)); empty if they
+  // are not this grid's window at loc, or if the walks would take longer than
+  // budgetMs (checked after each entry: time so far, and time so far projected
+  // over all entries).
+  std::vector<PinnedEntry> pinnedEntries(
+      size_t loc, const std::vector<Candidate>& candidates,
+      const ForwardResult& r, const Vocabulary& vocab,
+      const VariantTable& variants, const InWalkParams& params,
+      double budgetMs = std::numeric_limits<double>::infinity()) const;
 
   // The rescored, variant-guarded walk as a WalkResult the key handler can use
   // in place of walk(): each node's value() is the chosen unigram. Nodes whose

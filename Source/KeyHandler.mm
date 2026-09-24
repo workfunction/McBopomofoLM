@@ -2904,6 +2904,7 @@ static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
 // all others follow in McBopomofo order (run_sloth_rerank.py). Orthographic
 // variants of the walk's form (e.g. 臺 for 台) never move above it. Returns
 // the identity order whenever SlothE-T is inactive or the node is not Zhuyin.
+// v3.0: then one other-span entry may jump to rank 1 (JumpAheadOrder).
 - (std::vector<size_t>)_slothECandidateOrder:(const std::vector<Formosa::Gramambular2::ReadingGrid::Candidate> &)candidates
 {
     std::vector<size_t> identity(candidates.size());
@@ -2954,6 +2955,15 @@ static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
     std::vector<size_t> order = McBopomofoSlothE::RerankOrder(items, node->value(), &engine->variants());
     if (Preferences.slothEDemoteShownCandidate) {
         order = McBopomofoSlothE::DemoteWalkValue(order, items, node->value(), &engine->variants());
+    }
+    // v3.0 jump-ahead (reports/window3b.md "C", delta 3): an entry on another
+    // span moves to rank 1 when a pick of it gives a walk that scores at least
+    // kJumpAheadDelta above the best same-span alternative. The walks re-run on
+    // grid copies with the cached encoder result; no model runs here. Over
+    // kJumpAheadBudgetMs (long buffer x large window) entries is empty: v2 order.
+    std::vector<McBopomofoSlothE::PinnedEntry> entries = _grid->pinnedEntries(static_cast<size_t>(self.actualCandidateCursorIndex), candidates, *result, vocab, engine->variants(), [_slothERuntime inWalkParams], McBopomofoSlothE::kJumpAheadBudgetMs);
+    if (!entries.empty()) {
+        order = McBopomofoSlothE::JumpAheadOrder(order, entries, spanStart, spanLength, node->value(), McBopomofoSlothE::DisplayedChars(_latestWalk, readings.size()), &engine->variants());
     }
     [_slothERuntime noteRerankMilliseconds:std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()];
     return order;

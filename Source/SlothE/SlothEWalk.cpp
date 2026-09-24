@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -467,6 +468,159 @@ std::vector<size_t> DemoteWalkValue(const std::vector<size_t>& order,
   out.insert(out.end(), shownVariants.begin(), shownVariants.end());
   out.insert(out.end(), order.begin() + static_cast<std::ptrdiff_t>(blockEnd),
              order.end());
+  return out;
+}
+
+std::vector<PinnedEntry> SlothEGrid::pinnedEntries(
+    size_t loc, const std::vector<Candidate>& candidates,
+    const ForwardResult& r, const Vocabulary& vocab,
+    const VariantTable& variants, const InWalkParams& params,
+    double budgetMs) const {
+  const auto t0 = std::chrono::steady_clock::now();
+  std::vector<PinnedEntry> out;
+  if (readings_.empty() || loc > readings_.size()) {
+    return out;
+  }
+  // candidatesAt(loc)'s order, with each entry's node span.
+  std::vector<NodeInSpan> nodes =
+      overlappingNodesAt(loc == readings_.size() ? loc - 1 : loc);
+  std::stable_sort(nodes.begin(), nodes.end(), [](const auto& a, const auto& b) {
+    return a.node->spanningLength() > b.node->spanningLength();
+  });
+  for (const NodeInSpan& nis : nodes) {
+    for (const auto& u : nis.node->unigrams()) {
+      PinnedEntry e;
+      e.start = nis.spanIndex;
+      e.len = nis.node->spanningLength();
+      e.value = u.value();
+      if (out.size() >= candidates.size() ||
+          candidates[out.size()].value != e.value ||
+          candidates[out.size()].reading != nis.node->reading()) {
+        return {};
+      }
+      out.push_back(std::move(e));
+    }
+  }
+  if (out.size() != candidates.size()) {
+    return {};
+  }
+  // LM score of a pick at its node (first unigram with that value), as
+  // window3_cli lmOf(): the picked node's real weight, not the override score.
+  auto lmOf = [this](size_t start, size_t len, const std::string& value) {
+    if (start < spans_.size() && len <= spans_[start].maxLength()) {
+      const NodePtr& n = spans_[start].nodeOf(len);
+      if (n != nullptr) {
+        for (const auto& u : n->unigrams()) {
+          if (u.value() == value) {
+            return u.score();
+          }
+        }
+      }
+    }
+    return -std::numeric_limits<double>::infinity();
+  };
+  std::vector<InWalkNode> detail;
+  for (size_t j = 0; j < out.size(); ++j) {
+    std::unique_ptr<SlothEGrid> copy = snapshot();
+    if (!copy->overrideCandidate(loc, candidates[j])) {
+      out[j].score = -std::numeric_limits<double>::infinity();
+      continue;
+    }
+    WalkResult w = copy->rescoredWalk(r, vocab, variants, params, nullptr,
+                                      nullptr, &detail);
+    double score = 0;
+    for (const InWalkNode& d : detail) {
+      score += lmOf(d.start, d.len, d.raw) +
+               params.beta * InWalkNeuralScore(r, vocab, d.start, d.len, d.raw,
+                                               params.penalty);
+    }
+    out[j].score = score;
+    out[j].text = WalkText(w);
+    // ponytail: wall-clock budget, so a loaded machine skips C more often; the
+    // upgrade path is walks that re-score only the changed part of the grid.
+    double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+    if (ms > budgetMs ||
+        ms / static_cast<double>(j + 1) * static_cast<double>(out.size()) >
+            budgetMs) {
+      return {};
+    }
+  }
+  return out;
+}
+
+std::vector<std::string> DisplayedChars(const ReadingGrid::WalkResult& walk,
+                                        size_t n) {
+  std::vector<std::string> chars(n);
+  size_t start = 0;
+  for (const auto& node : walk.nodes) {
+    size_t len = node->spanningLength();
+    std::vector<std::string> cs = Utf8Chars(node->value());
+    if (cs.size() == len) {
+      for (size_t k = 0; k < len && start + k < n; ++k) {
+        chars[start + k] = cs[k];
+      }
+    }
+    start += len;
+  }
+  return chars;
+}
+
+std::vector<size_t> JumpAheadOrder(const std::vector<size_t>& order,
+                                   const std::vector<PinnedEntry>& entries,
+                                   size_t nodeStart, size_t nodeLen,
+                                   const std::string& nodeValue,
+                                   const std::vector<std::string>& shownChars,
+                                   const VariantTable* variants,
+                                   double delta) {
+  // Displayed text over [start, start+len); false where a position has none.
+  auto shownText = [&shownChars](size_t start, size_t len, std::string* text) {
+    text->clear();
+    for (size_t i = start; i < start + len; ++i) {
+      if (i >= shownChars.size() || shownChars[i].empty()) {
+        return false;
+      }
+      *text += shownChars[i];
+    }
+    return true;
+  };
+  std::string full;
+  bool hasFull = shownText(0, shownChars.size(), &full);
+  auto a = [&entries](size_t j) {
+    double s = entries[j].score;
+    return std::isfinite(s) ? s : -std::numeric_limits<double>::infinity();
+  };
+  const size_t kNone = entries.size();
+  size_t x = kNone;
+  size_t s = kNone;
+  std::string disp;
+  for (size_t j = 0; j < entries.size(); ++j) {
+    const PinnedEntry& e = entries[j];
+    if (e.start == nodeStart && e.len == nodeLen) {
+      if (e.value != nodeValue &&
+          !(variants != nullptr && variants->isVariantPair(e.value, nodeValue)) &&
+          (s == kNone || a(j) > a(s))) {
+        s = j;
+      }
+    } else {
+      bool changes = !shownText(e.start, e.len, &disp) || e.value != disp;
+      if (changes && (!hasFull || e.text != full) &&
+          (x == kNone || a(j) > a(x))) {
+        x = j;
+      }
+    }
+  }
+  // window3b.py: no X -> v2 order; no S* -> X jumps; else jump iff gap >= delta
+  // (Python float semantics: a NaN gap is not < delta, so it jumps).
+  if (x == kNone || (s != kNone && a(x) - a(s) < delta)) {
+    return order;
+  }
+  std::vector<size_t> out{x};
+  for (size_t j : order) {
+    if (j != x) {
+      out.push_back(j);
+    }
+  }
   return out;
 }
 
