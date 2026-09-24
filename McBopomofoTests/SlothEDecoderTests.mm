@@ -846,4 +846,101 @@ static BOOL WaitUntil(BOOL (^done)(void), double seconds)
     [NSFileManager.defaultManager removeItemAtPath:log.stringByDeletingLastPathComponent error:nil];
 }
 
+// v2.1.1: the decoder files are re-verified right before every lazy load.
+- (void)testDecoderFileChangedAfterStartupIsNeverLoaded
+{
+    NSString *dir = [NSTemporaryDirectory() stringByAppendingPathComponent:@"slothe-lazy-integrity"];
+    [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+    XCTAssertTrue([NSFileManager.defaultManager copyItemAtPath:DecResources() toPath:dir error:nil]);
+    NSString *log = LazyTempLog();
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:dir logPath:log];
+    XCTAssertTrue([runtime loadSynchronously]);
+    XCTAssertEqualObjects(runtime.decoderLoadedLengths, @[ @16 ]);
+    // change the decoder weights after start-up (same size, 64 KB in the middle)
+    NSString *weights = [dir stringByAppendingPathComponent:@"dec60m.mlmodelc/weights/weight.bin"];
+    unsigned long long size = [[NSFileManager.defaultManager attributesOfItemAtPath:weights error:nil][NSFileSize] unsignedLongLongValue];
+    NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:weights];
+    [h seekToFileOffset:size / 2];
+    std::vector<uint8_t> junk(65536, 0x5A);
+    [h writeData:[NSData dataWithBytes:junk.data() length:junk.size()]];
+    [h closeFile];
+    Decoder *decoder = [runtime decoder];
+    NSDictionary *row = nil;
+    for (NSDictionary *r in FixtureRows(@"v2_dec_long.jsonl")) {
+        if ([r[@"T"] integerValue] == 32) {
+            row = r;
+            break;
+        }
+    }
+    std::vector<std::string> cands;
+    for (NSString *c in row[@"cands"]) {
+        cands.emplace_back(c.UTF8String);
+    }
+    std::vector<double> scores;
+    DecoderCallStats st;
+    XCTAssertFalse(decoder->score(std::string([row[@"ctx"] UTF8String]), cands, &scores, &st));
+    XCTAssertTrue(st.unavailable);
+    XCTAssertTrue(WaitUntil(^{ return runtime.decoderLazyLoadsFailed == 1; }, 60));
+    NSDictionary *info = [runtime lazyLoadSummaryForLength:32];
+    XCTAssertEqual([info[@"loadMs"] doubleValue], 0.0, @"Core ML must not have loaded the changed file");
+    XCTAssertEqualObjects(runtime.decoderLoadedLengths, @[ @16 ]);
+    XCTAssertFalse(decoder->score(std::string([row[@"ctx"] UTF8String]), cands, &scores, &st), @"stays off until restart");
+    XCTAssertEqual(runtime.decoderLazyLoadsRequested, 1u);
+    // the encoder keeps working: an encoder-only pass over a long buffer
+    std::vector<std::string> readings;
+    for (NSDictionary *r in FixtureRows(@"v2_parity.jsonl")) {
+        for (NSString *x in r[@"readings"]) {
+            readings.emplace_back(x.UTF8String);
+        }
+        if (readings.size() >= 30) {
+            break;
+        }
+    }
+    double ms = 0;
+    bool hit = false;
+    XCTAssertTrue([runtime engine]->forward(readings, &ms, &hit) != nullptr);
+    [runtime flushLog];
+    NSArray<NSString *> *r32 = nil;
+    for (NSArray<NSString *> *r in RuntimeRows(log)) {
+        if ([r[2] isEqualToString:@"decoder.t32"]) {
+            r32 = r;
+        }
+    }
+    XCTAssertEqualObjects(r32[3], @"none");
+    XCTAssertEqualObjects(r32[4], @"integrity");
+    NSLog(@"SLOTHE_V211 changed decoder file before lazy load: %@ | loadMs %@", [r32 componentsJoinedByString:@" "], info[@"loadMs"]);
+    [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+    [NSFileManager.defaultManager removeItemAtPath:log.stringByDeletingLastPathComponent error:nil];
+}
+
+// v2.1.1: a lazy function that fails like a damaged compile cache (failed plan,
+// < 1% on the ANE) stays off until restart and asks the next start-up to clear
+// the cache once; a gate miss with a real placement does not.
+- (void)testLazyCacheLikeFailureAsksTheNextStartToClearTheCache
+{
+    NSString *marker = SlothERuntime.aneCacheClearMarkerPath;
+    XCTAssertNotNil(marker);
+    [NSFileManager.defaultManager removeItemAtPath:marker error:nil];
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:nil];
+    [runtime noteLazyLoadFailureForTesting:64 reason:@"not_on_ane" anePercent:72.0];  // a real partial placement
+    XCTAssertFalse([NSFileManager.defaultManager fileExistsAtPath:marker]);
+    [runtime noteLazyLoadFailureForTesting:64 reason:@"not_on_ane" anePercent:0.0];   // collapsed
+    XCTAssertTrue([NSFileManager.defaultManager fileExistsAtPath:marker]);
+    [NSFileManager.defaultManager removeItemAtPath:marker error:nil];
+    [runtime noteLazyLoadFailureForTesting:96 reason:@"plan_failed" anePercent:-1];
+    XCTAssertTrue([NSFileManager.defaultManager fileExistsAtPath:marker]);
+    if (![NSProcessInfo.processInfo.environment[@"SLOTHE_BENCH"] isEqualToString:@"1"]) {
+        [NSFileManager.defaultManager removeItemAtPath:marker error:nil];  // the next start-up part recompiles (minutes): opt-in
+        return;
+    }
+    NSString *log = LazyTempLog();
+    SlothERuntime *next = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:log];
+    XCTAssertTrue([next loadSynchronously]);
+    [next flushLog];
+    NSString *text = [NSString stringWithContentsOfFile:log encoding:NSUTF8StringEncoding error:nil];
+    XCTAssertTrue([text containsString:@"compile cache cleared (a decoder function failed its check last run)"]);
+    XCTAssertFalse([NSFileManager.defaultManager fileExistsAtPath:marker]);
+    XCTAssertTrue(next.decoderLoaded);
+}
+
 @end

@@ -452,6 +452,10 @@ static const size_t kMaxEndToEndSamples = 4096;
         options.onLazyLoad = [weakSelf](size_t length, const McBopomofoSlothE::CoreMLLoadInfo &info) {
             [weakSelf _noteLazyLoad:length info:info];
         };
+        std::string dir(_resourcePath.fileSystemRepresentation);
+        options.verifyBeforeLazyLoad = [dir](std::string *error) {
+            return McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), error);
+        };
     }
     return options;
 }
@@ -464,7 +468,16 @@ static const size_t kMaxEndToEndSamples = 4096;
         _lazyLoadsDone.fetch_add(1);
     } else {
         _lazyLoadsFailed.fetch_add(1);
-        NSLog(@"McBopomofoLM: SlothE decoder t%zu not used (%@: %s); those requests stay encoder-only", length, reason, info.detail.c_str());
+        NSLog(@"McBopomofoLM: SlothE decoder t%zu not used until the input method restarts (%@: %s); those requests stay encoder-only", length, reason, info.detail.c_str());
+        // A failed plan or a collapsed placement points at a damaged compile
+        // cache: ask the NEXT start-up to clear it and recompile (once).
+        if (!_lazyCPUOnlyForTesting && [self _looksLikeABadANECache:info]) {
+            NSString *marker = [SlothERuntime aneCacheClearMarkerPath];
+            if (marker != nil) {
+                [NSFileManager.defaultManager createDirectoryAtPath:marker.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+                [@"t" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        }
     }
     {
         std::lock_guard<std::mutex> lock(_lazyMutex);
@@ -551,6 +564,13 @@ static const size_t kMaxEndToEndSamples = 4096;
     std::string error;
     NSString *reason = @"ok";
     std::unique_ptr<McBopomofoSlothE::Engine> engine;
+    NSString *marker = [SlothERuntime aneCacheClearMarkerPath];
+    if (marker != nil && [NSFileManager.defaultManager fileExistsAtPath:marker]) {
+        [NSFileManager.defaultManager removeItemAtPath:marker error:nil];
+        [self _clearANECacheOnce:@"a decoder function failed its check last run"];
+        _aneCacheCleared = NO;  // this load may still self-heal once
+        [self _progress:@"  a decoder function failed its Neural Engine check last run: compile cache cleared, compiling again"];
+    }
     [self _progress:@"SlothE-T 25M encoder (enc25m.mlmodelc):"];
     bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::EncoderRuntimeFiles(), &error);
     _verifyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
@@ -690,6 +710,23 @@ static const size_t kMaxEndToEndSamples = 4096;
 // "Invalid sentinel in blob_metadata" and the plan put 0% on the ANE; files
 // replaced at the same path made MLComputePlan fail) is worth one clean
 // recompile. A real CPU placement comes back the same after the retry.
+- (void)noteLazyLoadFailureForTesting:(NSInteger)length reason:(NSString *)reason anePercent:(double)anePercent
+{
+    McBopomofoSlothE::CoreMLLoadInfo info;
+    info.reason = reason.UTF8String;
+    info.aneCostPercent = anePercent;
+    info.detail = "simulated for a test";
+    [self _noteLazyLoad:static_cast<size_t>(length) info:info];
+}
+
+// Set when a lazily loaded decoder function failed like a damaged cache;
+// consumed by the next start-up (clear the cache once, then load).
++ (nullable NSString *)aneCacheClearMarkerPath
+{
+    NSString *cache = [SlothERuntime aneCachePath];
+    return cache == nil ? nil : [cache.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"slothe-clear-ane-cache-at-next-start"];
+}
+
 - (BOOL)_looksLikeABadANECache:(const McBopomofoSlothE::CoreMLLoadInfo &)info
 {
     if (_computeUnitsCPUOnlyForTesting) {

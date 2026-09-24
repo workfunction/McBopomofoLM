@@ -124,6 +124,11 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// MLComputePlan fails or puts < 1% of a model on the ANE (a damaged or stale
 /// cache); the load is then retried.
 @property (class, readonly, nonatomic, nullable) NSString *aneCachePath;
+/// Marker file next to it: a lazily loaded decoder function failed with a
+/// failed plan or < 1% on the ANE; the next start-up clears the cache once.
+@property (class, readonly, nonatomic, nullable) NSString *aneCacheClearMarkerPath;
+/// Test hook: report a lazy decoder load failure as if Core ML had returned it.
+- (void)noteLazyLoadFailureForTesting:(NSInteger)length reason:(NSString *)reason anePercent:(double)anePercent;
 /// Test hook: install without clearing the cache (keeps the test suite fast).
 @property (assign, nonatomic) BOOL keepANECacheForTesting;
 /// Test hook: the first encoder placement check reports this reason

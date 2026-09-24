@@ -63,6 +63,10 @@ struct CoreMLLoadOptions {
   std::function<void(std::function<void()>)> runLater;
   std::function<void(size_t, const CoreMLLoadInfo&)> onLazyLoad;
   ComputeUnits lazyUnits = ComputeUnits::kCPUAndNeuralEngine;  // tests: kCPUOnly
+  // v2.1.1: re-checks the decoder files (size + sha256) right before every
+  // lazy load; false = the function is marked failed (reason "integrity") and
+  // Core ML never sees the files.
+  std::function<bool(std::string*)> verifyBeforeLazyLoad;
 };
 
 // enc25m.mlmodelc (functions L8/L16/L32/L64/L256) + enc25m_embed_f16.bin.
