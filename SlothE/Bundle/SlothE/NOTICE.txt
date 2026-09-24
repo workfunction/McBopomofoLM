@@ -1,7 +1,6 @@
-McBopomofoLM bundles third-party components (side-by-side test build, not for redistribution):
-- SlothE-T 12M model files (slothe-t-12m-256x12.gguf, syl_vocab, syl2legal): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
-- char2id table and libslothe (slothe.cpp): github.com/vieenrose/sloth-zhuyin-linux. That repository has no LICENSE file; license status is unresolved. libslothe carries a local patch (per-length compute-graph cache, SlothE/ThirdParty/slothe/slothe-graph-cache.patch; load errors return instead of exit(), slothe-load-errors.patch).
-- SlothE decoder pred_q35_60m-q4.gguf (Qwen3.5 hybrid, 59.8M params): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
-- ggml (github.com/ggml-org/ggml @ 456172e), MIT (ggml-LICENSE.txt), statically linked for the encoder.
-- llama.cpp (github.com/ggml-org/llama.cpp @ 7ab4ee7) with its bundled ggml, MIT (llama.cpp-LICENSE.txt), statically linked for the decoder.
+McBopomofoLM v2 bundles third-party parts (side-by-side test build, not for redistribution):
+- SlothE-T 25M encoder (enc25m.mlmodelc, enc25m_embed_f16.bin; converted to Core ML from the published weights) and its syl_vocab / syl2legal tables: huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
+- SlothE decoder pred_q35_60m (dec60m.mlmodelc, dec_tokenizer.json; converted to Core ML from the published weights): huggingface.co/Luigi/sloth-ime-models, Apache-2.0.
+- char2id table: github.com/vieenrose/sloth-zhuyin-linux, which has no LICENSE file; license status unresolved.
 - Orthographic variant classes derived from OpenCC TWVariants.txt / HKVariants.txt, Apache-2.0 (OpenCC-LICENSE.txt).
+v2 runs the models with Core ML on the Apple Neural Engine only. It contains no ggml, llama.cpp or libslothe code.

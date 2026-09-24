@@ -1,8 +1,9 @@
-// Phase 2 tests for the McBopomofoLM in-walk rescoring: parity with walk2's
-// offline 12M walk (beta 0.3, variant guard) on the 500 dev sentences, stock
-// semantics at beta 0 and for overridden nodes, the candidate-window
-// demotion rule, and the per-length compute-graph cache (correctness + timing).
-// Reference: SlothEFixtures/inwalk_parity.jsonl (SlothE/make_inwalk_fixture.py).
+// Tests for the McBopomofoLM in-walk rescoring: parity with walk2's walk
+// (config A': 25M, beta 0.3, variant guard) driven by the same Core ML encoder
+// on the 500 dev sentences, stock semantics at beta 0 and for overridden
+// nodes, and the candidate-window demotion rule.
+// Reference: SlothEFixtures/v2_parity.jsonl "inwalk" (SlothE/v2/make_v2_reference.py);
+// readings and stock text from inwalk_parity.jsonl.
 
 #import <XCTest/XCTest.h>
 
@@ -26,7 +27,7 @@ using McBopomofoSlothE::RerankItem;
 using McBopomofoSlothE::SlothEGrid;
 using McBopomofoSlothE::VariantTable;
 
-static std::unique_ptr<Engine> gInWalkEngine;
+static Engine *gInWalkEngine = nullptr;
 static std::shared_ptr<McBopomofo::McBopomofoLM> gDataOnlyLM;
 
 static double InWalkPercentile(std::vector<double> v, double p)
@@ -53,13 +54,7 @@ static double InWalkMsSince(std::chrono::steady_clock::time_point t0)
 
 + (void)setUp
 {
-    NSString *resources = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
-    gInWalkEngine = std::make_unique<Engine>();
-    std::string error;
-    if (!gInWalkEngine->load(std::string(resources.fileSystemRepresentation), &error)) {
-        NSLog(@"SLOTHE_INWALK engine load failed: %s", error.c_str());
-        gInWalkEngine.reset();
-    }
+    gInWalkEngine = [SlothERuntime.sharedLoadedRuntimeForTesting engine];
     // McBopomofoLM with only the bundled data.txt: the same model walk2_cli uses.
     gDataOnlyLM = std::make_shared<McBopomofo::McBopomofoLM>();
     NSString *data = [NSBundle.mainBundle pathForResource:@"data" ofType:@"txt"];
@@ -68,14 +63,37 @@ static double InWalkMsSince(std::chrono::steady_clock::time_point t0)
 
 + (void)tearDown
 {
-    gInWalkEngine.reset();
+    gInWalkEngine = nullptr;
     gDataOnlyLM.reset();
 }
 
 - (NSArray<NSDictionary *> *)parityRows
 {
+    // readings + stock text from inwalk_parity.jsonl; the expected in-walk walk from v2_parity.jsonl
+    NSMutableDictionary<NSString *, NSDictionary *> *v2 = [NSMutableDictionary dictionary];
+    for (NSDictionary *row in [self rowsOf:@"v2_parity.jsonl"]) {
+        v2[row[@"sid"]] = row;
+    }
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSDictionary *row in [self rowsOf:@"inwalk_parity.jsonl"]) {
+        NSMutableDictionary *m = [row mutableCopy];
+        NSArray *nodes = v2[row[@"sid"]][@"inwalk"];
+        XCTAssertNotNil(nodes, @"%@", row[@"sid"]);
+        m[@"nodes"] = nodes;
+        NSMutableString *text = [NSMutableString string];
+        for (NSArray *n in nodes) {
+            [text appendString:n[2]];
+        }
+        m[@"text"] = text;
+        [rows addObject:m];
+    }
+    return rows;
+}
+
+- (NSArray<NSDictionary *> *)rowsOf:(NSString *)name
+{
     NSBundle *bundle = [NSBundle bundleForClass:[SlothEInWalkTests class]];
-    NSString *path = [[bundle.resourcePath stringByAppendingPathComponent:@"SlothEFixtures"] stringByAppendingPathComponent:@"inwalk_parity.jsonl"];
+    NSString *path = [[bundle.resourcePath stringByAppendingPathComponent:@"SlothEFixtures"] stringByAppendingPathComponent:name];
     NSString *text = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
     XCTAssertNotNil(text);
     NSMutableArray *rows = [NSMutableArray array];
@@ -106,13 +124,13 @@ static std::vector<std::string> Readings(NSArray<NSString *> *array)
     return out;
 }
 
-- (void)testInWalkMatchesWalk2OfflineOnDevSentences
+- (void)testInWalkMatchesWalk2WithTheSameCoreMLEncoderOnDevSentences
 {
     XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
     if (gInWalkEngine == nullptr) {
         return;
     }
-    InWalkParams params;  // frozen: beta 0.3, gamma 0, penalty -15, guard on
+    InWalkParams params;  // config A': beta 0.3, gamma 0, penalty -15, guard on
     XCTAssertEqual(params.beta, 0.3);
     XCTAssertEqual(params.penalty, -15.0);
     XCTAssertTrue(params.variantGuard);
@@ -210,68 +228,6 @@ static std::vector<std::string> Readings(NSArray<NSString *> *array)
     std::vector<size_t> guarded = McBopomofoSlothE::RerankOrder(taiwan, "台灣", &v);
     XCTAssertTrue((guarded == std::vector<size_t> { 0, 1, 2, 3 }));
     XCTAssertTrue((McBopomofoSlothE::DemoteWalkValue(guarded, taiwan, "台灣", &v) == std::vector<size_t> { 2, 0, 1, 3 }));
-}
-
-- (void)testGraphCacheKeepsLogitsAndSpeedsUpTyping
-{
-    XCTAssertTrue(gInWalkEngine != nullptr);
-    if (gInWalkEngine == nullptr) {
-        return;
-    }
-    std::vector<std::string> pool = { "ㄨㄛˇ", "ㄐㄧㄣ", "ㄊㄧㄢ", "ㄑㄩˋ", "ㄕˋ", "ㄔㄤˇ", "ㄇㄞˇ", "ㄘㄞˋ", "ㄓㄜˋ", "ㄍㄜ˙", "ㄍㄨㄥ", "ㄏㄣˇ", "ㄋㄢˊ" };
-    // Typing: T = 1..30, a new length on every call. Capacity 1 = the old
-    // single-graph behavior (rebuild per keystroke); 64 = the new cache.
-    auto typing = [&](int capacity, int rounds, std::vector<std::shared_ptr<const McBopomofoSlothE::ForwardResult>> *keep) {
-        gInWalkEngine->setGraphCacheCapacity(capacity);
-        std::vector<double> ms;
-        for (int round = 0; round < rounds; ++round) {
-            std::vector<std::string> readings;
-            for (size_t T = 1; T <= 30; ++T) {
-                readings.push_back(pool[(T * 3 + static_cast<size_t>(round)) % pool.size()]);
-                double fwd = 0;
-                bool hit = false;
-                auto t0 = std::chrono::steady_clock::now();
-                auto r = gInWalkEngine->forward(readings, &fwd, &hit);
-                double wall = InWalkMsSince(t0);
-                if (!hit) {
-                    ms.push_back(wall);
-                }
-                if (keep != nullptr && round == 0) {
-                    keep->push_back(r);
-                }
-            }
-        }
-        return ms;
-    };
-    std::vector<std::shared_ptr<const McBopomofoSlothE::ForwardResult>> rebuilt, cached;
-    typing(64, 1, nullptr);  // build every length once
-    std::vector<double> withCache = typing(64, 6, &cached);
-    int graphs = 0;
-    size_t bytes = 0;
-    uint64_t builds = 0;
-    gInWalkEngine->graphCacheStats(&graphs, &bytes, &builds);
-    std::vector<double> noCache = typing(1, 6, &rebuilt);
-    gInWalkEngine->setGraphCacheCapacity(64);
-    NSLog(@"SLOTHE_GRAPHCACHE typing_T1..30 cache64 n=%zu p50_ms=%.3f p95_ms=%.3f | cache1(rebuild per length) n=%zu p50_ms=%.3f p95_ms=%.3f | graphs=%d compute_MB=%.1f builds=%llu",
-        withCache.size(), InWalkPercentile(withCache, 50), InWalkPercentile(withCache, 95),
-        noCache.size(), InWalkPercentile(noCache, 50), InWalkPercentile(noCache, 95),
-        graphs, static_cast<double>(bytes) / 1048576.0, static_cast<unsigned long long>(builds));
-    XCTAssertEqual(graphs, 30);
-    // Same logits whether the graph came from the cache or was just rebuilt.
-    XCTAssertEqual(rebuilt.size(), cached.size());
-    float maxDiff = 0;
-    for (size_t i = 0; i < rebuilt.size() && i < cached.size(); ++i) {
-        XCTAssertTrue(rebuilt[i] != nullptr && cached[i] != nullptr);
-        if (rebuilt[i] == nullptr || cached[i] == nullptr) {
-            continue;
-        }
-        XCTAssertEqual(rebuilt[i]->logits.size(), cached[i]->logits.size());
-        for (size_t k = 0; k < rebuilt[i]->logits.size() && k < cached[i]->logits.size(); ++k) {
-            maxDiff = std::max(maxDiff, std::fabs(rebuilt[i]->logits[k] - cached[i]->logits[k]));
-        }
-    }
-    NSLog(@"SLOTHE_GRAPHCACHE max_abs_logit_diff_cached_vs_rebuilt=%g", maxDiff);
-    XCTAssertEqual(maxDiff, 0.0f);
 }
 
 @end

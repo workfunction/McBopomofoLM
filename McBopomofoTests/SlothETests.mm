@@ -1,8 +1,9 @@
 // Tests for the McBopomofoLM SlothE-T integration: syllable mapping, rerank
 // ordering rule, variant guard, runtime loading, latency log format, and an
-// in-process model load + score run over the bundled GGUF with timing.
-// Reference data (SlothEFixtures/) is produced by the offline PoC's Python
-// code, see SlothE/make_test_fixtures.py.
+// in-process model run over the bundled Core ML encoder (v2: 25M on the ANE)
+// with timing. Reference data (SlothEFixtures/): syllable_map from the offline
+// PoC's Python code (SlothE/make_test_fixtures.py); rerank_parity and
+// logprob_probe re-made with the same Core ML model (SlothE/v2/make_v2_fixtures.py).
 
 #import <CommonCrypto/CommonDigest.h>
 #import <XCTest/XCTest.h>
@@ -27,8 +28,8 @@ using McBopomofoSlothE::RerankOrder;
 using McBopomofoSlothE::VariantTable;
 using McBopomofoSlothE::Vocabulary;
 
-static NSString *const kModelSha256 = @"e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151";
-static const unsigned long long kModelBytes = 10115712ull;
+static NSString *const kEncoderWeightSha256 = @"3d5722a18782f13023d8";  // enc25m.mlmodelc/weights/weight.bin prefix
+static NSString *const kDecoderWeightSha256 = @"b28b6b08fde8f65866cf";  // dec60m.mlmodelc/weights/weight.bin prefix
 
 static NSString *SlothEResourceDir(void)
 {
@@ -64,7 +65,7 @@ static double MsSince(std::chrono::steady_clock::time_point t0)
 @interface SlothETests : XCTestCase
 @end
 
-static std::unique_ptr<Engine> gEngine;
+static Engine *gEngine = nullptr;
 static double gEngineLoadMs = 0;
 
 @implementation SlothETests
@@ -72,18 +73,17 @@ static double gEngineLoadMs = 0;
 + (void)setUp
 {
     auto t0 = std::chrono::steady_clock::now();
-    gEngine = std::make_unique<Engine>();
-    std::string error;
-    if (!gEngine->load(std::string(SlothEResourceDir().fileSystemRepresentation), &error)) {
-        NSLog(@"SLOTHE_TEST engine load failed: %s", error.c_str());
-        gEngine.reset();
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    gEngine = [runtime engine];
+    if (gEngine == nullptr) {
+        NSLog(@"SLOTHE_TEST engine load failed: %@", runtime.loadError);
     }
     gEngineLoadMs = MsSince(t0);
 }
 
 + (void)tearDown
 {
-    gEngine.reset();
+    gEngine = nullptr;
 }
 
 - (NSArray<NSDictionary *> *)fixture:(NSString *)name
@@ -108,22 +108,26 @@ static double gEngineLoadMs = 0;
 
 #pragma mark - Bundle
 
-- (void)testBundledModelIsTheExpectedGGUF
+- (void)testBundledModelsAreTheCoreMLPackages
 {
-    NSString *path = [SlothEResourceDir() stringByAppendingPathComponent:@"slothe-t-12m-256x12.gguf"];
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    XCTAssertNotNil(data);
-    XCTAssertEqual(data.length, kModelBytes);
-    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256(data.bytes, static_cast<CC_LONG>(data.length), digest);
-    NSMutableString *hex = [NSMutableString string];
-    for (unsigned char byte : digest) {
-        [hex appendFormat:@"%02x", byte];
+    // v2 bundles the two compiled Core ML models and no GGUF / ggml / llama.cpp file.
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSArray<NSString *> *all = [fm subpathsOfDirectoryAtPath:SlothEResourceDir() error:nil];
+    for (NSString *p in all) {
+        XCTAssertFalse([p.pathExtension isEqualToString:@"gguf"], @"%@", p);
+        XCTAssertFalse([p containsString:@"llama"] || [p containsString:@"ggml"], @"%@", p);
     }
-    XCTAssertEqualObjects(hex, kModelSha256);
-    for (NSString *name in @[ @"syl_vocab.tsv", @"char2id.tsv", @"syl2legal.bin", @"variants.tsv", @"MANIFEST.txt", @"NOTICE.txt" ]) {
-        XCTAssertTrue([NSFileManager.defaultManager fileExistsAtPath:[SlothEResourceDir() stringByAppendingPathComponent:name]], @"%@", name);
+    NSString *manifest = [NSString stringWithContentsOfFile:[SlothEResourceDir() stringByAppendingPathComponent:@"runtime-manifest.txt"] encoding:NSUTF8StringEncoding error:nil];
+    XCTAssertTrue([manifest containsString:kEncoderWeightSha256]);
+    XCTAssertTrue([manifest containsString:kDecoderWeightSha256]);
+    for (NSString *name in @[ @"enc25m.mlmodelc/weights/weight.bin", @"enc25m.mlmodelc/model.mil", @"dec60m.mlmodelc/weights/weight.bin",
+                              @"enc25m_embed_f16.bin", @"dec_tokenizer.json", @"syl_vocab.tsv", @"char2id.tsv", @"syl2legal.bin",
+                              @"variants.tsv", @"MANIFEST.txt", @"NOTICE.txt" ]) {
+        XCTAssertTrue([fm fileExistsAtPath:[SlothEResourceDir() stringByAppendingPathComponent:name]], @"%@", name);
     }
+    std::string error;
+    XCTAssertTrue(McBopomofoSlothE::VerifyRuntimeFiles(std::string(SlothEResourceDir().fileSystemRepresentation), McBopomofoSlothE::EncoderRuntimeFiles(), &error), @"%s", error.c_str());
+    XCTAssertTrue(McBopomofoSlothE::VerifyRuntimeFiles(std::string(SlothEResourceDir().fileSystemRepresentation), McBopomofoSlothE::DecoderRuntimeFiles(), &error), @"%s", error.c_str());
 }
 
 #pragma mark - Syllable mapping
@@ -234,10 +238,9 @@ static double gEngineLoadMs = 0;
     if (gEngine == nullptr) {
         return;
     }
-    NSLog(@"SLOTHE_TIMING engine_load_ms=%.1f (vocab + mask + variants + GGUF, cold in this process)", gEngineLoadMs);
-    XCTAssertLessThan(gEngineLoadMs, 5000.0);
+    NSLog(@"SLOTHE_TIMING shared_runtime_ms=%.1f (first test class to ask loads both models; includes any ANE compile)", gEngineLoadMs);
 
-    // Per-position log-probs agree with the Python reference (same ggml code).
+    // Per-position log-probs agree with the Python reference (the same Core ML model, coremltools, ANE).
     double maxDiff = 0;
     for (NSDictionary *row in [self fixture:@"logprob_probe.jsonl"]) {
         double ms = 0;
@@ -255,11 +258,29 @@ static double gEngineLoadMs = 0;
         }
         double diff = std::fabs(lp - [row[@"logp"] doubleValue]);
         maxDiff = std::max(maxDiff, diff);
-        XCTAssertLessThan(diff, 0.05, @"%@ pos %@", row[@"char"], row[@"pos"]);
+        XCTAssertLessThan(diff, 1e-3, @"%@ pos %@", row[@"char"], row[@"pos"]);
     }
-    NSLog(@"SLOTHE_PROBE max_abs_logprob_diff_vs_python=%.6f", maxDiff);
+    // 40 dev sentences, a few chars at every position (v2_logprob_probe.jsonl)
+    size_t points = 0;
+    for (NSDictionary *row in [self fixture:@"v2_logprob_probe.jsonl"]) {
+        double ms = 0;
+        bool hit = false;
+        auto r = gEngine->forward(ToStrings(row[@"readings"]), &ms, &hit);
+        XCTAssertTrue(r != nullptr);
+        if (r == nullptr) {
+            continue;
+        }
+        for (NSArray *pt in row[@"points"]) {
+            double lp = McBopomofoSlothE::LogProb(*r, gEngine->vocabulary(), [pt[0] unsignedIntegerValue], [pt[1] intValue]);
+            double diff = std::fabs(lp - [pt[2] doubleValue]);
+            maxDiff = std::max(maxDiff, diff);
+            XCTAssertLessThan(diff, 1e-3, @"%@ pos %@ char id %@", row[@"sid"], pt[0], pt[1]);
+            ++points;
+        }
+    }
+    NSLog(@"SLOTHE_PROBE points=%zu max_abs_logprob_diff_vs_coremltools=%.2e", points + 20, maxDiff);
 
-    // 市 wins at ㄕˋ in 我今天去市場買菜 (Python: p=0.993).
+    // 市 wins at ㄕˋ in 我今天去市場買菜.
     std::vector<std::string> sentence = { "ㄨㄛˇ", "ㄐㄧㄣ", "ㄊㄧㄢ", "ㄑㄩˋ", "ㄕˋ", "ㄔㄤˇ", "ㄇㄞˇ", "ㄘㄞˋ" };
     double ms = 0;
     bool hit = false;
@@ -275,7 +296,7 @@ static double gEngineLoadMs = 0;
 
     // Timing: one forward pass (ids + model + legal-masked logZ) per call.
     // (a) same length T, cache bypassed by rotating the readings;
-    // (b) "typing": T = 1, 2, ..., 30, each a new length (graph rebuild in libslothe).
+    // (b) "typing": T = 1, 2, ..., 30 (functions L8 / L16 / L32 / L64 by length).
     std::vector<std::string> pool = { "ㄨㄛˇ", "ㄐㄧㄣ", "ㄊㄧㄢ", "ㄑㄩˋ", "ㄕˋ", "ㄔㄤˇ", "ㄇㄞˇ", "ㄘㄞˋ", "ㄓㄜˋ", "ㄍㄜ˙", "ㄍㄨㄥ", "ㄏㄣˇ", "ㄋㄢˊ" };
     for (size_t T : { 6u, 12u, 20u, 30u }) {
         std::vector<double> samples;
@@ -371,13 +392,14 @@ static double gEngineLoadMs = 0;
     }
     NSLog(@"SLOTHE_PARITY items=%lu full_ranking_match=%lu top1_match=%lu n_scored_match=%lu per_item_p50_ms=%.3f p95_ms=%.3f (forward cached across items of one sentence)", (unsigned long)rows.count, (unsigned long)fullMatch, (unsigned long)top1Match, (unsigned long)scoredCountMatch, Percentile(perItemMs, 50), Percentile(perItemMs, 95));
     XCTAssertEqual(scoredCountMatch, rows.count);
-    XCTAssertGreaterThanOrEqual(static_cast<double>(top1Match), 0.995 * static_cast<double>(rows.count));
-    XCTAssertGreaterThanOrEqual(static_cast<double>(fullMatch), 0.98 * static_cast<double>(rows.count));
+    // Same model, same device: the app's ranking equals the reference everywhere.
+    XCTAssertEqual(top1Match, rows.count);
+    XCTAssertEqual(fullMatch, rows.count);
 }
 
 #pragma mark - Runtime
 
-- (void)testRuntimeLoadsBundledModel
+- (void)testRuntimeLoadsBothModelsOnTheNeuralEngine
 {
     SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:SlothEResourceDir() logPath:nil];
     XCTAssertFalse(runtime.loaded);
@@ -385,8 +407,15 @@ static double gEngineLoadMs = 0;
     XCTAssertTrue([runtime loadSynchronously]);
     XCTAssertTrue(runtime.loaded);
     XCTAssertFalse(runtime.loadFailed);
-    XCTAssertTrue([runtime engine] != nullptr);
-    NSLog(@"SLOTHE_TIMING runtime_load_ms=%.1f (includes one warm-up forward)", runtime.loadMilliseconds);
+    XCTAssertTrue(runtime.decoderLoaded);
+    XCTAssertEqualObjects(runtime.loadReason, @"ok");
+    XCTAssertEqualObjects(runtime.decoderLoadReason, @"ok");
+    NSDictionary *p = runtime.placementSummary;
+    XCTAssertGreaterThanOrEqual([p[@"encoderANECostPercent"] doubleValue], 99.0);
+    XCTAssertGreaterThanOrEqual([p[@"decoderANECostPercent"] doubleValue], 50.0);
+    XCTAssertLessThan([p[@"encoderProbeMs"] doubleValue], 10.0);
+    XCTAssertLessThan([p[@"decoderProbeMs"] doubleValue], 15.0);
+    NSLog(@"SLOTHE_TIMING runtime_load (models already compiled + cached in this process): encoder %.0f ms, decoder %.0f ms | placement %@", runtime.loadMilliseconds, runtime.decoderLoadMilliseconds, p);
 }
 
 - (void)testRuntimeMissingResourcesFailsWithoutAborting

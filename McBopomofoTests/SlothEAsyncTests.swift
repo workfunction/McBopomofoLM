@@ -56,6 +56,7 @@ class SlothEAsyncTests: XCTestCase {
             "sloth": Preferences.slothERerankEnabled,
             "demote": Preferences.slothEDemoteShownCandidate,
             "space": Preferences.chooseCandidateUsingSpace,
+            "decoder": Preferences.slothEDecoderEnabled,
         ]
         Preferences.keyboardLayout = .standard
         Preferences.chineseConversionEnabled = false
@@ -65,6 +66,8 @@ class SlothEAsyncTests: XCTestCase {
         Preferences.slothERerankEnabled = true
         Preferences.slothEDemoteShownCandidate = true
         Preferences.chooseCandidateUsingSpace = true
+        // Phase-2 tests of the encoder in-walk path; the decoder has its own tests.
+        Preferences.slothEDecoderEnabled = false
         LanguageModelManager.loadDataModels()
     }
 
@@ -77,13 +80,14 @@ class SlothEAsyncTests: XCTestCase {
         Preferences.slothERerankEnabled = saved["sloth"] as! Bool
         Preferences.slothEDemoteShownCandidate = saved["demote"] as! Bool
         Preferences.chooseCandidateUsingSpace = saved["space"] as! Bool
+        Preferences.slothEDecoderEnabled = saved["decoder"] as! Bool
     }
 
     // MARK: helpers
 
     func loadedRuntime(delayMs: Double = 0, commitWaitMs: Double = 30) -> SlothERuntime {
-        let runtime = SlothERuntime(resourcePath: Self.resourcePath, logPath: nil)
-        XCTAssertTrue(runtime.loadSynchronously())
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: nil)
+        XCTAssertTrue(runtime.loaded, runtime.loadError ?? "")
         runtime.debugComputeDelayMilliseconds = delayMs
         runtime.commitWaitMilliseconds = commitWaitMs
         return runtime
@@ -144,7 +148,7 @@ class SlothEAsyncTests: XCTestCase {
         return handler
     }
 
-    // 一人做事一人當: stock walk 一人做事一人當, in-walk (walk2 12M, beta 0.3) 一人作是一人當.
+    // 一人做事一人當: stock walk 一人做事一人當, in-walk (walk2, 25M Core ML, beta 0.3) 一人作是一人當.
     let sentence = ["ㄧ", "ㄖㄣˊ", "ㄗㄨㄛˋ", "ㄕˋ", "ㄧ", "ㄖㄣˊ", "ㄉㄤ"]
     let stockText = "一人做事一人當"
     let inWalkText = "一人作是一人當"

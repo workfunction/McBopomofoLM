@@ -82,8 +82,29 @@ let kRunningAsTestHost = ProcessInfo.processInfo.environment["XCTestConfiguratio
     || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
     || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
 
+/// McBopomofoLM v2: `install` first loads both SlothE models from their final
+/// in-bundle paths with THIS executable, so the Neural Engine compile (about a
+/// minute the first time) is cached for exactly what the input method loads
+/// later. The ANE cache is keyed by executable + model path: never move or
+/// rename the app after this step. Models that cannot run on the ANE are not
+/// used (the input method then behaves like stock McBopomofo), which is
+/// reported here; registration goes ahead either way.
+private func compileModelsForInstall() {
+    let out = FileHandle.standardOutput
+    func say(_ line: String) { out.write((line + "\n").data(using: .utf8)!) }
+    say("McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 1 minute)...")
+    let ok = SlothERuntime.shared.loadForInstall { say($0) }
+    if ok {
+        say("McBopomofoLM: both models run on the Neural Engine.")
+    } else {
+        say("McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above. Those models are not used"
+            + " (no encoder = stock McBopomofo; no decoder = encoder-only). The input method retries at every start.")
+    }
+}
+
 if CommandLine.arguments.count > 1 {
     if CommandLine.arguments[1] == "install" {
+        compileModelsForInstall()
         let exitCode = install()
         exit(exitCode)
     }

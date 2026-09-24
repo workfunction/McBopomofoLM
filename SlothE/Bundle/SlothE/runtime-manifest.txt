@@ -1,9 +1,19 @@
-# McBopomofoLM checks the byte size and sha256 of every file below before loading a model.
+# McBopomofoLM v2 checks the byte size and sha256 of every file below before loading a model.
 # Any mismatch or missing file = that model is not loaded (encoder -> stock McBopomofo,
-# decoder -> encoder-only in-walk). Format: <sha256> <bytes> <file>
-e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151 10115712 slothe-t-12m-256x12.gguf
-f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d 46035936 pred_q35_60m-q4.gguf
-92057096f9e6a9da6f4a1756f456d948506970205dda1bda1196d25db5000f76 21056 syl_vocab.tsv
+# decoder -> encoder-only in-walk). Format: <sha256> <bytes> <path>
 58ccc20614291fc39b7fc6cc2ce4b536a5b787cf62f89bd13fba85bd232569d4 132104 char2id.tsv
+d9e184839d9697bc6b9bb8110a38d7db53e107f7c8d840e5d297fc62491ea18c 243 dec60m.mlmodelc/analytics/coremldata.bin
+eb1832af7c02b3368325dd298f4fb6f782b9f66cc365c30b6081e95be9883b1a 336 dec60m.mlmodelc/coremldata.bin
+2cce8c6d89c3b7c3eac053926c4d2e2684ac8b50e0b811c7a41b6a99b50a4b44 9264 dec60m.mlmodelc/metadata.json
+adad4ba1cff4e2655e4e86d7aa4f78b5bf5e252fac1cba6f7f944c7cfcb5cdb8 2056375 dec60m.mlmodelc/model.mil
+b28b6b08fde8f65866cfcf2e85d642bd96c3dd85ea8e8989999e6955c10bb7dc 119700544 dec60m.mlmodelc/weights/weight.bin
+3f81807dc89667acebf50f878df8c64bed8254c926a25a182a3e1e80ec8b4bfc 1260362 dec_tokenizer.json
+e3a4791a3fda6d7f0f7a4c322691c960cfe928f951d224e14e60748917ef6486 243 enc25m.mlmodelc/analytics/coremldata.bin
+b5b297a9d490bba32eacdf888e4d5dd45114f07131425f82569508164e3eb3b0 540 enc25m.mlmodelc/coremldata.bin
+6526ce78c04188f76cc496fdf362817b4f3d506e76e994fc2e517a0e5a86841c 11314 enc25m.mlmodelc/metadata.json
+42b84726a46f088e6994160100d887b99d24f22c36b68c3acf840d95d1c27ab5 2139738 enc25m.mlmodelc/model.mil
+3d5722a18782f13023d87cc565afc8c146d257ef913cb6d87296ad6c11731432 16112768 enc25m.mlmodelc/weights/weight.bin
+b23e59ecd93a0b6c95ac3e93d83e7cb77657adaa365a0d8f7dab31ccafc89583 1083456 enc25m_embed_f16.bin
 e963ecb0f8aec024889ac4aaadcb0c9d620efbb961d72a744fff9dac3235a978 1605189 syl2legal.bin
+92057096f9e6a9da6f4a1756f456d948506970205dda1bda1196d25db5000f76 21056 syl_vocab.tsv
 66441790a33019ea34979f3b8c752f996265e7558fc7391d2218fb2a133305a4 644 variants.tsv

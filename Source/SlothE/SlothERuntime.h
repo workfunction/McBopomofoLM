@@ -30,6 +30,11 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 
 - (instancetype)initWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
+/// Tests: a runtime with its own queues, counters and log that uses the
+/// already-loaded models of `other` (one ANE load per test process).
+- (instancetype)initSharingModelsOf:(SlothERuntime *)other logPath:(nullable NSString *)logPath;
+/// Tests: the bundle's models, loaded once per process (no log).
+@property (class, readonly, nonatomic) SlothERuntime *sharedLoadedRuntimeForTesting;
 
 @property (readonly, nonatomic) NSString *resourcePath;
 @property (readonly, nonatomic, nullable) NSString *logPath;
@@ -68,6 +73,40 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 + (int64_t)liveGridSnapshots;
 /// This process's phys_footprint (task_vm_info), bytes.
 + (uint64_t)physFootprintBytes;
+
+/// Prewarm (ANE wake-up): called on the first key of a new buffer. When the
+/// models have not run for more than prewarmIdleSeconds (default 1 s), one
+/// dummy prediction per model runs on the compute queue. Returns YES if fired.
+- (BOOL)prewarmIfIdle;
+@property (assign, nonatomic) double prewarmIdleSeconds;
+@property (readonly, nonatomic) NSUInteger prewarmCount;      // fired (main thread)
+@property (readonly, nonatomic) NSUInteger prewarmsCompleted; // finished on the compute queue
+
+/// Why a model is not used ("ok" when it is): integrity, missing, load_error,
+/// not_on_ane, probe_slow, plan_failed, macos, vocab, probe_failed, no_encoder.
+@property (readonly, nonatomic, nullable) NSString *loadReason;
+@property (readonly, nonatomic, nullable) NSString *decoderLoadReason;
+/// Load / placement numbers of the last load (ms, ANE cost %, probe ms).
+@property (readonly, nonatomic) NSDictionary<NSString *, NSNumber *> *placementSummary;
+/// Test hook: load with Core ML CPU_ONLY instead of CPU_AND_NE; the placement
+/// check must then reject both models ("not on the ANE" = no model).
+@property (assign, nonatomic) BOOL computeUnitsCPUOnlyForTesting;
+/// Test hook: the same for the decoder only (the encoder stays on the ANE).
+@property (assign, nonatomic) BOOL decoderCPUOnlyForTesting;
+/// `McBopomofoLM install`: load both models synchronously from their final
+/// in-bundle paths (this compiles them for the ANE under this executable),
+/// verify placement, and report progress lines. YES when both are on the ANE.
+/// It first clears this app's Neural Engine compile cache (aneCachePath).
+- (BOOL)loadForInstallWithProgress:(nullable void (^)(NSString *line))progress;
+/// ~/Library/Caches/<bundle id>/com.apple.e5rt.e5bundlecache (Core ML's ANE
+/// compile cache for this app). Cleared at install, and once per process if
+/// MLComputePlan fails (then the load is retried).
+@property (class, readonly, nonatomic, nullable) NSString *aneCachePath;
+/// Test hook: install without clearing the cache (keeps the test suite fast).
+@property (assign, nonatomic) BOOL keepANECacheForTesting;
+/// Test hook: the first encoder placement check reports plan_failed.
+@property (assign, nonatomic) BOOL simulatePlanFailureOnceForTesting;
+@property (copy, nonatomic, nullable) void (^installProgress)(NSString *line);
 
 /// Loads the model on a background queue. Idempotent.
 - (void)startLoading;
@@ -114,12 +153,12 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 #ifdef __cplusplus
 /// Non-null only after a successful load.
 - (nullable McBopomofoSlothE::Engine *)engine;
-/// Frozen in-walk configuration (walk2/frozen.json, 12M): beta 0.3, gamma 0,
+/// In-walk configuration, config A' (walk2/frozen_final2.json, 25M): beta 0.3, gamma 0,
 /// illegal-char penalty -15, variant guard on.
 - (McBopomofoSlothE::InWalkParams)inWalkParams;
 /// Non-null only after the decoder loaded.
 - (nullable McBopomofoSlothE::Decoder *)decoder;
-/// Decoder gate, final config A (walk2/frozen_final.json, 12M): lambda 3, tau 0.9, top-3.
+/// Decoder gate, config A' (walk2/frozen_final2.json, 25M): lambda 2, tau 0.5, top-3.
 - (McBopomofoSlothE::DecoderParams)decoderParams;
 - (McBopomofoSlothE::DecoderScoreCache *)decoderScoreCache;
 #endif

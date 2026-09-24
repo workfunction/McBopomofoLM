@@ -547,7 +547,13 @@ extension Preferences {
             .applicationSupportDirectory, .userDomainMask, true)
         let appSupportPath = paths.first!
         // McBopomofoLM side-by-side build: never share the live McBopomofo user-data directory.
-        return (appSupportPath as NSString).appendingPathComponent("McBopomofoLM")
+        // Debug builds (the unit-test host) use their own directory, so tests never touch an
+        // installed McBopomofoLM's user phrases.
+        #if MCBOPOMOFO_LM_DEV
+            return (appSupportPath as NSString).appendingPathComponent("McBopomofoLM-dev")
+        #else
+            return (appSupportPath as NSString).appendingPathComponent("McBopomofoLM")
+        #endif
     }
 }
 

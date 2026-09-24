@@ -17,3 +17,9 @@ xcuserdata
 __pycache__
 codecov_comment.md
 DerivedData
+# McBopomofoLM: model artifacts, restaged by SlothE/prep_resources_v2.py (sha256 in SlothE/Bundle/SlothE/runtime-manifest.txt)
+SlothE/Bundle/SlothE/*.mlmodelc/
+SlothE/Bundle/SlothE/*.gguf
+SlothE/Bundle/SlothE/enc25m_embed_f16.bin
+SlothE/Bundle/SlothE/dec_tokenizer.json
+SlothE/v2/work/

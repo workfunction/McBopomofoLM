@@ -61,15 +61,15 @@ struct InWalkNode {
   std::vector<std::pair<std::string, double>> aligned;
 };
 
-// walk2 dec_combo: decoder-gated override (final config A, PLAN.md §4b v2,
-// walk2/frozen_final.json: 12M, beta 0.3, lambda 3, tau 0.9, top-3; v1 was
-// lambda 1.5): blend b = enc + lambda * dec over the encoder's top-3
+// walk2 dec_combo: decoder-gated override (config A', PLAN.md §9,
+// walk2/frozen_final2.json: 25M, beta 0.3, lambda 2, tau 0.5, top-3; v1 was
+// 12M lambda 3 tau 0.9): blend b = enc + lambda * dec over the encoder's top-3
 // span-aligned candidates, pin the top if p = softmax(b)[top] >= tau, it is
 // neither the shown nor the raw value, and not a variant-only swap. Decoder
 // scores must all be finite and < 0 (walk2 Dec check); otherwise no decision.
 struct DecoderParams {
-  double lambda = 3.0;
-  double tau = 0.9;
+  double lambda = 2.0;
+  double tau = 0.5;
   size_t topK = 3;
 };
 

@@ -1,14 +1,8 @@
-SlothE-T 12M runtime files for McBopomofoLM
-model: huggingface.co/Luigi/sloth-ime-models @ e7d13c9c451dc01ab9546be53c574f4dbe0fdd54 (slothe-t-12m-256x12.gguf, syl_vocab.json, syl2legal.npz), Apache-2.0
-char2id: github.com/vieenrose/sloth-zhuyin-linux model/slothe_4m_onnx/char2id.json
-variants: OpenCC TWVariants.txt + HKVariants.txt (Apache-2.0), char-level union-find, 80 classes
-source sha256 slothe-t-12m-256x12.gguf: e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151
-source sha256 pred_q35_60m-q4.gguf: f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d
-n_syl=1539 n_char=8342 n_char2id=18756
+SlothE runtime files for McBopomofoLM v2 (Core ML, ANE only)
+encoder source: ane/enc/models/enc25m_multi_pal2_emb.mlpackage tree sha256 1ebd9c64baf81bd94456ce37e70f27063ad027826d7232239d5f7dd0970046d5
+decoder source: ane/dec/mf/dec_mf_fp16.mlpackage tree sha256 e24bee80220971085d4fef50f416455c97d56f01d3eeffef8651a69901ff20fc
+embedding: ane/enc/work/embed_f16_25m.bin sha256 b23e59ecd93a0b6c95ac3e93d83e7cb77657adaa365a0d8f7dab31ccafc89583
+tokenizer: HF pred_q35_60m/tokenizer.json sha256 3f81807dc89667acebf50f878df8c64bed8254c926a25a182a3e1e80ec8b4bfc
+compiled with: xcrun coremlcompiler compile
+config A' (walk2/frozen_final2.json): 25M, beta 0.3, gamma 0, pen -15, variant guard; decoder lambda 2, tau 0.5, top-3
 
-e68cf9ee8b8d444bf0407addd20a79d5149d9ebbca0162971277e09918a7c151  slothe-t-12m-256x12.gguf
-f3c75593dbd931a2fdc89a742e95576e774e163291ea651a16084a7ddf1edd7d  pred_q35_60m-q4.gguf
-92057096f9e6a9da6f4a1756f456d948506970205dda1bda1196d25db5000f76  syl_vocab.tsv
-58ccc20614291fc39b7fc6cc2ce4b536a5b787cf62f89bd13fba85bd232569d4  char2id.tsv
-e963ecb0f8aec024889ac4aaadcb0c9d620efbb961d72a744fff9dac3235a978  syl2legal.bin
-66441790a33019ea34979f3b8c752f996265e7558fc7391d2218fb2a133305a4  variants.tsv
