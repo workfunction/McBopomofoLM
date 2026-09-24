@@ -347,6 +347,16 @@ bool Decoder::score(const std::string& context,
     return false;  // does not fit the largest function (context guard)
   }
   size_t T = *it;
+  if (!backend_->isLoaded(T)) {  // v2.1: load that function in the background; no decision now
+    unavailable_.fetch_add(1);
+    backend_->requestLoad(T);
+    if (stats != nullptr) {
+      stats->unavailable = true;
+      stats->length = T;
+      stats->maxTokens = longest;
+    }
+    return false;
+  }
   std::vector<std::vector<int32_t>> rows(kBatch, std::vector<int32_t>(T, pad_));
   for (size_t r = 0; r < seqs.size(); ++r) {
     std::copy(seqs[r].begin(), seqs[r].end(), rows[r].begin());
@@ -366,6 +376,10 @@ bool Decoder::score(const std::string& context,
     stats->maxTokens = longest;
   }
   return true;
+}
+
+std::vector<size_t> Decoder::loadedLengths() const {
+  return backend_ != nullptr ? backend_->loadedLengths() : std::vector<size_t> {};
 }
 
 bool Decoder::prewarm(double* milliseconds) {

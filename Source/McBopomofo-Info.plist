@@ -24,7 +24,7 @@
 	<dict>
 		<key>tsInputModeListKey</key>
 		<dict>
-			<key>org.openvanilla.inputmethod.McBopomofoLM.Bopomofo</key>
+			<key>LM_MODE_ID_PREFIX.Bopomofo</key>
 			<dict>
 				<key>TISDoubleSpaceSubstitution</key>
 				<string>。</string>
@@ -52,7 +52,7 @@
 				<key>tsInputModeScriptKey</key>
 				<string>smTradChinese</string>
 			</dict>
-			<key>org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo</key>
+			<key>LM_MODE_ID_PREFIX.PlainBopomofo</key>
 			<dict>
 				<key>TISDoubleSpaceSubstitution</key>
 				<string>。</string>
@@ -83,12 +83,12 @@
 		</dict>
 		<key>tsVisibleInputModeOrderedArrayKey</key>
 		<array>
-			<string>org.openvanilla.inputmethod.McBopomofoLM.Bopomofo</string>
-			<string>org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo</string>
+			<string>$(LM_INPUT_SOURCE_ID).Bopomofo</string>
+			<string>$(LM_INPUT_SOURCE_ID).PlainBopomofo</string>
 		</array>
 	</dict>
 	<key>InputMethodConnectionName</key>
-	<string>McBopomofoLM_1_Connection</string>
+	<string>$(LM_CONNECTION_NAME)</string>
 	<key>InputMethodServerControllerClass</key>
 	<string>McBopomofoInputMethodController</string>
 	<key>InputMethodServerDelegateClass</key>
@@ -112,7 +112,7 @@
 	<key>TICapsLockLanguageSwitchCapable</key>
 	<true/>
 	<key>TISInputSourceID</key>
-	<string>org.openvanilla.inputmethod.McBopomofoLM</string>
+	<string>$(LM_INPUT_SOURCE_ID)</string>
 	<key>TISIntendedLanguage</key>
 	<string>zh-Hant</string>
 	<key>TISParticipatesInTouchBar</key>

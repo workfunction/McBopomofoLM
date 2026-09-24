@@ -82,6 +82,27 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 @property (readonly, nonatomic) NSUInteger prewarmCount;      // fired (main thread)
 @property (readonly, nonatomic) NSUInteger prewarmsCompleted; // finished on the compute queue
 
+/// v2.1 lazy decoder functions: t16 loads at start-up; t32 / t64 / t96 load on
+/// the background load queue the first time a request needs them (a request
+/// for a function not loaded yet gets no decoder decision). Each lazily loaded
+/// function gets its own placement check; one that fails stays unloaded and is
+/// not retried in this process. `install` loads all of them.
+@property (readonly, nonatomic) NSArray<NSNumber *> *decoderLoadedLengths;
+@property (readonly, nonatomic) NSUInteger decoderUnavailableRequests;
+@property (readonly, nonatomic) NSUInteger decoderLazyLoadsRequested;
+@property (readonly, nonatomic) NSUInteger decoderLazyLoadsDone;
+@property (readonly, nonatomic) NSUInteger decoderLazyLoadsFailed;
+- (NSDictionary<NSString *, NSNumber *> *)lazyLoadSummaryForLength:(NSInteger)length;
+/// Placement gate: minimum share (percent) of each function's estimated cost
+/// that MLComputePlan puts on the Neural Engine. Encoder 99 (measures 100),
+/// decoder 80 (measures 85.6-94.9; the rest is the token-id gather). Below it
+/// the model is not used (reason not_on_ane; the R line has each function's %).
+@property (assign, nonatomic) double minEncoderANECostPercent;
+@property (assign, nonatomic) double minDecoderANECostPercent;
+/// Test hook: lazily loaded decoder functions use Core ML CPU_ONLY (so their
+/// placement check fails).
+@property (assign, nonatomic) BOOL lazyCPUOnlyForTesting;
+
 /// Why a model is not used ("ok" when it is): integrity, missing, load_error,
 /// not_on_ane, probe_slow, plan_failed, macos, vocab, probe_failed, no_encoder.
 @property (readonly, nonatomic, nullable) NSString *loadReason;
@@ -100,12 +121,14 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 - (BOOL)loadForInstallWithProgress:(nullable void (^)(NSString *line))progress;
 /// ~/Library/Caches/<bundle id>/com.apple.e5rt.e5bundlecache (Core ML's ANE
 /// compile cache for this app). Cleared at install, and once per process if
-/// MLComputePlan fails (then the load is retried).
+/// MLComputePlan fails or puts < 1% of a model on the ANE (a damaged or stale
+/// cache); the load is then retried.
 @property (class, readonly, nonatomic, nullable) NSString *aneCachePath;
 /// Test hook: install without clearing the cache (keeps the test suite fast).
 @property (assign, nonatomic) BOOL keepANECacheForTesting;
-/// Test hook: the first encoder placement check reports plan_failed.
-@property (assign, nonatomic) BOOL simulatePlanFailureOnceForTesting;
+/// Test hook: the first encoder placement check reports this reason
+/// ("plan_failed", or "not_on_ane" with 0% on the ANE = a collapsed placement).
+@property (copy, nonatomic, nullable) NSString *simulatePlacementFailureOnceForTesting;
 @property (copy, nonatomic, nullable) void (^installProgress)(NSString *line);
 
 /// Loads the model on a background queue. Idempotent.

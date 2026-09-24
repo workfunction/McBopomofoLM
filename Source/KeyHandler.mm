@@ -51,8 +51,16 @@
 @import RomanNumbers;
 @import BopomofoBraille;
 
+// Input mode IDs = Info.plist's $(LM_INPUT_SOURCE_ID).Bopomofo / .PlainBopomofo:
+// the Debug build (unit-test host) has its own IDs so it can never collide
+// with an installed McBopomofoLM.
+#if MCBOPOMOFO_LM_DEV_IDS
+InputMode InputModeBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.dev.Bopomofo";
+InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.dev.PlainBopomofo";
+#else
 InputMode InputModeBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Bopomofo";
 InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo";
+#endif
 
 @implementation KeyHandler {
     std::shared_ptr<Formosa::Gramambular2::LanguageModel> _emptySharedPtr;
