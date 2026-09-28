@@ -119,7 +119,7 @@ double InWalkNeuralScore(const ForwardResult& r, const Vocabulary& vocab,
       continue;  // provisional view: no score yet for this position
     }
     int32_t cid = vocab.charIdForCodePoint(cp);
-    double lp = cid >= 0 ? LogProb(r, vocab, start + k, cid)
+    double lp = cid >= 0 ? CharLogProb(r, vocab, start + k, cid)
                          : -std::numeric_limits<double>::infinity();
     s += std::isfinite(lp) ? lp : penalty;
   }
@@ -146,7 +146,9 @@ ReadingGrid::WalkResult SlothEGrid::rescoredWalk(
   if (detail != nullptr) {
     detail->clear();
   }
-  if (n == 0 || r.length() != n) {
+  // v3.0.2b: a 1-reading buffer shows the stock walk (no neural term, no
+  // decoder pins; an empty detail means no decoder requests either).
+  if (n <= 1 || r.length() != n) {
     return walk();
   }
 
@@ -471,6 +473,43 @@ std::vector<size_t> DemoteWalkValue(const std::vector<size_t>& order,
   return out;
 }
 
+double SlothEGrid::unigramScore(size_t start, size_t len,
+                                const std::string& value) const {
+  if (start < spans_.size() && len <= spans_[start].maxLength()) {
+    const NodePtr& n = spans_[start].nodeOf(len);
+    if (n != nullptr) {
+      for (const auto& u : n->unigrams()) {
+        if (u.value() == value) {
+          return u.score();
+        }
+      }
+    }
+  }
+  return -std::numeric_limits<double>::infinity();
+}
+
+std::vector<RerankItem> SlothEGrid::windowItems(
+    const std::vector<Candidate>& candidates, const std::string& nodeReading,
+    size_t spanStart, size_t spanLength, const ForwardResult& r,
+    const Vocabulary& vocab) const {
+  std::vector<RerankItem> items;
+  items.reserve(candidates.size());
+  const bool oneReading = readings_.size() == 1;
+  for (const auto& c : candidates) {
+    RerankItem item;
+    item.value = c.value;
+    item.aligned =
+        c.reading == nodeReading && Utf8Length(c.value) == spanLength;
+    if (item.aligned) {
+      item.score = oneReading
+                       ? unigramScore(spanStart, spanLength, c.value)
+                       : ScoreCandidate(r, vocab, spanStart, c.value).score;
+    }
+    items.push_back(std::move(item));
+  }
+  return items;
+}
+
 std::vector<PinnedEntry> SlothEGrid::pinnedEntries(
     size_t loc, const std::vector<Candidate>& candidates,
     const ForwardResult& r, const Vocabulary& vocab,
@@ -504,21 +543,6 @@ std::vector<PinnedEntry> SlothEGrid::pinnedEntries(
   if (out.size() != candidates.size()) {
     return {};
   }
-  // LM score of a pick at its node (first unigram with that value), as
-  // window3_cli lmOf(): the picked node's real weight, not the override score.
-  auto lmOf = [this](size_t start, size_t len, const std::string& value) {
-    if (start < spans_.size() && len <= spans_[start].maxLength()) {
-      const NodePtr& n = spans_[start].nodeOf(len);
-      if (n != nullptr) {
-        for (const auto& u : n->unigrams()) {
-          if (u.value() == value) {
-            return u.score();
-          }
-        }
-      }
-    }
-    return -std::numeric_limits<double>::infinity();
-  };
   std::vector<InWalkNode> detail;
   for (size_t j = 0; j < out.size(); ++j) {
     std::unique_ptr<SlothEGrid> copy = snapshot();
@@ -530,7 +554,8 @@ std::vector<PinnedEntry> SlothEGrid::pinnedEntries(
                                       nullptr, &detail);
     double score = 0;
     for (const InWalkNode& d : detail) {
-      score += lmOf(d.start, d.len, d.raw) +
+      // the picked node at its real LM weight, not the override score
+      score += unigramScore(d.start, d.len, d.raw) +
                params.beta * InWalkNeuralScore(r, vocab, d.start, d.len, d.raw,
                                                params.penalty);
     }

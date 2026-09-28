@@ -603,6 +603,8 @@ static const size_t kMaxEndToEndSamples = 4096;
                 ok = false;
                 reason = [@(error.c_str()) hasPrefix:@"model probe"] ? @"probe_failed" : @"vocab";
                 engine.reset();
+            } else if (engine->vocabulary().unkShareCount() != McBopomofoSlothE::kExpectedUnkShareCount) {
+                NSLog(@"McBopomofoLM: char2id maps %zu chars to the UNK id (expected %zu); rare-char scores use log(%zu)", engine->vocabulary().unkShareCount(), McBopomofoSlothE::kExpectedUnkShareCount, engine->vocabulary().unkShareCount());
             }
         }
     }
@@ -1050,7 +1052,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     }
     [_logHandle seekToEndReturningOffset:nil error:nil];
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.0 (candidate window jump-ahead C, delta %.1f) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.0.2b (candidate window jump-ahead C, delta %.1f; UNK split; LM order and stock walk for 1-syllable buffers) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

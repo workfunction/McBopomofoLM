@@ -2941,17 +2941,8 @@ static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
         return identity;
     }
 
-    std::vector<McBopomofoSlothE::RerankItem> items;
-    items.reserve(candidates.size());
-    for (const auto &c : candidates) {
-        McBopomofoSlothE::RerankItem item;
-        item.value = c.value;
-        item.aligned = c.reading == node->reading() && McBopomofoSlothE::Utf8Length(c.value) == spanLength;
-        if (item.aligned) {
-            item.score = McBopomofoSlothE::ScoreCandidate(*result, vocab, spanStart, c.value).score;
-        }
-        items.push_back(std::move(item));
-    }
+    // v3.0.2: a 1-syllable buffer sorts the same-span block by the LM score
+    std::vector<McBopomofoSlothE::RerankItem> items = _grid->windowItems(candidates, node->reading(), spanStart, spanLength, *result, vocab);
     std::vector<size_t> order = McBopomofoSlothE::RerankOrder(items, node->value(), &engine->variants());
     if (Preferences.slothEDemoteShownCandidate) {
         order = McBopomofoSlothE::DemoteWalkValue(order, items, node->value(), &engine->variants());

@@ -231,10 +231,11 @@ static std::vector<std::string> Readings(NSArray<NSString *> *array)
     XCTAssertTrue((McBopomofoSlothE::DemoteWalkValue(guarded, taiwan, "台灣", &v) == std::vector<size_t> { 2, 0, 1, 3 }));
 }
 
-// v3.0 candidate window (C, delta 3): the app's pinned-walk scores, v2 order
-// and jump-ahead order equal walk2/window3b.py order_c(u, 3) on the 143 dev
+// Candidate window (v3.0 C delta 3, v3.0.2 UNK split + key h): the app's
+// pinned-walk scores, v2 order and jump-ahead order equal walk2/w5.py
+// order(u, "h") (= window3b order_c on unk_cli --variant 1) on the 143 dev
 // units. Each unit's ForwardResult is rebuilt from the cached 25M log-probs
-// exactly as walk2/window3_cli does (SlothE/make_window3b_fixture.py).
+// as walk2/unk_cli does (SlothE/make_v302_fixtures.py).
 static std::vector<std::string> SplitOn(const std::string &s, char sep)
 {
     std::vector<std::string> out;
@@ -252,7 +253,165 @@ static std::string Bytes(NSString *s)
     return std::string(static_cast<const char *>(d.bytes), d.length);
 }
 
-- (void)testJumpAheadOrderMatchesWindow3bOnDevUnits
+// walk2 cache lines (sid, T, readings, per-position "unk char lp ...") joined,
+// last `length` positions (0 = all) -> readings + a ForwardResult with the
+// cached log-probs as logits, as walk2/window3_cli and unk_cli rebuild it (the
+// UNK split is the app's own scoring, not applied here).
+static std::shared_ptr<McBopomofoSlothE::ForwardResult> CacheForward(const std::vector<std::string> &lines, size_t length, const McBopomofoSlothE::Vocabulary &vocab, std::vector<std::string> *readings)
+{
+    std::vector<std::string> rds;
+    std::vector<std::vector<std::string>> tabs;
+    for (const auto &line : lines) {
+        std::vector<std::string> f = SplitOn(line, '\t');
+        std::vector<std::string> rs = SplitOn(f[2], ' ');
+        for (size_t t = 0; t < rs.size() && 3 + t < f.size(); ++t) {
+            rds.push_back(rs[t]);
+            tabs.push_back(SplitOn(f[3 + t], ' '));
+        }
+    }
+    size_t from = length == 0 ? 0 : rds.size() - length;
+    readings->assign(rds.begin() + static_cast<std::ptrdiff_t>(from), rds.end());
+    const size_t T = readings->size();
+    auto r = std::make_shared<McBopomofoSlothE::ForwardResult>();
+    r->charCount = vocab.charCount();
+    const size_t C = static_cast<size_t>(r->charCount);
+    r->logits.assign(T * C, -1e30f);
+    for (size_t t = 0; t < T; ++t) {
+        r->ids.push_back(vocab.mapSyllable((*readings)[t]).id);
+        const std::vector<std::string> &tok = tabs[from + t];
+        if (tok[0] != "x") {
+            r->logits[t * C + 2] = static_cast<float>(std::stod(tok[0]));
+        }
+        for (size_t k = 1; k + 1 < tok.size(); k += 2) {
+            int32_t cid = vocab.charId(tok[k]);
+            if (cid >= 0) {
+                r->logits[t * C + static_cast<size_t>(cid)] = static_cast<float>(std::stod(tok[k + 1]));
+            }
+        }
+    }
+    McBopomofoSlothE::ComputeLogZ(r.get(), vocab);
+    return r;
+}
+
+static std::vector<McBopomofoSlothE::WalkPin> Pins(NSArray<NSArray *> *pins)
+{
+    std::vector<McBopomofoSlothE::WalkPin> out;
+    for (NSArray *p in pins) {
+        out.push_back({ [p[0] unsignedIntegerValue], [p[1] unsignedIntegerValue], Bytes(p[2]) });
+    }
+    return out;
+}
+
+static BOOL SameWalk(const Formosa::Gramambular2::ReadingGrid::WalkResult &walk, NSArray<NSArray *> *want)
+{
+    if (want.count != walk.nodes.size()) {
+        return NO;
+    }
+    size_t start = 0;
+    for (size_t k = 0; k < walk.nodes.size(); ++k) {
+        size_t end = start + walk.nodes[k]->spanningLength();
+        if ([want[k][0] unsignedIntegerValue] != start || [want[k][1] unsignedIntegerValue] != end || walk.nodes[k]->value() != Bytes(want[k][2])) {
+            return NO;
+        }
+        start = end;
+    }
+    return YES;
+}
+
+// v3.0.2 UNK split (reports/unk.md variant 1): the app's A' in-walk walk (its
+// own CharLogProb, decoder pins from the fixture) equals walk2/unk_cli
+// --variant 1 on the 500 dev sentences (SlothE/make_v302_fixtures.py).
+- (void)testInWalkMatchesUnkVariant1OnDevWalks
+{
+    XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
+    if (gInWalkEngine == nullptr) {
+        return;
+    }
+    const auto &vocab = gInWalkEngine->vocabulary();
+    XCTAssertEqual(vocab.unkShareCount(), McBopomofoSlothE::kExpectedUnkShareCount);
+    XCTAssertEqualWithAccuracy(vocab.unkLogShare(), 9.4155, 1e-4);
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v302_dev_walks.jsonl"];
+    XCTAssertEqual(rows.count, 500u);
+    NSUInteger same = 0, pinsWanted = 0, pinsApplied = 0;
+    for (NSDictionary *row in rows) {
+        std::vector<std::string> readings;
+        auto r = CacheForward({ Bytes(row[@"cache"]) }, 0, vocab, &readings);
+        auto grid = [self gridWithReadings:readings];
+        std::vector<McBopomofoSlothE::WalkPin> pins = Pins(row[@"pins"]);
+        InWalkStats stats;
+        auto walk = grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), &stats, pins.empty() ? nullptr : &pins);
+        pinsWanted += pins.size();
+        pinsApplied += stats.pinsApplied;
+        BOOL ok = SameWalk(walk, row[@"walk"]);
+        same += ok;
+        if (!ok) {
+            NSLog(@"SLOTHE_V302 walk diff %@ got=%s", row[@"sid"], McBopomofoSlothE::WalkText(walk).c_str());
+        }
+    }
+    NSLog(@"SLOTHE_V302 dev walks=%lu match=%lu pins=%lu/%lu unk_share=%zu", (unsigned long)rows.count, (unsigned long)same, (unsigned long)pinsApplied, (unsigned long)pinsWanted, vocab.unkShareCount());
+    XCTAssertEqual(same, rows.count);
+    XCTAssertEqual(pinsApplied, pinsWanted);
+}
+
+// v3.0.2 key h (reports/w5.md) + v3.0.2b stock walk: every 1-syllable buffer
+// (1,032 readings of data.txt with >= 5 single-char unigrams) as the app
+// builds it. The walk (even with the fixture's A' decoder pins) is the stock
+// walk, with no decoder requests; the window -- windowItems (LM score),
+// RerankOrder, DemoteWalkValue of the stock value, C -- equals walk2/w5.py
+// order(u, "h", single=True) with the stock value shown.
+- (void)testSingleSyllableWindowMatchesW5KeyH
+{
+    XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
+    if (gInWalkEngine == nullptr) {
+        return;
+    }
+    const auto &vocab = gInWalkEngine->vocabulary();
+    const auto &variants = gInWalkEngine->variants();
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v302_single.jsonl"];
+    XCTAssertEqual(rows.count, 1032u);
+    NSUInteger walkSame = 0, orderSame = 0, m1 = 0, noRequests = 0;
+    for (NSDictionary *row in rows) {
+        std::vector<std::string> readings;
+        auto r = CacheForward({ Bytes(row[@"cache"]) }, 0, vocab, &readings);
+        XCTAssertEqual(readings.size(), 1u);
+        auto grid = [self gridWithReadings:readings];
+        std::vector<McBopomofoSlothE::WalkPin> pins = Pins(row[@"pins"]);
+        std::vector<McBopomofoSlothE::InWalkNode> detail;
+        auto walk = grid->rescoredWalk(*r, vocab, variants, InWalkParams(), nullptr, pins.empty() ? nullptr : &pins, &detail);
+        walkSame += walk.nodes.size() == 1 && walk.nodes[0]->value() == Bytes(row[@"stock"]) && McBopomofoSlothE::WalkText(walk) == McBopomofoSlothE::WalkText(grid->walk());
+        noRequests += McBopomofoSlothE::BuildDecoderRequests(detail, 3).empty();
+        // _slothECandidateOrder with the cursor at the end (loc 0)
+        size_t past = 0;
+        auto node = *walk.findNodeAt(0, &past);
+        auto candidates = grid->candidatesAt(0);
+        std::vector<RerankItem> items = grid->windowItems(candidates, node->reading(), 0, 1, *r, vocab);
+        std::vector<size_t> order = McBopomofoSlothE::DemoteWalkValue(McBopomofoSlothE::RerankOrder(items, node->value(), &variants), items, node->value(), &variants);
+        auto entries = grid->pinnedEntries(0, candidates, *r, vocab, variants, InWalkParams());
+        order = McBopomofoSlothE::JumpAheadOrder(order, entries, 0, 1, node->value(), McBopomofoSlothE::DisplayedChars(walk, 1), &variants);
+        std::vector<size_t> want;
+        for (NSNumber *n in row[@"want"]) {
+            want.push_back(n.unsignedIntegerValue);
+        }
+        orderSame += order == want;
+        std::string top = Bytes(row[@"top"]);
+        size_t rank = 0;
+        while (rank < order.size() && candidates[order[rank]].value != top) {
+            ++rank;
+        }
+        m1 += node->value() == top || rank < 3;
+        if ([row[@"sid"] isEqualToString:@"ㄧㄚˊ"] || [row[@"sid"] isEqualToString:@"ㄉㄢˋ"] || order != want) {
+            NSLog(@"SLOTHE_V302 single %@ shown=%s top=%s rank=%zu top3=%s %s %s %s", row[@"sid"], node->value().c_str(), top.c_str(), rank + 1,
+                candidates[order[0]].value.c_str(), candidates[order[1]].value.c_str(), candidates[order[2]].value.c_str(), order == want ? "match" : "DIFF");
+        }
+    }
+    NSLog(@"SLOTHE_V302 single readings=%lu shown_is_stock=%lu no_decoder_requests=%lu order_match=%lu M1=%.1f%%", (unsigned long)rows.count, (unsigned long)walkSame, (unsigned long)noRequests, (unsigned long)orderSame, 100.0 * m1 / rows.count);
+    XCTAssertEqual(walkSame, rows.count);
+    XCTAssertEqual(noRequests, rows.count);
+    XCTAssertEqual(orderSame, rows.count);
+    XCTAssertEqual(m1, rows.count);  // reports/w5.md: M1 100%
+}
+
+- (void)testWindowOrderMatchesW5OnDevUnits
 {
     XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
     if (gInWalkEngine == nullptr) {
@@ -261,38 +420,15 @@ static std::string Bytes(NSString *s)
     const auto &vocab = gInWalkEngine->vocabulary();
     const auto &variants = gInWalkEngine->variants();
     InWalkParams params;
-    NSArray<NSDictionary *> *rows = [self rowsOf:@"window3b_dev_c3.jsonl"];
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v302_dev_units.jsonl"];
     XCTAssertEqual(rows.count, 143u);
     NSUInteger entriesSame = 0, v2Same = 0, orderSame = 0, orderSameFromFixtureA = 0, jumps = 0, entries = 0, boundedSkipped = 0, boundedSame = 0;
     double maxScoreDiff = 0;
     std::vector<double> ms;
     for (int pass = 0; pass < 3; ++pass) {
         for (NSDictionary *u in rows) {
-            std::vector<std::string> f = SplitOn(Bytes(u[@"cache"]), '\t');
             std::vector<std::string> readings;
-            for (const auto &rd : SplitOn(f[2], ' ')) {
-                readings.push_back(rd);
-            }
-            const size_t T = readings.size();
-            XCTAssertEqual(f.size(), 3 + T);
-            auto r = std::make_shared<McBopomofoSlothE::ForwardResult>();
-            r->charCount = vocab.charCount();
-            const size_t C = static_cast<size_t>(r->charCount);
-            r->logits.assign(T * C, -1e30f);
-            for (size_t t = 0; t < T; ++t) {
-                r->ids.push_back(vocab.mapSyllable(readings[t]).id);
-                std::vector<std::string> tok = SplitOn(f[3 + t], ' ');
-                if (tok[0] != "x") {
-                    r->logits[t * C + 2] = static_cast<float>(std::stod(tok[0]));
-                }
-                for (size_t k = 1; k + 1 < tok.size(); k += 2) {
-                    int32_t cid = vocab.charId(tok[k]);
-                    if (cid >= 0) {
-                        r->logits[t * C + static_cast<size_t>(cid)] = static_cast<float>(std::stod(tok[k + 1]));
-                    }
-                }
-            }
-            McBopomofoSlothE::ComputeLogZ(r.get(), vocab);
+            auto r = CacheForward({ Bytes(u[@"cache"]) }, 0, vocab, &readings);
             auto grid = [self gridWithReadings:readings];
 
             size_t s = [u[@"s"] unsignedIntegerValue], e = [u[@"e"] unsignedIntegerValue], loc = e - 1;
@@ -357,16 +493,7 @@ static std::string Bytes(NSString *s)
                     nodeReading = Bytes(win[j][2]);
                 }
             }
-            std::vector<RerankItem> items;
-            for (const auto &c : candidates) {
-                RerankItem item;
-                item.value = c.value;
-                item.aligned = c.reading == nodeReading && McBopomofoSlothE::Utf8Length(c.value) == e - s;
-                if (item.aligned) {
-                    item.score = McBopomofoSlothE::ScoreCandidate(*r, vocab, s, c.value).score;
-                }
-                items.push_back(std::move(item));
-            }
+            std::vector<RerankItem> items = grid->windowItems(candidates, nodeReading, s, e - s, *r, vocab);
             std::vector<size_t> v2 = McBopomofoSlothE::DemoteWalkValue(McBopomofoSlothE::RerankOrder(items, v, &variants), items, v, &variants);
             v2Same += v2 == b2;
         }
@@ -381,7 +508,7 @@ static std::string Bytes(NSString *s)
     XCTAssertEqual(entriesSame, rows.count);
     XCTAssertEqual(v2Same, rows.count);
     XCTAssertEqual(boundedSame, rows.count);
-    XCTAssertEqual(jumps, 39u);  // make_window3b_fixture.py: jumps=39
+    XCTAssertEqual(jumps, 39u);  // make_v302_fixtures.py: jumps=39
 }
 
 - (void)testJumpAheadOrderRule
@@ -417,50 +544,23 @@ static std::string Bytes(NSString *s)
     XCTAssertEqual(McBopomofoSlothE::kJumpAheadDelta, 3.0);
 }
 
-// A buffer of the last `length` readings of the dev sentences in `sids` order
-// (the window's sentence last), with the ForwardResult from their cached
-// 25M log-probs, built as in testJumpAheadOrderMatchesWindow3bOnDevUnits.
+// A buffer of the last `length` readings of the dev unit sentences (sorted by
+// sid, the window's sentence last), with the ForwardResult from their cached
+// 25M log-probs (CacheForward).
 - (std::shared_ptr<McBopomofoSlothE::ForwardResult>)longBuffer:(size_t)length endingWith:(NSString *)sid readings:(std::vector<std::string> *)readings
 {
-    const auto &vocab = gInWalkEngine->vocabulary();
     NSMutableDictionary<NSString *, NSString *> *lines = [NSMutableDictionary dictionary];
-    for (NSDictionary *u in [self rowsOf:@"window3b_dev_c3.jsonl"]) {
+    for (NSDictionary *u in [self rowsOf:@"v302_dev_units.jsonl"]) {
         lines[u[@"sid"]] = u[@"cache"];
     }
     NSMutableArray<NSString *> *sids = [[lines.allKeys sortedArrayUsingSelector:@selector(compare:)] mutableCopy];
     [sids removeObject:sid];
     [sids addObject:sid];
-    std::vector<std::string> rds;
-    std::vector<std::vector<std::string>> tabs;
+    std::vector<std::string> all;
     for (NSString *k in sids) {
-        std::vector<std::string> f = SplitOn(Bytes(lines[k]), '\t');
-        std::vector<std::string> rs = SplitOn(f[2], ' ');
-        for (size_t t = 0; t < rs.size(); ++t) {
-            rds.push_back(rs[t]);
-            tabs.push_back(SplitOn(f[3 + t], ' '));
-        }
+        all.push_back(Bytes(lines[k]));
     }
-    size_t from = rds.size() - length;
-    readings->assign(rds.begin() + static_cast<std::ptrdiff_t>(from), rds.end());
-    auto r = std::make_shared<McBopomofoSlothE::ForwardResult>();
-    r->charCount = vocab.charCount();
-    const size_t C = static_cast<size_t>(r->charCount);
-    r->logits.assign(length * C, -1e30f);
-    for (size_t t = 0; t < length; ++t) {
-        r->ids.push_back(vocab.mapSyllable((*readings)[t]).id);
-        const std::vector<std::string> &tok = tabs[from + t];
-        if (tok[0] != "x") {
-            r->logits[t * C + 2] = static_cast<float>(std::stod(tok[0]));
-        }
-        for (size_t k = 1; k + 1 < tok.size(); k += 2) {
-            int32_t cid = vocab.charId(tok[k]);
-            if (cid >= 0) {
-                r->logits[t * C + static_cast<size_t>(cid)] = static_cast<float>(std::stod(tok[k + 1]));
-            }
-        }
-    }
-    McBopomofoSlothE::ComputeLogZ(r.get(), vocab);
-    return r;
+    return CacheForward(all, length, gInWalkEngine->vocabulary(), readings);
 }
 
 // v3.0.1 bound: a 256-syllable buffer with a 240-entry window goes over

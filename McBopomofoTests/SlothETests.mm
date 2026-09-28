@@ -346,7 +346,7 @@ static double gEngineLoadMs = 0;
     }
     NSArray<NSDictionary *> *rows = [self fixture:@"rerank_parity.jsonl"];
     XCTAssertEqual(rows.count, 2332u);
-    NSUInteger fullMatch = 0, top1Match = 0, scoredCountMatch = 0, loggedDiffs = 0;
+    NSUInteger fullMatch = 0, top1Match = 0, scoredCountMatch = 0, loggedDiffs = 0, splitChanged = 0;
     std::vector<double> perItemMs;
     for (NSDictionary *row in rows) {
         auto t0 = std::chrono::steady_clock::now();
@@ -376,7 +376,21 @@ static double gEngineLoadMs = 0;
             }
             items.push_back(item);
         }
-        std::vector<size_t> order = RerankOrder(items, std::string([row[@"walk_text"] UTF8String]), nullptr);
+        // The reference is upstream run_sloth_rerank (whole UNK-bucket log-prob per rare char). v3.0.2
+        // splits it (CharLogProb); adding log(N) back per scoreable UNK char gives the upstream score, so
+        // this keeps the Python parity of everything else. The split itself: SlothEInWalkTests v302.
+        std::vector<RerankItem> upstream = items;
+        for (RerankItem &item : upstream) {
+            std::vector<std::string> chars = McBopomofoSlothE::Utf8Chars(item.value);
+            for (size_t k = 0; item.aligned && k < chars.size(); ++k) {
+                if (gEngine->vocabulary().charId(chars[k]) == McBopomofoSlothE::kUnkCharId && std::isfinite(McBopomofoSlothE::LogProb(*r, gEngine->vocabulary(), s + k, McBopomofoSlothE::kUnkCharId))) {
+                    item.score += gEngine->vocabulary().unkLogShare();
+                }
+            }
+        }
+        std::string walkText([row[@"walk_text"] UTF8String]);
+        std::vector<size_t> order = RerankOrder(upstream, walkText, nullptr);
+        splitChanged += RerankOrder(items, walkText, nullptr) != order;
         perItemMs.push_back(MsSince(t0));
         NSMutableArray<NSString *> *ranking = [NSMutableArray array];
         for (size_t i : order) {
@@ -390,7 +404,7 @@ static double gEngineLoadMs = 0;
             NSLog(@"SLOTHE_PARITY diff id=%@ got=%@ want=%@", row[@"id"], [ranking componentsJoinedByString:@","], [want componentsJoinedByString:@","]);
         }
     }
-    NSLog(@"SLOTHE_PARITY items=%lu full_ranking_match=%lu top1_match=%lu n_scored_match=%lu per_item_p50_ms=%.3f p95_ms=%.3f (forward cached across items of one sentence)", (unsigned long)rows.count, (unsigned long)fullMatch, (unsigned long)top1Match, (unsigned long)scoredCountMatch, Percentile(perItemMs, 50), Percentile(perItemMs, 95));
+    NSLog(@"SLOTHE_PARITY items=%lu full_ranking_match=%lu top1_match=%lu n_scored_match=%lu unk_split_changes=%lu per_item_p50_ms=%.3f p95_ms=%.3f (forward cached across items of one sentence)", (unsigned long)rows.count, (unsigned long)fullMatch, (unsigned long)top1Match, (unsigned long)scoredCountMatch, (unsigned long)splitChanged, Percentile(perItemMs, 50), Percentile(perItemMs, 95));
     XCTAssertEqual(scoredCountMatch, rows.count);
     // Same model, same device: the app's ranking equals the reference everywhere.
     XCTAssertEqual(top1Match, rows.count);

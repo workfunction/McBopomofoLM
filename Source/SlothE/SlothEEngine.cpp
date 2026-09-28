@@ -288,6 +288,12 @@ bool Vocabulary::load(const std::string& dir, std::string* error) {
   charCount_ = static_cast<int32_t>(nChar);
   auto unk = syllables_.find("<unk>");
   unkId_ = unk == syllables_.end() ? 1 : unk->second;
+  unkShareCount_ = static_cast<size_t>(
+      std::count_if(chars_.begin(), chars_.end(),
+                    [](const auto& kv) { return kv.second == kUnkCharId; }));
+  unkLogShare_ = unkShareCount_ > 0
+                     ? std::log(static_cast<double>(unkShareCount_))
+                     : 0.0;
   return true;
 }
 
@@ -449,13 +455,19 @@ double LogProb(const ForwardResult& r, const Vocabulary& vocab, size_t pos,
   return v - r.logZ[pos];
 }
 
+double CharLogProb(const ForwardResult& r, const Vocabulary& vocab, size_t pos,
+                   int32_t charId) {
+  double v = LogProb(r, vocab, pos, charId);
+  return charId == kUnkCharId && r.known(pos) ? v - vocab.unkLogShare() : v;
+}
+
 CandidateScore ScoreCandidate(const ForwardResult& r, const Vocabulary& vocab,
                               size_t start, const std::string& value) {
   CandidateScore s;
   std::vector<std::string> chars = Utf8Chars(value);
   for (size_t k = 0; k < chars.size(); ++k) {
     int32_t cid = vocab.charId(chars[k]);
-    double v = cid >= 0 ? LogProb(r, vocab, start + k, cid) : kNegInf;
+    double v = cid >= 0 ? CharLogProb(r, vocab, start + k, cid) : kNegInf;
     if (!std::isfinite(v)) {
       v = kIllegalLogProb;
       ++s.illegal;

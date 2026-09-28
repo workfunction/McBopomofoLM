@@ -26,6 +26,12 @@
 namespace McBopomofoSlothE {
 
 constexpr double kIllegalLogProb = -30.0;
+// v3.0.2 (reports/unk.md variant 1): char2id maps every rare char to one
+// shared id (UNK); each such char gets the bucket's log-prob minus log(share
+// count). The count is taken from the loaded char2id; the shipped table has
+// kExpectedUnkShareCount.
+constexpr int32_t kUnkCharId = 2;
+constexpr size_t kExpectedUnkShareCount = 12276;
 
 enum class MapHow { kExact, kToneless, kUnk };
 
@@ -65,6 +71,9 @@ class Vocabulary {
   int32_t syllableCount() const { return syllableCount_; }
   int32_t charCount() const { return charCount_; }
   size_t charMapSize() const { return chars_.size(); }
+  // Chars mapped to kUnkCharId, and log of that count (0 when none).
+  size_t unkShareCount() const { return unkShareCount_; }
+  double unkLogShare() const { return unkLogShare_; }
 
  private:
   std::unordered_map<std::string, int32_t> syllables_;
@@ -75,6 +84,8 @@ class Vocabulary {
   int32_t charCount_ = 0;
   size_t rowBytes_ = 0;
   int32_t unkId_ = 1;
+  size_t unkShareCount_ = 0;
+  double unkLogShare_ = 0;
 };
 
 // Orthographic variant classes (e.g. 台/臺, 裡/裏). Two strings are a variant
@@ -115,6 +126,10 @@ struct CandidateScore {
 // Per-position log-prob of charId (-inf outside the legal mask).
 double LogProb(const ForwardResult& r, const Vocabulary& vocab, size_t pos,
                int32_t charId);
+// LogProb for scoring a char: a UNK-bucket char gets LogProb - log(share
+// count) (ScoreCandidate and InWalkNeuralScore both use this).
+double CharLogProb(const ForwardResult& r, const Vocabulary& vocab, size_t pos,
+                   int32_t charId);
 // Sum of per-char log-probs of value placed at positions start.. of r.
 CandidateScore ScoreCandidate(const ForwardResult& r, const Vocabulary& vocab,
                               size_t start, const std::string& value);

@@ -146,6 +146,21 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
  public:
   using ReadingGrid::ReadingGrid;
 
+  // LM score of `value` at node [start, start+len): its first unigram with
+  // that value (walk2 lmOf); -inf when there is none.
+  double unigramScore(size_t start, size_t len, const std::string& value) const;
+
+  // The v2 window items for `candidates` against the walk node at
+  // [spanStart, spanStart+spanLength) with reading nodeReading: aligned = same
+  // reading and one char per syllable. Aligned score = ScoreCandidate, except
+  // in a 1-reading grid, where it is the McBopomofo unigram score (v3.0.2,
+  // reports/w5.md key h).
+  std::vector<RerankItem> windowItems(const std::vector<Candidate>& candidates,
+                                      const std::string& nodeReading,
+                                      size_t spanStart, size_t spanLength,
+                                      const ForwardResult& r,
+                                      const Vocabulary& vocab) const;
+
   // PinnedEntry for each of `candidates` (= candidatesAt(loc)); empty if they
   // are not this grid's window at loc, or if the walks would take longer than
   // budgetMs (checked after each entry: time so far, and time so far projected
@@ -161,6 +176,8 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
   // choice differs from the grid node's current value are private copies, so
   // the grid itself is never modified. r must come from this grid's readings;
   // otherwise the stock walk is returned.
+  // A 1-reading grid always gets the stock walk (v3.0.2b), with pins ignored
+  // and an empty detail.
   // pins: decoder decisions for a re-walk (walk2 --repin); the variant guard
   // still uses the unpinned stock walk as its baseline. detail: per node of
   // the returned walk (before pins are considered for the detail's own walk).
