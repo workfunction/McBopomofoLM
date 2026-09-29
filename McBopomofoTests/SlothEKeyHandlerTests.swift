@@ -658,3 +658,107 @@ class SlothETypoWindowTests: XCTestCase {
         XCTAssertEqual(h.slothETypoJobsStarted, 2)
     }
 }
+
+// McBopomofoLM v3.1.2: the `install` progress bar renderer (no model load).
+class InstallProgressTests: XCTestCase {
+    /// The detailed lines of the user's real install (v3.1b.1), with the second they arrived.
+    static let realRun: [(TimeInterval, String)] = {
+        var t = 0.0
+        var out: [(TimeInterval, String)] = [(0, "SlothE-T 25M encoder (enc25m.mlmodelc):"), (0.1, "  files verified (size + sha256) in 98 ms")]
+        for (f, s) in [("L8", 4.6), ("L16", 4.5), ("L32", 4.5), ("L64", 4.7), ("L256", 6.0)] {
+            t += s
+            out.append((t, "  encoder \(f) ready in \(s) s"))
+        }
+        t += 29.3
+        out.append((t, "  placement (MLComputePlan), estimated cost on the Neural Engine: L8 100.0%, L16 100.0%, L32 100.0%, L64 100.0%, L256 100.0% (gate 99%), 29.3 s"))
+        out.append((t, "  latency probe: 0.85 ms per call (limit 10 ms)"))
+        out.append((t, "  encoder ON the Neural Engine: loaded in 53.6 s (ANE compile included when not cached)"))
+        out.append((t, "SlothE decoder (dec60m.mlmodelc):"))
+        for (f, load, plan, pct) in [("t16", 4.2, 5.1, 92.3), ("t32", 5.6, 6.6, 85.6), ("t64", 9.1, 10.5, 92.6), ("t96", 15.5, 18.4, 94.9),
+                                      ("n16", 3.9, 4.6, 82.8), ("n32", 4.9, 6.1, 88.5), ("n64", 7.1, 8.4, 93.9), ("n96", 9.3, 11.6, 85.1)] {
+            t += load
+            out.append((t, "  decoder \(f) ready in \(load) s"))
+            t += plan
+            out.append((t, String(format: "  placement (MLComputePlan), estimated cost on the Neural Engine: %@ %.1f%% (gate 80%%), %.1f s", f, pct, plan)))
+            out.append((t, "  latency probe: 3.00 ms per call (limit 40 ms)"))
+        }
+        out.append((t, "  decoder ON the Neural Engine: loaded in 131.3 s"))
+        out.append((t, "Models ready in 184.9 s: encoder on the Neural Engine, decoder on the Neural Engine."))
+        return out
+    }()
+
+    func testWeightsSumToTheRealInstall() {
+        XCTAssertEqual(InstallProgress.steps.count, 14)
+        XCTAssertEqual(InstallProgress.totalSeconds, 185.7, accuracy: 1e-9)  // her run: 186 s
+    }
+
+    func testPercentIsMonotonicAndFramesFit80Columns() {
+        let p = InstallProgress()
+        var last = -1.0
+        var frames: [String] = []
+        var t = 0.0
+        for (at, line) in Self.realRun {
+            while t < at {  // the 0.5 s ticker between lines
+                let f = p.fraction(now: t)
+                XCTAssertGreaterThanOrEqual(f, last)
+                last = f
+                frames.append(p.frame(now: t, spinner: Int(t * 2)))
+                t += 0.5
+            }
+            p.consume(line, now: at)
+        }
+        XCTAssertGreaterThan(last, 0.9)
+        frames.append(p.frame(now: t, spinner: 0, finished: true))
+        XCTAssertTrue(frames.allSatisfy { $0.count <= InstallProgress.width }, frames.first { $0.count > 80 } ?? "")
+        XCTAssertTrue(frames.last!.contains("100%"))
+        XCTAssertTrue(frames.contains { $0.contains("decoder t64 · compiling") })
+        XCTAssertTrue(frames.contains { $0.contains("decoder t64 · placement check") })
+    }
+
+    func testLongStepNamesAreTruncated() {
+        let p = InstallProgress()
+        p.consume("SlothE decoder (dec60m.mlmodelc):", now: 0)
+        p.consume("  decoder t16 ready in 4.2 s", now: 1)
+        let f = p.frame(now: 3599, spinner: 1)  // 59:59 elapsed: the widest time field
+        XCTAssertEqual(f.count, InstallProgress.width, f)
+        XCTAssertTrue(f.contains("…"), f)
+    }
+
+    func testSummaryIsShortWhenAllIsWell() {
+        let p = InstallProgress()
+        for (at, line) in Self.realRun { p.consume(line, now: at) }
+        let s = p.summary(total: 184.9, finalLine: "McBopomofoLM: both models run on the Neural Engine.")
+        XCTAssertLessThanOrEqual(s.count, 6, "\(s)")
+        XCTAssertEqual(s[0], "McBopomofoLM: models prepared in 3:05 (184.9 s).")
+        XCTAssertEqual(s[1], "  encoder ON the Neural Engine (lowest placement 100.0%, gate 99%)")
+        XCTAssertEqual(s[2], "  decoder ON the Neural Engine (lowest placement 82.8%, gate 80%)")
+        XCTAssertEqual(s.last, "McBopomofoLM: both models run on the Neural Engine.")
+    }
+
+    func testSummaryShowsTheDetailsOfAFailure() {
+        let p = InstallProgress()
+        for (at, line) in Self.realRun where !line.contains("decoder") && !line.hasPrefix("Models") {
+            p.consume(line, now: at)
+        }
+        p.consume("SlothE decoder (dec60m.mlmodelc):", now: 60)
+        p.consume("  decoder t16 ready in 4.2 s", now: 64)
+        p.consume("  placement (MLComputePlan), estimated cost on the Neural Engine: t16 12.0% (gate 80%), 5.1 s", now: 69)
+        p.consume("  decoder NOT used (not_on_ane: MLComputePlan puts part of the model on the CPU/GPU above the gate): encoder-only choices", now: 69)
+        let warning = "McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above."
+        let s = p.summary(total: 70, finalLine: warning)
+        XCTAssertTrue(s[1].hasPrefix("  encoder ON the Neural Engine"))
+        XCTAssertTrue(s[2].hasPrefix("  decoder NOT used (not_on_ane"), s[2])
+        XCTAssertTrue(s.contains("Details:"))
+        XCTAssertTrue(s.contains { $0.contains("t16 12.0% (gate 80%)") })  // reason, placement numbers, gate
+        XCTAssertFalse(s.contains { $0.contains("L256 100.0%") })  // the healthy encoder's lines stay out
+        XCTAssertEqual(s.last, warning)
+        // a function below its gate (install keeps the decoder, that function stays off): details too
+        let q = InstallProgress()
+        for (at, line) in Self.realRun {
+            q.consume(line.replacingOccurrences(of: "n16 82.8%", with: "n16 71.2%"), now: at)
+        }
+        let qs = q.summary(total: 185, finalLine: "x")
+        XCTAssertTrue(qs.contains("Details:"))
+        XCTAssertEqual(qs[2], "  decoder ON the Neural Engine (lowest placement 71.2%, gate 80%; 1 function below the gate, not used)")
+    }
+}

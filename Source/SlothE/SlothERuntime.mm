@@ -1126,7 +1126,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     }
     [_logHandle seekToEndReturningOffset:nil error:nil];
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.1b.1 (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.1.2 (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }
