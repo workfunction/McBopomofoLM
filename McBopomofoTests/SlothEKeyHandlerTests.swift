@@ -2,6 +2,7 @@
 // SlothERuntime into its own KeyHandler, so other tests (which see the
 // never-loaded shared runtime) keep stock behavior.
 
+import CandidateUI
 import XCTest
 
 @testable import McBopomofo
@@ -461,5 +462,199 @@ class SlothECarriedContextTests: XCTestCase {
         XCTAssertTrue(text.contains("# C = a new buffer started"))
         XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII }, "log must hold no typed text")
         try? FileManager.default.removeItem(atPath: dir)
+    }
+}
+
+// McBopomofoLM v3.1b: the illegal-syllable correction window at the key handler.
+class SlothETypoWindowTests: XCTestCase {
+    static let loadedRuntime: SlothERuntime = {
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: nil)
+        runtime.commitWaitMilliseconds = 2000
+        return runtime
+    }()
+    var saved: [String: Any] = [:]
+    var beeps = 0
+
+    override func setUpWithError() throws {
+        saved = [
+            "layout": Preferences.keyboardLayout, "sloth": Preferences.slothERerankEnabled,
+            "keep": Preferences.keepReadingUponCompositionError, "decoder": Preferences.slothEDecoderEnabled,
+            "assoc": Preferences.associatedPhrasesEnabled,
+        ]
+        Preferences.keyboardLayout = .standard
+        Preferences.slothERerankEnabled = true
+        Preferences.keepReadingUponCompositionError = true
+        Preferences.slothEDecoderEnabled = true
+        Preferences.associatedPhrasesEnabled = false
+        LanguageModelManager.loadDataModels()
+        XCTAssertTrue(Self.loadedRuntime.loaded)
+    }
+
+    override func tearDownWithError() throws {
+        Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
+        Preferences.slothERerankEnabled = saved["sloth"] as! Bool
+        Preferences.keepReadingUponCompositionError = saved["keep"] as! Bool
+        Preferences.slothEDecoderEnabled = saved["decoder"] as! Bool
+        Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
+    }
+
+    func makeHandler(_ runtime: SlothERuntime = SlothETypoWindowTests.loadedRuntime) -> KeyHandler {
+        let handler = KeyHandler()
+        handler.inputMode = .bopomofo
+        handler.slothERuntime = runtime
+        handler.slothETypoWaitMilliseconds = 3000  // deterministic: wait for the scores (the 50 ms path has its own test)
+        return handler
+    }
+
+    @discardableResult
+    func key(_ h: KeyHandler, _ state: inout InputState, _ text: String, keyCode: UInt16 = 0, charCode: UInt16? = nil) -> Bool {
+        let input = KeyHandlerInput(
+            inputText: text, keyCode: keyCode, charCode: charCode ?? text.utf16.first!, flags: [], isVerticalMode: false)
+        var current = state
+        let handled = h.handle(input: input, state: current) { current = $0 } errorCallback: { self.beeps += 1 }
+        state = current
+        return handled
+    }
+
+    func type(_ h: KeyHandler, _ keys: String, _ state: inout InputState) {
+        for k in keys.map({ String($0) }) {
+            key(h, &state, k)
+        }
+    }
+
+    let illegal = "1m4"  // ㄅㄩˋ: not a reading
+    func space(_ h: KeyHandler, _ state: inout InputState) { key(h, &state, " ", keyCode: 49, charCode: 32) }
+    func down(_ h: KeyHandler, _ state: inout InputState) { key(h, &state, "\u{F701}", keyCode: 125, charCode: 0xF701) }
+
+    func testSpaceAndDownOpenTheWindowOnlyOnAnIllegalReading() {
+        for open in [space, down] {
+            let h = makeHandler()
+            var state: InputState = InputState.Empty()
+            beeps = 0
+            type(h, illegal, &state)
+            XCTAssertEqual(beeps, 1)  // the composition error itself still beeps
+            XCTAssertEqual((state as? InputState.Inputting)?.composingBuffer, "ㄅㄩˋ")
+            open(h, &state)
+            let window = state as? InputState.ChoosingTypoCorrection
+            XCTAssertNotNil(window, "\(state)")
+            XCTAssertEqual(beeps, 1)  // no second beep
+            XCTAssertEqual(window?.typedReading, "ㄅㄩˋ")
+            XCTAssertTrue((1...27).contains(window?.candidates.count ?? 0))
+            XCTAssertTrue(window?.candidates.allSatisfy { !$0.reading.isEmpty && $0.value.count == 1 } ?? false)
+        }
+        // a legal reading: Space composes it and opens the usual window, never a correction window
+        let h = makeHandler()
+        var state: InputState = InputState.Empty()
+        type(h, "su3", &state)
+        space(h, &state)
+        XCTAssertTrue(state is InputState.ChoosingCandidate)
+        XCTAssertFalse(state is InputState.ChoosingTypoCorrection)
+        let h2 = makeHandler()
+        state = InputState.Empty()
+        type(h2, "a8", &state)  // ㄇㄚ, no tone yet: Space composes it as tone 1 (媽)
+        space(h2, &state)
+        XCTAssertFalse(state is InputState.ChoosingTypoCorrection)
+    }
+
+    func testPickReplacesTheReadingAndPinsTheChar() {
+        let h = makeHandler()
+        var state: InputState = InputState.Empty()
+        type(h, "su3", &state)  // 你, then the illegal reading
+        type(h, illegal, &state)
+        space(h, &state)
+        guard let window = state as? InputState.ChoosingTypoCorrection else {
+            return XCTFail("\(state)")
+        }
+        let k = min(4, window.candidates.count - 1)  // not the first: the pick must be pinned
+        let picked = window.candidates[k]
+        h.slothEApplyTypoCorrection(withReading: picked.reading, value: picked.value, rank: k)
+        let inputting = h.buildInputtingState() as? InputState.Inputting
+        XCTAssertEqual(inputting?.composingBuffer.count, 2)
+        XCTAssertEqual(inputting?.composingBuffer.last.map(String.init), picked.value)
+        // the reading is gone and the syllable is in the grid: another key composes a new syllable after it
+        state = inputting!
+        type(h, "su3", &state)
+        XCTAssertEqual((state as? InputState.Inputting)?.composingBuffer.count, 3)
+    }
+
+    func testEscKeepsTheIllegalReading() {
+        let h = makeHandler()
+        var state: InputState = InputState.Empty()
+        type(h, illegal, &state)
+        space(h, &state)
+        XCTAssertTrue(state is InputState.ChoosingTypoCorrection)
+        key(h, &state, "\u{1b}", keyCode: 53, charCode: 27)
+        XCTAssertEqual((state as? InputState.Inputting)?.composingBuffer, "ㄅㄩˋ")
+        space(h, &state)  // and it opens again
+        XCTAssertTrue(state is InputState.ChoosingTypoCorrection)
+    }
+
+    func testOverwritingASlotOfTheIllegalReadingStillComposes() {
+        let h = makeHandler()
+        var state: InputState = InputState.Empty()
+        type(h, illegal, &state)
+        type(h, "u", &state)  // ㄧ takes the medial slot: ㄅㄧˋ is a reading
+        let buffer = (state as? InputState.Inputting)?.composingBuffer ?? ""
+        XCTAssertEqual(buffer.count, 1)
+        XCTAssertFalse(buffer.unicodeScalars.contains { (0x3105...0x3129).contains($0.value) }, buffer)
+    }
+
+    func testNotReadyShowsTheT1ListAndIsNeverRefreshed() throws {
+        XCTAssertTrue(Self.loadedRuntime.loadNextTokenFunctions(forTesting: 600))
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: log)
+        let h = makeHandler(runtime)
+        h.slothETypoWaitMilliseconds = 50
+        var state: InputState = InputState.Empty()
+        type(h, "su3", &state)
+        runtime.submitSideComputeJob { usleep(400_000) }  // the scores cannot be ready within 50 ms
+        type(h, illegal, &state)
+        space(h, &state)
+        let first = try XCTUnwrap(state as? InputState.ChoosingTypoCorrection)
+        XCTAssertEqual(first.source, "t1")
+        XCTAssertTrue(h.slothEWait(forTypoScores: 30000))  // the scores land while the window is open ...
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        XCTAssertTrue(state === first)  // ... and the open window is left as it is (Enter picks what is shown)
+        key(h, &state, "\u{1b}", keyCode: 53, charCode: 27)
+        space(h, &state)  // reopened: the decoder list, from the same job
+        let second = try XCTUnwrap(state as? InputState.ChoosingTypoCorrection)
+        XCTAssertEqual(second.source, "dn")
+        XCTAssertEqual(h.slothETypoJobsStarted, 1)
+        h.slothEApplyTypoCorrection(withReading: second.candidates[0].reading, value: second.candidates[0].value, rank: 0)
+        runtime.flushLog()
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        let rows = text.split(separator: "\n").filter { $0.hasPrefix("X\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        XCTAssertEqual(rows.count, 2, "\(rows)")
+        XCTAssertEqual(rows.first?[3], "esc")
+        XCTAssertEqual(rows.first?[5], "t1")
+        XCTAssertEqual(rows.last?[2], String(second.candidates.count))
+        XCTAssertEqual(rows.last?[3], "1")
+        XCTAssertFalse(rows.last?[4].isEmpty ?? true)
+        XCTAssertEqual(rows.last?[5], "dn")
+        XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII }, "log must hold no typed text")
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testScoresAreKeyedOnTheContext() {
+        // the same illegal reading in two fields (different carried text): two score requests
+        let h = makeHandler()
+        var state: InputState = InputState.Empty()
+        h.slothENoteCommittedText("今天", insertedLength: 2)
+        type(h, illegal, &state)
+        XCTAssertEqual(h.slothETypoJobsStarted, 1)
+        space(h, &state)  // same reading, same context: reused
+        XCTAssertEqual(h.slothETypoJobsStarted, 1)
+        key(h, &state, "\u{1b}", keyCode: 53, charCode: 27)
+        // field switch, as the controller does: clear + reset, then another field's text
+        h.clear()
+        h.slothEResetCarriedContext("activate")
+        state = InputState.Empty()
+        h.slothENoteCommittedText("明天", insertedLength: 2)
+        type(h, illegal, &state)
+        XCTAssertEqual(h.slothETypoJobsStarted, 2)
+        space(h, &state)
+        XCTAssertTrue(state is InputState.ChoosingTypoCorrection)
+        XCTAssertEqual(h.slothETypoJobsStarted, 2)
     }
 }

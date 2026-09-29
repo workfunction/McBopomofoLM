@@ -631,7 +631,7 @@ std::shared_ptr<const ForwardResult> Engine::waitFor(
 
 std::shared_ptr<const ForwardResult> Engine::forward(
     const std::vector<std::string>& readings, double* forwardMs,
-    bool* cacheHit, const std::vector<std::string>* context) {
+    bool* cacheHit, const std::vector<std::string>* context, bool store) {
   *forwardMs = 0;
   *cacheHit = false;
   if (backend_ == nullptr || readings.empty() ||
@@ -686,6 +686,9 @@ std::shared_ptr<const ForwardResult> Engine::forward(
   *forwardMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
   std::shared_ptr<const ForwardResult> result = r;
+  if (!store) {
+    return result;
+  }
   {
     std::lock_guard<std::mutex> lock(cacheMutex_);
     cache_.emplace_front(std::move(key), result);
@@ -714,7 +717,7 @@ std::vector<std::string> EncoderRuntimeFiles() {
 }
 
 std::vector<std::string> DecoderRuntimeFiles() {
-  return {kDecoderModelName, kDecoderTokenizerName};
+  return {kDecoderModelName, kDecoderTokenizerName, kDecoderFirstCharsName};
 }
 
 bool Sha256File(const std::string& path, std::string* hexDigest,

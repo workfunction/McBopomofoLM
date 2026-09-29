@@ -198,8 +198,150 @@ class CoreMLDecoderBackend : public DecoderBackend {
   std::map<size_t, Fn> fns;  // loaded and on the ANE
   std::set<size_t> pending;
   std::set<size_t> failed;
+  // v3.1b next-token functions n{T} (B=1): lazy only, same rules as above,
+  // except that one failed MLComputePlan is retried before giving up (one
+  // false 0 % plan in 32 checks, reports/ane-dec.md).
+  struct NFn {
+    size_t length = 0;
+    MLModel *model = nil;
+    MLMultiArray *ids = nil;
+    MLMultiArray *last = nil;
+    id<MLFeatureProvider> input = nil;
+  };
+  std::vector<size_t> nlens;
+  std::map<size_t, NFn> nfns;
+  std::set<size_t> npending;
+  std::set<size_t> nfailed;
 
   const std::vector<size_t> &lengths() const override { return lens; }
+  const std::vector<size_t> &nextLengths() const override { return nlens; }
+
+  bool isNextLoaded(size_t length) const override {
+    std::lock_guard<std::mutex> lock(mu);
+    return nfns.count(length) > 0;
+  }
+
+  void requestNextLoad(size_t length) override {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      if (nfns.count(length) || npending.count(length) || nfailed.count(length) || !options.runLater) {
+        return;
+      }
+      npending.insert(length);
+    }
+    options.runLater([this, length] {
+      CoreMLLoadInfo info;
+      std::string error;
+      if (options.verifyBeforeLazyLoad && !options.verifyBeforeLazyLoad(&error)) {
+        info.reason = "integrity";
+        info.detail = error;
+      } else if (@available(macOS 15.0, *)) {
+        loadNextFunctionRetrying(length, options.lazyUnits, &info);
+      }
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        npending.erase(length);
+        if (!info.ok) nfailed.insert(length);
+      }
+      if (options.onLazyNextLoad) options.onLazyNextLoad(length, info);
+    });
+  }
+
+  bool loadNextFunctionRetrying(size_t T, ComputeUnits units, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
+    if (loadNextFunction(T, units, info) || info->reason != "plan_failed") {
+      return info->ok;
+    }
+    *info = CoreMLLoadInfo();
+    return loadNextFunction(T, units, info);
+  }
+
+  bool loadNextFunction(size_t T, ComputeUnits units, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
+    CoreMLLoadOptions o = options;
+    o.units = units;
+    NSString *name = [NSString stringWithFormat:@"n%zu", T];
+    auto f0 = std::chrono::steady_clock::now();
+    NSError *error = nil;
+    MLModel *model = [MLModel modelWithContentsOfURL:url configuration:Config(o, name) error:&error];
+    double ms = MsSince(f0);
+    if (model == nil) {
+      info->reason = "load_error";
+      info->detail = error != nil ? std::string(error.localizedDescription.UTF8String) : "load failed";
+      return false;
+    }
+    info->functionLoadMs.emplace_back(name.UTF8String, ms);
+    info->loadMs += ms;
+    Progress(o, [NSString stringWithFormat:@"  decoder %@ ready in %.1f s", name, ms / 1000.0]);
+    NFn f;
+    f.length = T;
+    f.model = model;
+    f.ids = [[MLMultiArray alloc] initWithShape:@[ @1, @(T) ] dataType:MLMultiArrayDataTypeInt32 error:&error];
+    f.last = [[MLMultiArray alloc] initWithShape:@[ @1 ] dataType:MLMultiArrayDataTypeInt32 error:&error];
+    if (f.ids == nil || f.last == nil) {
+      info->reason = "load_error";
+      info->detail = "cannot allocate the inputs";
+      return false;
+    }
+    f.input = [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"ids" : f.ids, @"last" : f.last} error:&error];
+    std::vector<float> scratch;
+    std::vector<int32_t> probe {1, 366, 367};
+    CheckPlacement(url, std::vector<NSString *> {name}, o, o.minDecoderANECostPercent, DecoderProbeLimit(o, T),
+                   [this, &f, &probe, &scratch] { return nextPredict(f, probe, &scratch); }, info);
+    if (!info->ok) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(mu);
+    nfns[T] = f;
+    return true;
+  }
+
+  bool nextLogProbs(const std::vector<int32_t> &ids, size_t length, std::vector<float> *lp) override {
+    NFn f;
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      auto it = nfns.find(length);
+      if (it == nfns.end()) {
+        return false;
+      }
+      f = it->second;
+    }
+    return nextPredict(f, ids, lp);
+  }
+
+  bool nextPredict(const NFn &f, const std::vector<int32_t> &ids, std::vector<float> *lp) {
+    if (ids.empty() || ids.size() > f.length) {
+      return false;
+    }
+    @autoreleasepool {
+      auto *x = static_cast<int32_t *>(f.ids.dataPointer);
+      NSInteger c0 = f.ids.strides[1].integerValue;
+      for (size_t t = 0; t < f.length; ++t) {
+        x[t * c0] = t < ids.size() ? ids[t] : 0;  // right-padded: the causal model never sees past `last`
+      }
+      static_cast<int32_t *>(f.last.dataPointer)[0] = static_cast<int32_t>(ids.size() - 1);
+      NSError *error = nil;
+      id<MLFeatureProvider> result = [f.model predictionFromFeatures:f.input error:&error];
+      NoteUse();
+      MLMultiArray *out = [result featureValueForName:@"lp"].multiArrayValue;
+      if (out == nil || out.dataType != MLMultiArrayDataTypeFloat32 || out.shape.count != 2) {
+        return false;
+      }
+      NSInteger n = out.shape[1].integerValue;
+      NSInteger s1 = out.strides[1].integerValue;
+      lp->assign(static_cast<size_t>(n), 0.0f);
+      __block bool ok = true;
+      [out getBytesWithHandler:^(const void *bytes, NSInteger size) {
+        const auto *p = static_cast<const float *>(bytes);
+        if (((n - 1) * s1 + 1) * 4 > size) {
+          ok = false;
+          return;
+        }
+        for (NSInteger k = 0; k < n; ++k) {
+          (*lp)[static_cast<size_t>(k)] = p[k * s1];
+        }
+      }];
+      return ok;
+    }
+  }
 
   bool isLoaded(size_t length) const override {
     std::lock_guard<std::mutex> lock(mu);
@@ -472,6 +614,7 @@ std::unique_ptr<DecoderBackend> LoadCoreMLDecoder(const std::string &dir, const 
     backend->url = [NSURL fileURLWithPath:Path(dir, kDecoderModelName)];
     backend->options = options;
     backend->lens.assign(std::begin(kDecLengths), std::end(kDecLengths));
+    backend->nlens.assign(std::begin(kDecLengths), std::end(kDecLengths));
     std::vector<size_t> atLoad = options.decoderLengthsAtLoad.empty() ? backend->lens : options.decoderLengthsAtLoad;
     auto t0 = std::chrono::steady_clock::now();
     double lowest = 101;
@@ -489,6 +632,18 @@ std::unique_ptr<DecoderBackend> LoadCoreMLDecoder(const std::string &dir, const 
       lowest = std::min(lowest, one.aneCostPercent);
       planMs += one.planMs;
       if (T == atLoad.front()) probeMs = one.probeMs;
+    }
+    if (options.decoderLengthsAtLoad.empty()) {  // install: also compile the v3.1b next-token functions
+      for (size_t T : backend->nlens) {
+        CoreMLLoadInfo one;
+        if (backend->loadNextFunctionRetrying(T, options.units, &one)) {
+          info->functionLoadMs.insert(info->functionLoadMs.end(), one.functionLoadMs.begin(), one.functionLoadMs.end());
+          info->functionANEPercent.insert(info->functionANEPercent.end(), one.functionANEPercent.begin(), one.functionANEPercent.end());
+        } else {
+          std::lock_guard<std::mutex> lock(backend->mu);
+          backend->nfailed.insert(T);  // the t* scorers stay usable; the correction window uses the T1 rule
+        }
+      }
     }
     info->ok = true;
     info->reason = "ok";

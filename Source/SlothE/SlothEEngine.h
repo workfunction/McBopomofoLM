@@ -191,9 +191,12 @@ class Engine {
   // pass (oldest dropped first so the whole fits the encoder); the result
   // covers only `readings` (contextLength = carried syllables used), and the
   // cache key includes the context.
+  // store = false (v3.1b correction window): the pass is not cached, so the
+  // current buffer's pass stays in the 8-entry cache.
   std::shared_ptr<const ForwardResult> forward(
       const std::vector<std::string>& readings, double* forwardMs,
-      bool* cacheHit, const std::vector<std::string>* context = nullptr);
+      bool* cacheHit, const std::vector<std::string>* context = nullptr,
+      bool store = true);
   // Cached result for exactly these readings (and context), or nullptr.
   // Never computes.
   std::shared_ptr<const ForwardResult> lookup(
@@ -242,6 +245,7 @@ constexpr char kEncoderModelName[] = "enc25m.mlmodelc";
 constexpr char kEncoderEmbeddingName[] = "enc25m_embed_f16.bin";
 constexpr char kDecoderModelName[] = "dec60m.mlmodelc";
 constexpr char kDecoderTokenizerName[] = "dec_tokenizer.json";
+constexpr char kDecoderFirstCharsName[] = "dec_next_first.tsv";  // v3.1b
 // Runtime paths the encoder / decoder need (a directory = every manifest
 // entry under it, at least one required).
 std::vector<std::string> EncoderRuntimeFiles();

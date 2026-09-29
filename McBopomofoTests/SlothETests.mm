@@ -29,7 +29,9 @@ using McBopomofoSlothE::VariantTable;
 using McBopomofoSlothE::Vocabulary;
 
 static NSString *const kEncoderWeightSha256 = @"3d5722a18782f13023d8";  // enc25m.mlmodelc/weights/weight.bin prefix
-static NSString *const kDecoderWeightSha256 = @"b28b6b08fde8f65866cf";  // dec60m.mlmodelc/weights/weight.bin prefix
+// v3.1b: the t* + n* package (SlothE/v31b/build_dec_tn.py): the shipped t* blobs (weight.bin b28b6b08fde8...)
+// at the same offsets + the n* blobs appended; t* outputs bit-identical (check_dec_tn.py)
+static NSString *const kDecoderWeightSha256 = @"862afa757bdc1957b808";  // dec60m.mlmodelc/weights/weight.bin prefix
 
 static NSString *SlothEResourceDir(void)
 {
@@ -121,7 +123,7 @@ static double gEngineLoadMs = 0;
     XCTAssertTrue([manifest containsString:kEncoderWeightSha256]);
     XCTAssertTrue([manifest containsString:kDecoderWeightSha256]);
     for (NSString *name in @[ @"enc25m.mlmodelc/weights/weight.bin", @"enc25m.mlmodelc/model.mil", @"dec60m.mlmodelc/weights/weight.bin",
-                              @"enc25m_embed_f16.bin", @"dec_tokenizer.json", @"syl_vocab.tsv", @"char2id.tsv", @"syl2legal.bin",
+                              @"enc25m_embed_f16.bin", @"dec_tokenizer.json", @"dec_next_first.tsv", @"syl_vocab.tsv", @"char2id.tsv", @"syl2legal.bin",
                               @"variants.tsv", @"MANIFEST.txt", @"NOTICE.txt" ]) {
         XCTAssertTrue([fm fileExistsAtPath:[SlothEResourceDir() stringByAppendingPathComponent:name]], @"%@", name);
     }

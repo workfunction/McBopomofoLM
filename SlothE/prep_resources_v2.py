@@ -5,7 +5,10 @@ Inputs (read-only):
   * $W/ane/enc/models/enc25m_multi_pal2_emb.mlpackage   SlothE-T 25M encoder, 2-bit ternary, functions L8/L16/L32/L64/L256,
                                                         caller-side embedding (ids = fp16 rows [1, L, 352], mask [1, L])
   * $W/ane/enc/work/embed_f16_25m.bin                   the fp16 embedding table [1539, 352] (== w25m.npz["embed"])
-  * $W/ane/dec/mf/dec_mf_fp16.mlpackage                 SlothE decoder pred_q35_60m, fp16, functions t16/t32/t64/t96, B=3
+  * $W/McBopomofoLM/build/v31b/dec_mf_tn_fp16.mlpackage  SlothE decoder pred_q35_60m, fp16: the shipped t16/t32/t64/t96
+                                                        (B=3 scorers) + v3.1b next-token n16/n32/n64/n96 (B=1), shared
+                                                        weights (SlothE/v31b/build_dec_tn.py; t* = ane/dec/mf/dec_mf_fp16)
+  * SlothE/v31b/dec_next_first.tsv                      next-token first-char table (build_dec_tn.py)
   * HF cache Luigi/sloth-ime-models @ e7d13c9 pred_q35_60m/tokenizer.json (the decoder's byte-level BPE)
   * the v1 staging's vocabulary files (syl_vocab.tsv, char2id.tsv, syl2legal.bin, variants.tsv; same vocab for 12M/25M)
 Outputs (SlothE/Bundle/SlothE/):
@@ -13,6 +16,7 @@ Outputs (SlothE/Bundle/SlothE/):
   dec60m.mlmodelc/        xcrun coremlcompiler compile of the decoder package
   enc25m_embed_f16.bin    embedding table
   dec_tokenizer.json      tokenizer.json, byte copy
+  dec_next_first.tsv      char -> decoder token ids whose text starts with it (v3.1b correction window)
   syl_vocab.tsv char2id.tsv syl2legal.bin variants.tsv
   runtime-manifest.txt    "<sha256> <bytes> <path>" for every runtime file, including every file inside the
                           two .mlmodelc directories; the app verifies it before loading (SlothEEngine.cpp)
@@ -30,7 +34,8 @@ W = HERE.parent.parent
 OUT = HERE / "Bundle" / "SlothE"
 ENC_PKG = W / "ane" / "enc" / "models" / "enc25m_multi_pal2_emb.mlpackage"
 EMBED = W / "ane" / "enc" / "work" / "embed_f16_25m.bin"
-DEC_PKG = W / "ane" / "dec" / "mf" / "dec_mf_fp16.mlpackage"
+DEC_PKG = W / "McBopomofoLM" / "build" / "v31b" / "dec_mf_tn_fp16.mlpackage"
+FIRST = HERE / "v31b" / "dec_next_first.tsv"
 HF = Path.home() / ".cache/huggingface/hub/models--Luigi--sloth-ime-models/snapshots/e7d13c9c451dc01ab9546be53c574f4dbe0fdd54"
 TOKENIZER = HF / "pred_q35_60m" / "tokenizer.json"
 KEEP = ["syl_vocab.tsv", "char2id.tsv", "syl2legal.bin", "variants.tsv", "OpenCC-LICENSE.txt"]
@@ -73,6 +78,7 @@ def main():
         compile_pkg(DEC_PKG, "dec60m", tmp)
     shutil.copyfile(EMBED, OUT / "enc25m_embed_f16.bin")
     shutil.copyfile(TOKENIZER, OUT / "dec_tokenizer.json")
+    shutil.copyfile(FIRST, OUT / "dec_next_first.tsv")
     assert (OUT / "enc25m_embed_f16.bin").stat().st_size == 1539 * 352 * 2
     (OUT / "NOTICE.txt").write_text(
         "McBopomofoLM v2 bundles third-party parts (side-by-side build next to stock McBopomofo):\n"
@@ -98,6 +104,7 @@ def main():
         f"decoder source: {DEC_PKG.relative_to(W)} tree sha256 {tree_sha(DEC_PKG)}",
         f"embedding: {EMBED.relative_to(W)} sha256 {sha256(EMBED)}",
         f"tokenizer: HF pred_q35_60m/tokenizer.json sha256 {sha256(TOKENIZER)}",
+        f"next-token first-char table: SlothE/v31b/dec_next_first.tsv sha256 {sha256(FIRST)}",
         "compiled with: xcrun coremlcompiler compile",
         "config A' (walk2/frozen_final2.json): 25M, beta 0.3, gamma 0, pen -15, variant guard; decoder lambda 2, tau 0.5, top-3",
         "",

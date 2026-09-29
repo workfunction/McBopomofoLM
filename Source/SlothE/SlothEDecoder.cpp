@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <limits>
 
 namespace McBopomofoSlothE {
@@ -376,6 +378,86 @@ bool Decoder::score(const std::string& context,
     stats->maxTokens = longest;
   }
   return true;
+}
+
+bool Decoder::nextTokenLogProbs(const std::string& context, std::vector<float>* lp,
+                                DecoderCallStats* stats) {
+  auto t0 = std::chrono::steady_clock::now();
+  lp->clear();
+  nextCalls_.fetch_add(1);
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (backend_ == nullptr) {
+    return false;
+  }
+  std::vector<int32_t> ids {bos_};
+  std::vector<int32_t> t = tokenizer_->encode(TailChars(context, kMaxContextChars));
+  ids.insert(ids.end(), t.begin(), t.end());
+  const std::vector<size_t>& lengths = backend_->nextLengths();
+  auto it = std::find_if(lengths.begin(), lengths.end(), [&ids](size_t T) { return T >= ids.size(); });
+  if (it == lengths.end()) {
+    return false;
+  }
+  size_t T = *it;
+  if (stats != nullptr) {
+    stats->length = T;
+    stats->maxTokens = ids.size();
+  }
+  if (!backend_->isNextLoaded(T)) {
+    backend_->requestNextLoad(T);
+    if (stats != nullptr) {
+      stats->unavailable = true;
+    }
+    return false;
+  }
+  if (!backend_->nextLogProbs(ids, T, lp)) {
+    lp->clear();
+    return false;
+  }
+  if (stats != nullptr) {
+    stats->milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  }
+  return true;
+}
+
+bool Decoder::loadFirstChars(const std::string& path, std::string* error) {
+  std::ifstream in(path);
+  if (!in) {
+    *error = "cannot read " + path;
+    return false;
+  }
+  std::unordered_map<std::string, std::vector<int32_t>> table;
+  std::string line;
+  while (std::getline(in, line)) {
+    size_t tab = line.find('\t');
+    if (tab == std::string::npos) {
+      continue;
+    }
+    std::vector<int32_t>& ids = table[line.substr(0, tab)];
+    std::istringstream is(line.substr(tab + 1));
+    for (int32_t id; is >> id;) {
+      ids.push_back(id);
+    }
+  }
+  if (table.empty()) {
+    *error = "empty first-char table";
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  firstChars_ = std::move(table);
+  return true;
+}
+
+double Decoder::firstCharLogProb(const std::vector<float>& lp, const std::string& c) const {
+  double sum = 0;
+  auto it = firstChars_.find(c);
+  if (it != firstChars_.end()) {
+    for (int32_t id : it->second) {
+      if (id >= 0 && static_cast<size_t>(id) < lp.size()) {
+        sum += std::exp(static_cast<double>(lp[static_cast<size_t>(id)]));
+      }
+    }
+  }
+  return std::log(std::max(sum, 1e-12));
 }
 
 std::vector<size_t> Decoder::loadedLengths() const {

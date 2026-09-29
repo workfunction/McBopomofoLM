@@ -133,6 +133,16 @@ extern InputMode InputModePlainBopomofo;
 @property (nonatomic, readonly, nullable) NSString *slothELastResetReason;
 /// Seconds on a monotonic clock (tests inject their own).
 @property (copy, nonatomic) NSTimeInterval (^slothEClock)(void);
+/// v3.1b correction window pick (the controller, for InputStateChoosingTypoCorrection):
+/// the illegal reading becomes `reading`, inserted into the grid with `value` pinned.
+- (void)slothEApplyTypoCorrectionWithReading:(NSString *)reading value:(NSString *)value rank:(NSInteger)rank;
+/// Tests: wait up to `milliseconds` for the correction scores of the current
+/// illegal reading; YES when they are ready.
+- (BOOL)slothEWaitForTypoScores:(double)milliseconds;
+/// How long Space / Down waits for the scores before showing the T1 list (50 ms).
+@property (assign, nonatomic) double slothETypoWaitMilliseconds;
+/// Tests: correction-score jobs started (one per reading + context).
+@property (assign, nonatomic, readonly) NSUInteger slothETypoJobsStarted;
 /// Client bundle identifier for the latency log's C lines (set on activate).
 @property (copy, nonatomic, nullable) NSString *slothEClientID;
 @end

@@ -30,11 +30,14 @@
 #import "UserOverrideModel.h"
 #import "reading_grid.h"
 #import "SlothERuntime.h"
+#import "SlothETypo.h"
 #import "SlothEWalk.h"
 
 #import <algorithm>
 #import <atomic>
 #import <chrono>
+#import <condition_variable>
+#import <mutex>
 #import <memory>
 #import <numeric>
 #import <optional>
@@ -61,6 +64,24 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.de
 InputMode InputModeBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Bopomofo";
 InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.PlainBopomofo";
 #endif
+
+// McBopomofoLM v3.1b: the correction scores of one illegal reading, computed
+// on the runtime's compute queue (encoder per candidate, one next-token call).
+struct SlothETypoJob {
+    // v3.1b.1: the scores depend on all three, so a job is reused only when all match
+    std::string typed;
+    std::string left;                  // decoder: carried text + shown text left of the reading
+    std::vector<std::string> context;  // encoder: carried + buffer syllables left of the reading
+    std::atomic<bool> cancelled{false};  // Esc / reading change / pick / context reset / clear
+    std::vector<McBopomofoSlothE::TypoCandidate> cands;  // made on the main thread (language model)
+    std::chrono::steady_clock::time_point start;
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+    std::vector<McBopomofoSlothE::TypoEntry> entries;
+    std::string source;
+    double readyMs = -1;
+};
 
 @implementation KeyHandler {
     std::shared_ptr<Formosa::Gramambular2::LanguageModel> _emptySharedPtr;
@@ -107,12 +128,20 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     NSString *_slothPendingReset;        // reset since the last new buffer (C line); nil = none
     NSString *_slothLastReset;           // the most recent reset (tests)
     NSString *_slothSelection;           // ok / mismatch / na, for the next new buffer's C line
+
+    // v3.1b correction window
+    std::shared_ptr<SlothETypoJob> _slothTypoJob;       // the latest illegal reading's scores
+    std::shared_ptr<SlothETypoJob> _slothTypoShownJob;  // the job whose window is up (nullptr: none)
+    NSUInteger _slothTypoShownCount;
+    NSUInteger _slothTypoJobsStarted;                   // tests
+    NSString *_slothTypoShownSource;
 }
 
 @synthesize delegate = _delegate;
 @synthesize slothERuntime = _slothERuntime;
 @synthesize slothEClock = _slothEClock;
 @synthesize slothEClientID = _slothEClientID;
+@synthesize slothETypoWaitMilliseconds = _slothETypoWaitMilliseconds;
 
 - (NSString *)inputMode
 {
@@ -189,6 +218,7 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
         _slothSlot = std::make_shared<McBopomofoSlothE::PipelineSlot>();
         _slothExpectedLocation = NSNotFound;
         _slothSelection = @"na";
+        _slothETypoWaitMilliseconds = 50;
         _slothEClock = ^NSTimeInterval {
             return NSProcessInfo.processInfo.systemUptime;
         };
@@ -359,6 +389,7 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     // so slothENoteCommittedText can carry its (reading, char) pairs.
     _slothClearedChars = McBopomofoSlothE::CommittedChars(_latestWalk, _grid->readingSeparator());
     _slothClearedText = McBopomofoSlothE::WalkText(_latestWalk);
+    [self _slothECancelTypoJob:YES];  // v3.1b.1: a cleared grid (commit, field switch) ends its scores
     _bpmfReadingBuffer->clear();
     _grid->clear();
     _latestWalk = Formosa::Gramambular2::ReadingGrid::WalkResult {};
@@ -441,6 +472,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     _slothInKeystroke = YES;
     BOOL handled = [self _handleInputUntimed:input state:state stateCallback:stateCallback errorCallback:errorCallback];
     _slothInKeystroke = NO;
+    // v3.1b.1: the illegal reading changed (a slot overwritten, composed, cleared): its scores are obsolete
+    if (_slothTypoJob != nullptr && (_bpmfReadingBuffer->isEmpty() || _bpmfReadingBuffer->syllable().composedString() != _slothTypoJob->typed)) {
+        [self _slothECancelTypoJob:YES];
+    }
     // McBopomofoLM: the first key of a new buffer wakes the Neural Engine
     // (one dummy call per model, off the main thread) if the models idled.
     if (bufferWasEmpty && (_grid->length() > 0 || !_bpmfReadingBuffer->isEmpty())) {
@@ -600,6 +635,12 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     BOOL keyConsumedByReading = NO;
     BOOL skipBpmfHandling = input.isReservedKey || input.isControlHold;
 
+    // McBopomofoLM v3.1b: Space or Down on an illegal reading kept in the
+    // composer opens the correction window instead of beeping.
+    if ([state isKindOfClass:[InputStateInputting class]] && !_bpmfReadingBuffer->isEmpty() && !input.isShiftHold && (charCode == 32 || input.isExtraChooseCandidateKey || (input.useVerticalMode && input.isVerticalModeOnlyChooseCandidateKey)) && [self _slothEOpenTypoWindowForInput:input stateCallback:stateCallback]) {
+        return YES;
+    }
+
     // MARK: Handle BPMF Keys
 
     // see if it's valid BPMF reading
@@ -659,6 +700,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
             errorCallback();
 
             if (Preferences.keepReadingUponCompositionError) {
+                [self _slothEStartTypoJob:reading];  // v3.1b: score the correction window now, in the background
                 stateCallback([self buildInputtingState]);
                 return YES;
             }
@@ -1531,6 +1573,16 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     UniChar charCode = input.charCode;
     VTCandidateController *gCurrentCandidateController = [self.delegate candidateControllerForKeyHandler:self];
 
+    // McBopomofoLM v3.1b correction window: Esc / Backspace / Delete close it
+    // and keep the illegal reading; cursor moves, +/- and ? do not apply.
+    BOOL typoWindow = [state isKindOfClass:[InputStateChoosingTypoCorrection class]];
+    if (typoWindow && (charCode == 27 || charCode == 8 || input.isDelete)) {
+        [self _slothENoteTypoClosed:@"esc"];
+        [self _slothECancelTypoJob:NO];
+        stateCallback([self buildInputtingState]);
+        return YES;
+    }
+
     if ([state isKindOfClass:[InputStateAssociatedPhrases class]] &&
         [(InputStateAssociatedPhrases *)state autoTriggered]
         ) {
@@ -1599,7 +1651,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     BOOL isCursorMovingLeft = NO;
     BOOL isCursorMovingRight = NO;
 
-    if ([state isKindOfClass:[InputChoosingPunctuationList class]]) {
+    if ([state isKindOfClass:[InputChoosingPunctuationList class]] || typoWindow) {
         // Not allowed to move the cursor in the punctuation list mode.
         isCursorMovingLeft = NO;
         isCursorMovingRight = NO;
@@ -1654,7 +1706,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         @"_punctuation_",
     ];
 
-    if (_inputMode == InputModeBopomofo && [state isKindOfClass:[InputStateChoosingCandidate class]]) {
+    if (_inputMode == InputModeBopomofo && [state isKindOfClass:[InputStateChoosingCandidate class]] && !typoWindow) {
         BOOL isPlusKey = [input.inputText isEqualToString:@"="] || [input.inputText isEqualToString:@"+"];
         BOOL isMinusKey = [input.inputText isEqualToString:@"-"] || [input.inputText isEqualToString:@"_"];
         if (isPlusKey || isMinusKey) {
@@ -1735,7 +1787,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         if ([state isKindOfClass:[InputStateShowingCharInfo class]] ||
             [state isKindOfClass:[InputStateSelectingDictionary class]]) {
             cancelCandidateKey = YES;
-        } else if ([state isKindOfClass:[InputStateChoosingCandidate class]]) {
+        } else if ([state isKindOfClass:[InputStateChoosingCandidate class]] && !typoWindow) {
             InputStateChoosingCandidate *currentState = (InputStateChoosingCandidate *)state;
             NSInteger index = gCurrentCandidateController.selectedCandidateIndex;
             InputStateCandidate *candidate = currentState.candidates[index];
@@ -2699,6 +2751,204 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     return _slothERuntime.loadFailed ? @"none" : @"loading";
 }
 
+#pragma mark - SlothE correction window (v3.1b)
+
+// The composing text left of the grid cursor, as shown (walk values).
+- (std::string)_slothEDisplayedTextBeforeCursor
+{
+    std::string left;
+    size_t pos = 0;
+    size_t cursor = _grid->cursor();
+    for (const auto &node : _latestWalk.nodes) {
+        size_t len = node->spanningLength();
+        if (pos + len <= cursor) {
+            left += node->value();
+        } else if (pos < cursor) {
+            std::vector<std::string> chars = McBopomofoSlothE::Utf8Chars(node->value());
+            for (size_t k = 0; chars.size() == len && k < cursor - pos; ++k) {
+                left += chars[k];
+            }
+        }
+        pos += len;
+    }
+    return left;
+}
+
+// Scores the correction window of an illegal reading on the compute queue
+// (reports/typo.md §8.4-8.5, §9): E for every candidate (encoder: carried +
+// buffer syllables left of the reading, then the candidate), then D (one
+// next-token call on carried + shown text left of the reading). A job for the
+// same reading is not repeated.
+- (void)_slothEStartTypoJob:(const std::string &)typed
+{
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (engine == nullptr) {
+        return;
+    }
+    std::vector<std::string> context = _slothCarried.encoderReadings();
+    const std::vector<std::string> &readings = _grid->readings();
+    for (size_t i = 0; i < _grid->cursor() && i < readings.size(); ++i) {
+        if (McBopomofoSlothE::IsZhuyinReading(readings[i])) {
+            context.push_back(readings[i]);
+        } else {
+            context.clear();  // as the carried context: the encoder context stops at a non-Zhuyin char
+        }
+    }
+    std::string left = _slothCarried.decoderText() + [self _slothEDisplayedTextBeforeCursor];
+    if (_slothTypoJob != nullptr && _slothTypoJob->typed == typed && _slothTypoJob->left == left && _slothTypoJob->context == context && !_slothTypoJob->cancelled.load()) {
+        return;  // the same reading in the same context: reuse its scores
+    }
+    [self _slothECancelTypoJob:YES];
+    auto job = std::make_shared<SlothETypoJob>();
+    job->typed = typed;
+    job->left = left;
+    job->context = context;
+    job->cands = McBopomofoSlothE::TypoCandidates(typed, *_languageModel);
+    job->start = std::chrono::steady_clock::now();
+    _slothTypoJob = job;
+    ++_slothTypoJobsStarted;
+    McBopomofoSlothE::Decoder *decoder = [self _slothEDecoderActive] ? [_slothERuntime decoder] : nullptr;
+    [_slothERuntime submitSideComputeJob:^{
+        std::vector<McBopomofoSlothE::TypoEntry> entries;
+        std::string source;
+        bool finished = McBopomofoSlothE::ScoreTypoWindow(engine, decoder, job->cands, job->context, job->left, job->cancelled, &entries, &source);
+        {
+            std::lock_guard<std::mutex> lock(job->mu);
+            if (finished) {
+                job->entries = std::move(entries);
+                job->source = source;
+                job->readyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job->start).count();
+            }
+            job->done = true;
+        }
+        job->cv.notify_all();
+    }];
+}
+
+// v3.1b.1: stops the current job before its next model call. always = NO
+// (Esc) keeps a finished job, so reopening the window reuses its scores.
+- (void)_slothECancelTypoJob:(BOOL)always
+{
+    std::shared_ptr<SlothETypoJob> job = _slothTypoJob;
+    if (job == nullptr) {
+        return;
+    }
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(job->mu);
+        done = job->done;
+    }
+    if (always || !done) {
+        job->cancelled.store(true);
+        _slothTypoJob.reset();
+    }
+}
+
+- (NSUInteger)slothETypoJobsStarted
+{
+    return _slothTypoJobsStarted;
+}
+
+- (InputStateChoosingTypoCorrection *)_slothETypoStateWithEntries:(const std::vector<McBopomofoSlothE::TypoEntry> &)entries source:(const std::string &)source typed:(const std::string &)typed useVerticalMode:(BOOL)useVerticalMode
+{
+    NSMutableArray<InputStateCandidate *> *candidates = [NSMutableArray array];
+    for (const auto &e : entries) {
+        NSString *value = @(e.value.c_str());
+        [candidates addObject:[[InputStateCandidate alloc] initWithReading:@(e.reading.c_str()) value:value displayText:value rawValue:value]];
+    }
+    InputStateInputting *inputting = (InputStateInputting *)[self buildInputtingState];
+    return [[InputStateChoosingTypoCorrection alloc] initWithComposingBuffer:inputting.composingBuffer cursorIndex:inputting.cursorIndex candidates:candidates useVerticalMode:useVerticalMode typedReading:@(typed.c_str()) source:@(source.c_str())];
+}
+
+- (BOOL)_slothEOpenTypoWindowForInput:(KeyHandlerInput *)input stateCallback:(void (^)(InputState *))stateCallback
+{
+    if ([self _activeSlothEEngine] == nullptr || !Preferences.keepReadingUponCompositionError) {
+        return NO;
+    }
+    Formosa::Mandarin::BopomofoSyllable syllable = _bpmfReadingBuffer->syllable();
+    if (!(syllable.hasConsonant() || syllable.hasMiddleVowel() || syllable.hasVowel())) {
+        return NO;
+    }
+    std::string typed = syllable.composedString();
+    if (_languageModel->hasUnigrams(typed)) {
+        return NO;  // a legal reading: Space / Down as today
+    }
+    [self _slothEStartTypoJob:typed];
+    std::shared_ptr<SlothETypoJob> job = _slothTypoJob;
+    if (job == nullptr || job->typed != typed) {
+        return NO;
+    }
+    // v3.1b.1: an open window is never refreshed; scores that land later are
+    // used when the window is opened again for the same reading and context.
+    std::vector<McBopomofoSlothE::TypoEntry> entries;
+    std::string source;
+    bool ready = false;
+    {
+        std::unique_lock<std::mutex> lock(job->mu);
+        ready = job->cv.wait_for(lock, std::chrono::duration<double, std::milli>(_slothETypoWaitMilliseconds), [&job] { return job->done; }) && job->readyMs >= 0;
+        if (ready) {
+            entries = job->entries;
+            source = job->source;
+        }
+    }
+    if (!ready) {  // not ready: the synchronous LM+prior list for this window
+        entries = McBopomofoSlothE::TypoWindowOrder(job->cands, false, true, nullptr, &source);
+    }
+    if (entries.empty()) {
+        return NO;
+    }
+    _slothTypoShownJob = job;
+    _slothTypoShownCount = entries.size();
+    _slothTypoShownSource = @(source.c_str());
+    stateCallback([self _slothETypoStateWithEntries:entries source:source typed:typed useVerticalMode:input.useVerticalMode]);
+    return YES;
+}
+
+- (void)_slothENoteTypoClosed:(NSString *)chosen
+{
+    std::shared_ptr<SlothETypoJob> job = _slothTypoShownJob;
+    if (job == nullptr) {
+        return;
+    }
+    double ready = -1;
+    {
+        std::lock_guard<std::mutex> lock(job->mu);
+        if (job->done) {
+            ready = job->readyMs;
+        }
+    }
+    [_slothERuntime noteTypoWindowWithCandidates:_slothTypoShownCount chosen:chosen readyMilliseconds:ready source:_slothTypoShownSource];
+    _slothTypoShownJob.reset();
+}
+
+- (void)slothEApplyTypoCorrectionWithReading:(NSString *)reading value:(NSString *)value rank:(NSInteger)rank
+{
+    [self _slothENoteTypoClosed:[NSString stringWithFormat:@"%ld", (long)rank + 1]];
+    [self _slothECancelTypoJob:YES];
+    _bpmfReadingBuffer->clear();
+    _grid->insertReading(reading.UTF8String);
+    [self _walk];
+    size_t node = _grid->cursor() - 1;  // the syllable just inserted
+    if (static_cast<size_t>(self.actualCandidateCursorIndex) == node) {
+        // as a user pick of that char (override + user override model)
+        [self fixNodeWithReading:reading value:value originalCursorIndex:_grid->cursor() useMoveCursorAfterSelectionSetting:NO];
+    } else {
+        Formosa::Gramambular2::ReadingGrid::Candidate candidate(reading.UTF8String, value.UTF8String);
+        _grid->overrideCandidate(node, candidate);
+        [self _walk];
+    }
+}
+
+- (BOOL)slothEWaitForTypoScores:(double)milliseconds
+{
+    std::shared_ptr<SlothETypoJob> job = _slothTypoJob;
+    if (job == nullptr) {
+        return NO;
+    }
+    std::unique_lock<std::mutex> lock(job->mu);
+    return job->cv.wait_for(lock, std::chrono::duration<double, std::milli>(milliseconds), [&job] { return job->done; }) && job->readyMs >= 0;
+}
+
 #pragma mark - SlothE carried context (v3.1a)
 
 static const NSTimeInterval kSlothESelectionTimeoutSeconds = 0.020;
@@ -2746,6 +2996,7 @@ static const NSInteger kSlothESelectionMaxLocation = 1 << 30;  // larger = bogus
     _slothCarried.clear();
     _slothExpectedLocation = NSNotFound;
     [self _slothEDropProvisionalBase];
+    [self _slothECancelTypoJob:YES];
 }
 
 // Clients whose selectedRange was slow (> 20 ms), NSNotFound or bogus once:

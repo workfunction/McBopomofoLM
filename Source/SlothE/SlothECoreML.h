@@ -62,6 +62,8 @@ struct CoreMLLoadOptions {
   std::vector<size_t> decoderLengthsAtLoad;
   std::function<void(std::function<void()>)> runLater;
   std::function<void(size_t, const CoreMLLoadInfo&)> onLazyLoad;
+  // v3.1b next-token functions n{T}: lazy only (install: all); reported here.
+  std::function<void(size_t, const CoreMLLoadInfo&)> onLazyNextLoad;
   ComputeUnits lazyUnits = ComputeUnits::kCPUAndNeuralEngine;  // tests: kCPUOnly
   // v2.1.1: re-checks the decoder files (size + sha256) right before every
   // lazy load; false = the function is marked failed (reason "integrity") and

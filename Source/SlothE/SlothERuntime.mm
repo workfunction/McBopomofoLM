@@ -34,14 +34,19 @@ static NSString *const kLatencyLogHeader =
     @"#   macos / vocab / probe_failed / no_encoder; load_ms includes the ANE compile when its cache is cold;\n"
     @"#   plan_ane_pct = lowest share of estimated cost on the Neural Engine over the model's functions (MLComputePlan);\n"
     @"#   gate: encoder >= 99, decoder >= 80 per function; fn_ane_pct = each function's share, e.g. L8:100.0,L16:100.0\n"
-    @"#   model decoder.t32 / .t64 / .t96 = a decoder function loaded on first need (v2.1)\n"
+    @"#   model decoder.t32 / .t64 / .t96 = a decoder function loaded on first need (v2.1);\n"
+    @"#   decoder.n16 ... n96 = a next-token function for the correction window (v3.1b, on the first illegal reading)\n"
     @"# P = prewarm: first key of a new buffer after the models idled > 1 s; one dummy call on each model:\n"
     @"#   P time idle_ms enc_ms dec_ms\n"
     @"# C = a new buffer started (v3.1a carried context; no text): C time ctx_len reset sr client\n"
     @"#   ctx_len = chars carried from earlier commits; reset = what cleared them since the previous buffer\n"
     @"#   (none / activate / deactivate / commit_composition / key / idle / moved / no_selection);\n"
     @"#   sr = client selection vs where our last insert left it (ok / mismatch / na; slow = the client took\n"
-    @"#   > 20 ms and is not asked again); client = bundle id\n";
+    @"#   > 20 ms and is not asked again); client = bundle id\n"
+    @"# X = a correction window (illegal reading, v3.1b) closed; no text: X time n_cands chosen ready_ms source\n"
+    @"#   chosen = rank picked (1-based) or esc; ready_ms = illegal reading to model scores (empty = not ready);\n"
+    @"#   source = the list shown: dn (decoder next-token + encoder) / t1 (T1 rule: no left text, no next-token\n"
+    @"#   function, or not ready within 50 ms; an open window is never refreshed)\n";
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
@@ -457,6 +462,12 @@ static const size_t kMaxEndToEndSamples = 4096;
         options.onLazyLoad = [weakSelf](size_t length, const McBopomofoSlothE::CoreMLLoadInfo &info) {
             [weakSelf _noteLazyLoad:length info:info];
         };
+        options.onLazyNextLoad = [weakSelf](size_t length, const McBopomofoSlothE::CoreMLLoadInfo &info) {
+            [weakSelf _logRuntime:[NSString stringWithFormat:@"decoder.n%zu", length] info:info reason:@(info.reason.c_str())];
+            if (!info.ok) {
+                NSLog(@"McBopomofoLM: SlothE next-token function n%zu not used until the input method restarts (%s: %s); the correction window uses the T1 rule", length, info.reason.c_str(), info.detail.c_str());
+            }
+        };
         std::string dir(_resourcePath.fileSystemRepresentation);
         options.verifyBeforeLazyLoad = [dir](std::string *error) {
             return McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), error);
@@ -669,6 +680,10 @@ static const size_t kMaxEndToEndSamples = 4096;
             ok = false;
             reason = @"load_error";
         } else {
+            std::string firstError;  // v3.1b: without it the correction window keeps the T1 rule
+            if (!decoder->loadFirstChars(dir + "/" + McBopomofoSlothE::kDecoderFirstCharsName, &firstError)) {
+                NSLog(@"McBopomofoLM: next-token first-char table not used (%s)", firstError.c_str());
+            }
             std::vector<double> scores;
             McBopomofoSlothE::DecoderCallStats stats;
             ok = decoder->score("", std::vector<std::string> { "今天", "天氣" }, &scores, &stats);
@@ -974,6 +989,44 @@ static const size_t kMaxEndToEndSamples = 4096;
     [self _appendTimestampedLine:@"A" tail:tail];
 }
 
+- (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source
+{
+    if (_logPath == nil) {
+        return;
+    }
+    NSString *ready = readyMilliseconds >= 0 ? [NSString stringWithFormat:@"%.3f", readyMilliseconds] : @"";
+    [self _appendTimestampedLine:@"X" tail:[NSString stringWithFormat:@"\t%lu\t%@\t%@\t%@\n", (unsigned long)count, chosen, ready, source]];
+}
+
+- (void)submitSideComputeJob:(dispatch_block_t)job
+{
+    dispatch_async(_computeQueue, job);
+}
+
+- (BOOL)loadNextTokenFunctionsForTesting:(NSTimeInterval)timeout
+{
+    McBopomofoSlothE::Decoder *decoder = [self decoder];
+    if (decoder == nullptr) {
+        return NO;
+    }
+    BOOL all = YES;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
+    for (NSUInteger chars : { 1, 20, 40, 64 }) {  // one left text per function length (n16 / n32 / n64 / n96)
+        std::string text;
+        for (NSUInteger k = 0; k < chars; ++k) {
+            text += "一";
+        }
+        std::vector<float> lp;
+        McBopomofoSlothE::DecoderCallStats stats;
+        BOOL ok = NO;
+        while (!(ok = decoder->nextTokenLogProbs(text, &lp, &stats)) && deadline.timeIntervalSinceNow > 0) {
+            [NSThread sleepForTimeInterval:0.2];
+        }
+        all = all && ok;
+    }
+    return all;
+}
+
 - (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(NSString *)client
 {
     if (_logPath == nil) {
@@ -1073,7 +1126,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     }
     [_logHandle seekToEndReturningOffset:nil error:nil];
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.1a.2 (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.1b.1 (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

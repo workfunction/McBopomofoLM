@@ -69,6 +69,20 @@ class DecoderBackend {
   virtual bool isLoaded(size_t length) const { return true; }
   virtual std::vector<size_t> loadedLengths() const { return lengths(); }
   virtual void requestLoad(size_t length) {}
+  // v3.1b next-token functions n{T} (batch 1, reports/ane-dec.md): ids = <bos>
+  // + context (at most `length` ids, right-padded by the backend) -> lp = the
+  // log-softmax over the vocabulary of the token after the last id. Loaded
+  // lazily only (requestNextLoad), each with its own placement check.
+  virtual const std::vector<size_t>& nextLengths() const {
+    static const std::vector<size_t> none;
+    return none;
+  }
+  virtual bool isNextLoaded(size_t length) const { return false; }
+  virtual void requestNextLoad(size_t length) {}
+  virtual bool nextLogProbs(const std::vector<int32_t>& ids, size_t length,
+                            std::vector<float>* lp) {
+    return false;
+  }
 };
 
 struct DecoderCallStats {
@@ -98,11 +112,26 @@ class Decoder {
   std::vector<std::vector<int32_t>> sequences(
       const std::string& context,
       const std::vector<std::string>& candidates) const;
+  // v3.1b: log-softmax over the vocabulary of the next token after <bos> +
+  // the last kMaxContextChars chars of context (one n{T} call). False when no
+  // next-token function fits, or the one that fits is not loaded yet (its
+  // background load is then queued), or the call failed.
+  bool nextTokenLogProbs(const std::string& context, std::vector<float>* lp,
+                         DecoderCallStats* stats);
+  // The first-char table (dec_next_first.tsv: char \t token ids whose text
+  // starts with it; typo/t2.py grouping).
+  bool loadFirstChars(const std::string& path, std::string* error);
+  bool hasFirstChars() const { return !firstChars_.empty(); }
+  // log P(next text starts with c) = log max(sum of exp(lp) over c's tokens,
+  // 1e-12); log(1e-12) for a char no token starts with.
+  double firstCharLogProb(const std::vector<float>& lp, const std::string& c) const;
   // One throw-away call (prewarm after idle): <bos> + tokenize("的").
   bool prewarm(double* milliseconds);
   // v2.1: requests refused because their function was not loaded yet (each
   // one queued a background load of that function).
   uint64_t unavailableCount() const { return unavailable_.load(); }
+  // v3.1b tests: nextTokenLogProbs calls made.
+  uint64_t nextTokenCallCount() const { return nextCalls_.load(); }
   std::vector<size_t> loadedLengths() const;
 
   static constexpr size_t kMaxContextChars = 64;
@@ -115,6 +144,8 @@ class Decoder {
   int32_t pad_ = 0;
   std::mutex mutex_;
   std::atomic<uint64_t> unavailable_{0};
+  std::atomic<uint64_t> nextCalls_{0};
+  std::unordered_map<std::string, std::vector<int32_t>> firstChars_;
 };
 
 // The last maxChars code points of s.

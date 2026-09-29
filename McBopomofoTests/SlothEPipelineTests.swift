@@ -746,8 +746,11 @@ class SlothEPipelineTests: XCTestCase {
         var lines: [String] = []
         let t0 = Date()
         let ok = runtime.loadForInstall { lines.append($0) }
-        NSLog("SLOTHE_V2 install from a cleared cache: %.1f s, ok=%d, load %@ -> %@, cache %@:\n%@", Date().timeIntervalSince(t0), ok, la0, Self.loadAvg(),
-              SlothERuntime.aneCachePath ?? "-", lines.joined(separator: "\n"))
+        NSLog("SLOTHE_V2 install from a cleared cache: %.1f s, ok=%d, load %@ -> %@, cache %@", Date().timeIntervalSince(t0), ok, la0, Self.loadAvg(),
+              SlothERuntime.aneCachePath ?? "-")
+        for line in lines {  // one line each: NSLog truncates long messages
+            NSLog("SLOTHE_V2 install | %@", line)
+        }
         XCTAssertTrue(ok)
         XCTAssertTrue(lines.contains { $0.contains("Cleared this app's Neural Engine compile cache") })
     }

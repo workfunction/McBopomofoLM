@@ -10,6 +10,7 @@
 #import "SlothERuntime.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -20,6 +21,7 @@
 #include "McBopomofoLM.h"
 #include "SlothEEngine.h"
 #include "SlothEPipeline.h"
+#include "SlothETypo.h"
 #include "SlothEWalk.h"
 
 using McBopomofoSlothE::Engine;
@@ -879,6 +881,265 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
     XCTAssertTrue(chars[2].reading.empty() && chars[2].text == "！");
     XCTAssertTrue(McBopomofoSlothE::IsZhuyinReading("ㄓㄨㄥˉ") && !McBopomofoSlothE::IsZhuyinReading("_punctuation_,"));
     XCTAssertEqual(McBopomofoSlothE::TextChars("A好").size(), 2u);
+}
+
+#pragma mark - v3.1b correction window
+
+// The typo fixture: left-text rows {ctx, text, lp} and trial rows.
+- (void)typoFixture:(NSMutableDictionary<NSNumber *, NSDictionary *> *)contexts trials:(NSMutableArray<NSDictionary *> *)trials
+{
+    for (NSDictionary *row in [self rowsOf:@"v31b_typo_dev.jsonl"]) {
+        if (row[@"lp"] != nil) {
+            contexts[row[@"ctx"]] = row;
+        } else {
+            [trials addObject:row];
+        }
+    }
+}
+
+// v3.1b parity (reports/typo.md §8.4-8.5): on the 5,846 dev illegal trials the
+// app's candidates (TypoCandidates on data.txt) are the study's slot1_nb set
+// with the same features, and its window order (TypoWindowOrder) with the
+// study's E and D injected equals the frozen rule (t2_ill D+E w=1 + add-final
+// bonus 3; T1 + bonus 3 when there is no left text) on the first page.
+- (void)testTypoWindowMatchesTheFrozenRuleOnDevIllegalTrials
+{
+    XCTAssertTrue(gDataOnlyLM->isDataModelLoaded());
+    NSMutableDictionary<NSNumber *, NSDictionary *> *contexts = [NSMutableDictionary dictionary];
+    NSMutableArray<NSDictionary *> *trials = [NSMutableArray array];
+    [self typoFixture:contexts trials:trials];
+    XCTAssertEqual(trials.count, 5846u);
+    NSUInteger candsSame = 0, featuresSame = 0, top9Same = 0, top9SameFixtureLM = 0, withText = 0, goldTop3 = 0, logged = 0;
+    double maxLMDiff = 0;
+    for (NSDictionary *t in trials) {
+        std::vector<McBopomofoSlothE::TypoCandidate> cands = McBopomofoSlothE::TypoCandidates(Bytes(t[@"typed"]), *gDataOnlyLM);
+        NSArray<NSArray *> *want = t[@"cands"];
+        BOOL sameSet = cands.size() == want.count;
+        BOOL sameFeatures = sameSet;
+        std::vector<McBopomofoSlothE::TypoCandidate> fixtureLM;
+        for (size_t k = 0; sameSet && k < cands.size(); ++k) {
+            NSArray *w = want[k];
+            sameSet = cands[k].reading == Bytes(w[0]);
+            double dlm = std::fabs(cands[k].lm - [w[4] doubleValue]);
+            maxLMDiff = std::max(maxLMDiff, dlm);
+            sameFeatures = sameFeatures && sameSet && cands[k].cmv == [w[1] intValue] && cands[k].toneChanged == [w[2] boolValue] && cands[k].neighbor == [w[3] boolValue] && dlm < 1e-5;
+            cands[k].encoder = [w[5] doubleValue];
+            McBopomofoSlothE::TypoCandidate f = cands[k];
+            f.lm = [w[4] doubleValue];  // typo_cli printed the LM score with 6 significant digits
+            fixtureLM.push_back(f);
+        }
+        candsSame += sameSet;
+        featuresSame += sameFeatures;
+        if (!sameSet) {
+            continue;
+        }
+        NSDictionary *lp = t[@"ctx"] != [NSNull null] ? contexts[t[@"ctx"]][@"lp"] : nil;
+        withText += lp != nil;
+        std::function<double(const std::string &)> D = [lp](const std::string &ch) {
+            NSNumber *v = lp[@(ch.c_str())];
+            return v != nil ? v.doubleValue : std::log(1e-12);
+        };
+        NSArray<NSArray *> *top = t[@"want"];
+        auto same9 = [&top](const std::vector<McBopomofoSlothE::TypoEntry> &got) {
+            if (got.size() < top.count) {
+                return NO;
+            }
+            for (NSUInteger k = 0; k < top.count; ++k) {
+                if (got[k].reading != Bytes(top[k][0]) || got[k].value != Bytes(top[k][1])) {
+                    return NO;
+                }
+            }
+            return YES;
+        };
+        std::string source;
+        auto got = McBopomofoSlothE::TypoWindowOrder(cands, true, lp == nil, lp != nil ? &D : nullptr, &source);
+        auto gotF = McBopomofoSlothE::TypoWindowOrder(fixtureLM, true, lp == nil, lp != nil ? &D : nullptr, &source);
+        top9Same += same9(got);
+        top9SameFixtureLM += same9(gotF);
+        for (size_t k = 0; k < 3 && k < got.size(); ++k) {
+            goldTop3 += got[k].value == Bytes(t[@"gold"]);
+        }
+        if (!same9(gotF) && logged++ < 20) {
+            NSLog(@"SLOTHE_V31B typo diff %@ got=%s want=%@", t[@"typed"], got.empty() ? "" : got[0].value.c_str(), top[0]);
+        }
+    }
+    NSLog(@"SLOTHE_V31B typo trials=%lu with_left_text=%lu candidates_same=%lu features_same=%lu (max|dLM|=%.1e) top9_identical=%lu (%.2f%%) top9_identical_with_fixture_lm=%lu gold_char_top3=%.1f%%",
+        (unsigned long)trials.count, (unsigned long)withText, (unsigned long)candsSame, (unsigned long)featuresSame, maxLMDiff, (unsigned long)top9Same,
+        100.0 * top9Same / trials.count, (unsigned long)top9SameFixtureLM, 100.0 * goldTop3 / trials.count);
+    XCTAssertEqual(candsSame, trials.count);
+    XCTAssertEqual(featuresSame, trials.count);
+    XCTAssertEqual(top9SameFixtureLM, trials.count);
+}
+
+// v3.1b with the real next-token functions (Core ML, ANE): D from n16..n96 on
+// 400 dev trials with left text, E from the study; top-3 chars vs the fp32
+// ranking (the fixture's frozen-rule order).
+- (void)testTypoWindowWithTheANENextTokenFunctions
+{
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    XCTAssertTrue(decoder != nullptr && decoder->hasFirstChars());
+    if (decoder == nullptr) {
+        return;
+    }
+    NSMutableDictionary<NSNumber *, NSDictionary *> *contexts = [NSMutableDictionary dictionary];
+    NSMutableArray<NSDictionary *> *trials = [NSMutableArray array];
+    [self typoFixture:contexts trials:trials];
+    // the n* functions load lazily on first need: wait for each (one ANE compile per function)
+    std::vector<float> lp;
+    McBopomofoSlothE::DecoderCallStats stats;
+    for (NSString *probe in @[ @"一", [@"" stringByPaddingToLength:20 withString:@"一" startingAtIndex:0], [@"" stringByPaddingToLength:40 withString:@"一" startingAtIndex:0], [@"" stringByPaddingToLength:64 withString:@"一" startingAtIndex:0] ]) {
+        auto t0 = std::chrono::steady_clock::now();
+        while (!decoder->nextTokenLogProbs(probe.UTF8String, &lp, &stats) && InWalkMsSince(t0) < 600000) {
+            [NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+        }
+        NSLog(@"SLOTHE_V31B next-token n%zu ready after %.1f s", stats.length, InWalkMsSince(t0) / 1000.0);
+    }
+    NSUInteger n = 0, identical = 0, overlap = 0, failed = 0;
+    std::vector<double> ms;
+    for (NSDictionary *t in trials) {
+        if (n == 400) {
+            break;
+        }
+        if (t[@"ctx"] == [NSNull null]) {
+            continue;
+        }
+        NSDictionary *ctx = contexts[t[@"ctx"]];
+        std::vector<McBopomofoSlothE::TypoCandidate> cands = McBopomofoSlothE::TypoCandidates(Bytes(t[@"typed"]), *gDataOnlyLM);
+        NSArray<NSArray *> *want = t[@"cands"];
+        if (cands.size() != want.count) {
+            continue;
+        }
+        for (size_t k = 0; k < cands.size(); ++k) {
+            cands[k].encoder = [want[k][5] doubleValue];
+            cands[k].lm = [want[k][4] doubleValue];
+        }
+        auto t0 = std::chrono::steady_clock::now();
+        if (!decoder->nextTokenLogProbs(Bytes(ctx[@"text"]), &lp, &stats)) {
+            ++failed;
+            continue;
+        }
+        ms.push_back(InWalkMsSince(t0));
+        std::function<double(const std::string &)> D = [decoder, &lp](const std::string &ch) { return decoder->firstCharLogProb(lp, ch); };
+        std::string source;
+        auto got = McBopomofoSlothE::TypoWindowOrder(cands, true, false, &D, &source);
+        NSArray<NSArray *> *top = t[@"want"];
+        std::vector<std::string> a, b;
+        for (size_t k = 0; k < 3 && k < got.size(); ++k) {
+            a.push_back(got[k].value);
+        }
+        for (NSUInteger k = 0; k < 3 && k < top.count; ++k) {
+            b.push_back(Bytes(top[k][1]));
+        }
+        identical += a == b;
+        for (const auto &c : a) {
+            overlap += std::find(b.begin(), b.end(), c) != b.end();
+        }
+        ++n;
+    }
+    double load[3] = { 0, 0, 0 };
+    getloadavg(load, 3);
+    NSLog(@"SLOTHE_V31B ane next-token trials=%lu failed=%lu top3_chars_identical=%.1f%% top3_overlap=%.1f%% | call p50=%.2f p95=%.2f ms | load %.2f",
+        (unsigned long)n, (unsigned long)failed, 100.0 * identical / n, 100.0 * overlap / (3.0 * n), InWalkPercentile(ms, 50), InWalkPercentile(ms, 95), load[0]);
+    XCTAssertGreaterThanOrEqual(n, 300u);
+    XCTAssertEqual(failed, 0u);
+}
+
+namespace {
+// v3.1b.1: an encoder that counts its calls, can take a while, and can raise
+// a cancel flag at its n-th call (as Esc arriving mid-job).
+class CountingEncoder : public McBopomofoSlothE::EncoderBackend {
+ public:
+  explicit CountingEncoder(const McBopomofoSlothE::Vocabulary &vocab) : vocab_(vocab) {}
+  int32_t charCount() const override { return vocab_.charCount(); }
+  int32_t syllableCount() const override { return vocab_.syllableCount(); }
+  size_t maxLength() const override { return 256; }
+  bool logits(const std::vector<int32_t> &ids, std::vector<float> *out) override
+  {
+    out->assign(ids.size() * static_cast<size_t>(vocab_.charCount()), 0.0f);
+    int n = ++calls;
+    if (cancel != nullptr && n == cancelAt) {
+      cancel->store(true);
+    }
+    if (sleepMs > 0) {
+      usleep(static_cast<useconds_t>(sleepMs * 1000));
+    }
+    return true;
+  }
+  std::atomic<int> calls {0};
+  int cancelAt = 0;
+  std::atomic<bool> *cancel = nullptr;
+  int sleepMs = 0;
+
+ private:
+  const McBopomofoSlothE::Vocabulary &vocab_;
+};
+}  // namespace
+
+// v3.1b.1: a cancelled correction job makes no further encoder or next-token
+// call, and a pipeline job queued behind it starts within about one encoder
+// call instead of after the whole job.
+- (void)testCancelledTypoJobStopsBeforeItsNextModelCall
+{
+    McBopomofoSlothE::Decoder *decoder = [SlothERuntime.sharedLoadedRuntimeForTesting decoder];
+    XCTAssertTrue(decoder != nullptr);
+    auto backend = std::make_unique<CountingEncoder>(gInWalkEngine->vocabulary());
+    CountingEncoder *enc = backend.get();
+    Engine engine;
+    std::string error;
+    NSString *dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
+    XCTAssertTrue(engine.load(dir.fileSystemRepresentation, std::move(backend), &error), @"%s", error.c_str());
+    auto cands = McBopomofoSlothE::TypoCandidates("ㄅㄩˋ", *gDataOnlyLM);
+    XCTAssertGreaterThan(cands.size(), 6u);
+    std::vector<std::string> context {"ㄋㄧˇ"};
+
+    // cancel raised during the 3rd encoder call: nothing after it
+    std::atomic<bool> cancelled {false};
+    enc->calls = 0;
+    enc->cancel = &cancelled;
+    enc->cancelAt = 3;
+    uint64_t next0 = decoder->nextTokenCallCount();
+    std::vector<McBopomofoSlothE::TypoEntry> entries;
+    std::string source;
+    XCTAssertFalse(McBopomofoSlothE::ScoreTypoWindow(&engine, decoder, cands, context, "你", cancelled, &entries, &source));
+    XCTAssertEqual(enc->calls.load(), 3);
+    XCTAssertEqual(decoder->nextTokenCallCount(), next0);
+    XCTAssertTrue(entries.empty());
+    // not cancelled: every candidate, then one next-token call
+    std::atomic<bool> never {false};
+    enc->calls = 0;
+    enc->cancel = nullptr;
+    XCTAssertTrue(McBopomofoSlothE::ScoreTypoWindow(&engine, decoder, cands, context, "你", never, &entries, &source));
+    XCTAssertEqual(enc->calls.load(), static_cast<int>(cands.size()));
+    XCTAssertEqual(decoder->nextTokenCallCount(), next0 + 1);
+
+    // on the runtime's compute queue: a slow job (50 ms per call), cancelled after ~60 ms
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    enc->sleepMs = 50;
+    enc->calls = 0;
+    auto flag = std::make_shared<std::atomic<bool>>(false);
+    auto cs = cands;
+    Engine *slow = &engine;  // outlives the job: the test waits for the queue below
+    [runtime submitSideComputeJob:^{
+        std::vector<McBopomofoSlothE::TypoEntry> e;
+        std::string src;
+        McBopomofoSlothE::ScoreTypoWindow(slow, nullptr, cs, context, "你", *flag, &e, &src);
+    }];
+    usleep(60000);
+    flag->store(true);
+    auto t0 = std::chrono::steady_clock::now();
+    dispatch_semaphore_t started = dispatch_semaphore_create(0);
+    __block double waitedMs = 0;
+    [runtime submitComputeJob:^{  // the next pipeline job
+        waitedMs = InWalkMsSince(t0);
+        dispatch_semaphore_signal(started);
+    }];
+    XCTAssertEqual(dispatch_semaphore_wait(started, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)), 0);
+    int calls = enc->calls.load();
+    NSLog(@"SLOTHE_V31B cancel: stopped at encoder call 3 of %zu (no next-token call); on the queue: %d of %zu slow calls ran, next pipeline job started after %.1f ms (uncancelled: ~%zu ms)",
+        cands.size(), calls, cands.size(), waitedMs, 50 * cands.size());
+    XCTAssertLessThanOrEqual(calls, 3);
+    XCTAssertLessThan(waitedMs, 150.0);
 }
 
 @end

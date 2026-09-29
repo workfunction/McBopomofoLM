@@ -553,6 +553,30 @@ class InputState: NSObject {
         }
     }
 
+    /// McBopomofoLM v3.1b: the correction window for an illegal reading kept in
+    /// the composer (Space / Down on it). Each candidate is (syllable, char);
+    /// picking one replaces the reading with that syllable and pins the char.
+    @objc(InputStateChoosingTypoCorrection)
+    class ChoosingTypoCorrection: ChoosingCandidate {
+        @objc private(set) var typedReading: String
+        @objc private(set) var source: String
+
+        @objc init(
+            composingBuffer: String, cursorIndex: UInt, candidates: [Candidate],
+            useVerticalMode: Bool, typedReading: String, source: String
+        ) {
+            self.typedReading = typedReading
+            self.source = source
+            super.init(
+                composingBuffer: composingBuffer, cursorIndex: cursorIndex, candidates: candidates,
+                useVerticalMode: useVerticalMode)
+        }
+
+        override var description: String {
+            "<InputState.ChoosingTypoCorrection, candidates:\(candidates.count), source:\(source)>"
+        }
+    }
+
     ///  Subclass of ChoosingCandidate specially for choosing punctuations in
     ///  the punctuation input mode.
     @objc(InputChoosingPunctuationList)

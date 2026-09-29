@@ -111,6 +111,7 @@
 		D63B87D9C50274C12415C5B8 /* SlothEAsyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11085A74ED96C0C94BB7F319 /* SlothEAsyncTests.swift */; };
 		08FC87A377AD7E5B9E17D9A3 /* SlothEDecoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */; };
 		1AA3C739E35FCD5836806FE6 /* SlothEPipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */; };
+		0C4320B632A0DE06495A0B06 /* SlothETypo.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 83F18695FAC2CD8FC115F3BD /* SlothETypo.cpp */; };
 		5E1A0C0DE0000000000000A2 /* SlothECoreML.mm in Sources */ = {isa = PBXBuildFile; fileRef = 5E1A0C0DE0000000000000A1 /* SlothECoreML.mm */; };
 		69939E3A2A48DD1BAD787FB4 /* SlothEDecoderTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */; };
 		90A55C40213AA9BC041C6CD8 /* SlothEPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */; };
@@ -288,6 +289,8 @@
 		9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEDecoder.cpp; sourceTree = "<group>"; };
 		A832437AF48A5ED07E2D51D9 /* SlothEPipeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothEPipeline.h; sourceTree = "<group>"; };
 		0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothEPipeline.cpp; sourceTree = "<group>"; };
+		EC1D011967AFE6AD010D6057 /* SlothETypo.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothETypo.h; sourceTree = "<group>"; };
+		83F18695FAC2CD8FC115F3BD /* SlothETypo.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = SlothETypo.cpp; sourceTree = "<group>"; };
 		5E1A0C0DE0000000000000A1 /* SlothECoreML.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothECoreML.mm; sourceTree = "<group>"; };
 		5E1A0C0DE0000000000000A3 /* SlothECoreML.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothECoreML.h; sourceTree = "<group>"; };
 		08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEDecoderTests.mm; sourceTree = "<group>"; };
@@ -584,6 +587,8 @@
 				9B3E049F24377C77C73F74E8 /* SlothEDecoder.cpp */,
 				A832437AF48A5ED07E2D51D9 /* SlothEPipeline.h */,
 				0EE36A1ECDE4D9EE994DE036 /* SlothEPipeline.cpp */,
+				EC1D011967AFE6AD010D6057 /* SlothETypo.h */,
+				83F18695FAC2CD8FC115F3BD /* SlothETypo.cpp */,
 				5E1A0C0DE0000000000000A3 /* SlothECoreML.h */,
 				5E1A0C0DE0000000000000A1 /* SlothECoreML.mm */,
 				AB1CEEED7D980BE117153A7C /* SlothE */,
@@ -799,6 +804,7 @@
 				A6D49FA9891FD3E9E5283BBE /* SlothEWalk.cpp in Sources */,
 				08FC87A377AD7E5B9E17D9A3 /* SlothEDecoder.cpp in Sources */,
 				1AA3C739E35FCD5836806FE6 /* SlothEPipeline.cpp in Sources */,
+				0C4320B632A0DE06495A0B06 /* SlothETypo.cpp in Sources */,
 				5E1A0C0DE0000000000000A2 /* SlothECoreML.mm in Sources */,
 				D41B626F2B87B5C100583148 /* ServiceProviderInputHelper.mm in Sources */,
 				D427F76C278CA2B0004A2160 /* AppDelegate.swift in Sources */,

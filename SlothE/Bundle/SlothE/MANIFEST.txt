@@ -1,8 +1,9 @@
 SlothE runtime files for McBopomofoLM v2 (Core ML, ANE only)
 encoder source: ane/enc/models/enc25m_multi_pal2_emb.mlpackage tree sha256 1ebd9c64baf81bd94456ce37e70f27063ad027826d7232239d5f7dd0970046d5
-decoder source: ane/dec/mf/dec_mf_fp16.mlpackage tree sha256 e24bee80220971085d4fef50f416455c97d56f01d3eeffef8651a69901ff20fc
+decoder source: McBopomofoLM/build/v31b/dec_mf_tn_fp16.mlpackage tree sha256 e9e7516339fe081a577ef6afde09a0c6384317c21efd8d55b3a21ed208a74f3c
 embedding: ane/enc/work/embed_f16_25m.bin sha256 b23e59ecd93a0b6c95ac3e93d83e7cb77657adaa365a0d8f7dab31ccafc89583
 tokenizer: HF pred_q35_60m/tokenizer.json sha256 3f81807dc89667acebf50f878df8c64bed8254c926a25a182a3e1e80ec8b4bfc
+next-token first-char table: SlothE/v31b/dec_next_first.tsv sha256 60da0fdd6c4572cd300ffd915d897bfa3271f7e8544e469b9a1b7517ac710b52
 compiled with: xcrun coremlcompiler compile
 config A' (walk2/frozen_final2.json): 25M, beta 0.3, gamma 0, pen -15, variant guard; decoder lambda 2, tau 0.5, top-3
 

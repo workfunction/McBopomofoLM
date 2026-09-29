@@ -53,6 +53,12 @@ extension McBopomofoInputMethodController: CandidateControllerDelegate {
         let client = currentClient
 
         switch state {
+        case let state as InputState.ChoosingTypoCorrection:
+            // McBopomofoLM v3.1b: the picked syllable replaces the illegal reading, its char is pinned.
+            let picked = state.candidates[Int(index)]
+            keyHandler.slothEApplyTypoCorrection(
+                withReading: picked.reading, value: picked.value, rank: Int(index))
+            handle(state: keyHandler.buildInputtingState(), client: client)
         case let state as InputState.ChoosingCandidate:
             let selectedCandidate = state.candidates[Int(index)]
             keyHandler.fixNode(

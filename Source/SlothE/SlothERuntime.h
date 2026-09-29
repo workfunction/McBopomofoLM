@@ -179,6 +179,16 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// key / idle / moved / no_selection), the selection check (ok / mismatch /
 /// na / slow) and the client's bundle identifier.
 - (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(nullable NSString *)client;
+/// v3.1b: one X line per correction window closed (no text): entries shown,
+/// chosen rank (1-based) or "esc", ms from the illegal reading to its scores
+/// ("" if not ready), source (dn = decoder next-token + encoder, t1 = a T1 rule).
+- (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source;
+/// v3.1b: runs `job` on the compute queue after what is queued, never coalesced
+/// (the pipeline's own jobs replace each other; this one must run).
+- (void)submitSideComputeJob:(dispatch_block_t)job;
+/// Tests: loads the v3.1b next-token functions n16..n96 (lazily, as on the
+/// first illegal reading) and waits for them; YES when all four answer.
+- (BOOL)loadNextTokenFunctionsForTesting:(NSTimeInterval)timeout;
 - (void)noteAsyncResult:(NSString *)result bufferLength:(NSUInteger)bufferLength queueMilliseconds:(double)queueMilliseconds forwardMilliseconds:(double)forwardMilliseconds decoderMilliseconds:(double)decoderMilliseconds decoderCalls:(NSInteger)decoderCalls pins:(NSInteger)pins decoder:(NSString *)decoder inWalkMilliseconds:(double)inWalkMilliseconds endToEndMilliseconds:(double)endToEndMilliseconds;
 /// Blocks until pending log writes are on disk (tests).
 - (void)flushLog;
