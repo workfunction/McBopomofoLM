@@ -19,6 +19,7 @@
 
 #include "McBopomofoLM.h"
 #include "SlothEEngine.h"
+#include "SlothEPipeline.h"
 #include "SlothEWalk.h"
 
 using McBopomofoSlothE::Engine;
@@ -649,6 +650,235 @@ static BOOL SameWalk(const Formosa::Gramambular2::ReadingGrid::WalkResult &walk,
                 L, candidates.size(), InWalkPercentile(full, 50), InWalkPercentile(full, 95), InWalkPercentile(bounded, 50), InWalkPercentile(bounded, 95), InWalkPercentile(bounded, 100), skipped, reps, load[0]);
         }
     }
+}
+
+#pragma mark - v3.1a carried context
+
+namespace {
+// Encoder backend for the w7 replay: the last positions of each pass take the
+// fixture's cached log-probs (as walk2 does, -1e30 elsewhere); the carried
+// positions before them get -1e30 (the result keeps only the buffer's
+// positions). Before `next` is set (the load probe) it returns zeros.
+class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
+ public:
+  explicit FixtureEncoder(const McBopomofoSlothE::Vocabulary &vocab) : vocab_(vocab) {}
+  int32_t charCount() const override { return vocab_.charCount(); }
+  int32_t syllableCount() const override { return vocab_.syllableCount(); }
+  size_t maxLength() const override { return 256; }
+  bool logits(const std::vector<int32_t> &ids, std::vector<float> *out) override
+  {
+    const size_t C = static_cast<size_t>(vocab_.charCount());
+    out->assign(ids.size() * C, next.empty() ? 0.0f : -1e30f);
+    if (next.size() > ids.size()) {
+      return false;
+    }
+    const size_t off = ids.size() - next.size();
+    for (size_t t = 0; t < next.size(); ++t) {
+      const std::vector<std::string> &tok = next[t];
+      if (tok[0] != "x") {
+        (*out)[(off + t) * C + 2] = static_cast<float>(std::stod(tok[0]));
+      }
+      for (size_t k = 1; k + 1 < tok.size(); k += 2) {
+        int32_t cid = vocab_.charId(tok[k]);
+        if (cid >= 0) {
+          (*out)[(off + t) * C + static_cast<size_t>(cid)] = static_cast<float>(std::stod(tok[k + 1]));
+        }
+      }
+    }
+    lastIds = ids.size();
+    return true;
+  }
+  std::vector<std::vector<std::string>> next;
+  size_t lastIds = 0;
+
+ private:
+  const McBopomofoSlothE::Vocabulary &vocab_;
+};
+}  // namespace
+
+// v3.1a parity (reports/w7.md, dev, seed 1, random cuts): each chunk goes
+// through the app's own RunPipeline (encoder with the carried syllables,
+// in-walk, decoder requests with the carried text, decoder pins) and walk,
+// and is committed into the app's CarriedContext; the fixture supplies the
+// model outputs w7 used (encoder log-probs per chunk; decoder scores, served
+// from the pipeline's score cache, so any request w7 did not make would go
+// to the real decoder and count as a miss). Ce1 = carried context, N = none
+// (the a8e0ded behaviour). SlothE/make_v31a_fixture.py.
+- (void)testChunkedTypingWithCarriedContextMatchesW7
+{
+    XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
+    McBopomofoSlothE::Decoder *decoder = [SlothERuntime.sharedLoadedRuntimeForTesting decoder];
+    XCTAssertTrue(decoder != nullptr && decoder->isLoaded());
+    if (gInWalkEngine == nullptr || decoder == nullptr) {
+        return;
+    }
+    const auto &vocab = gInWalkEngine->vocabulary();
+    auto backend = std::make_unique<FixtureEncoder>(vocab);
+    FixtureEncoder *fixture = backend.get();
+    Engine engine;
+    std::string error;
+    NSString *dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
+    XCTAssertTrue(engine.load(dir.fileSystemRepresentation, std::move(backend), &error), @"%s", error.c_str());
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v31a_dev_chunks.jsonl"];
+    XCTAssertEqual(rows.count, 500u);
+    uint64_t generation = 0;
+    for (NSString *cond in @[ @"N", @"Ce1" ]) {
+        BOOL carry = [cond isEqualToString:@"Ce1"];
+        NSUInteger sentencesSame = 0, chunks = 0, chunksSame = 0, contextSame = 0, decoderAsked = 0, decoderWanted = 0, decoderMissed = 0, oneReadingModel = 0;
+        for (NSDictionary *row in rows) {
+            std::vector<std::string> all = Readings(row[@"readings"]);
+            NSArray<NSArray *> *cuts = row[@"chunks"];
+            NSArray<NSDictionary *> *entries = row[cond];
+            McBopomofoSlothE::CarriedContext carried;
+            BOOL sentenceSame = entries.count == cuts.count;
+            for (NSUInteger k = 0; k < entries.count && k < cuts.count; ++k) {
+                NSDictionary *entry = entries[k];
+                size_t s = [cuts[k][0] unsignedIntegerValue], e = [cuts[k][1] unsignedIntegerValue];
+                std::vector<std::string> readings(all.begin() + static_cast<std::ptrdiff_t>(s), all.begin() + static_cast<std::ptrdiff_t>(e));
+                McBopomofoSlothE::PipelineConfig config;
+                config.useDecoder = true;
+                config.encoderContext = carried.encoderReadings();
+                config.decoderContext = carried.decoderText();
+                contextSame += config.encoderContext == Readings(entry[@"enc"]) && config.decoderContext == Bytes(entry[@"ctx"]);
+                std::vector<std::string> f = SplitOn(Bytes(entry[@"line"]), '\t');
+                fixture->next.clear();
+                for (size_t t = 3; t < f.size(); ++t) {
+                    fixture->next.push_back(SplitOn(f[t], ' '));
+                }
+                XCTAssertEqual(fixture->next.size(), readings.size());
+                McBopomofoSlothE::DecoderScoreCache scores;
+                for (NSArray *d in entry[@"dec"]) {
+                    std::vector<double> sc;
+                    for (NSNumber *x in d[2]) {
+                        sc.push_back(x.doubleValue);
+                    }
+                    scores.store(Bytes(d[0]), Readings(d[1]), sc);
+                }
+                decoderWanted += [entry[@"dec"] count];
+                McBopomofoSlothE::PipelineSlot slot;
+                slot.latestRequested.store(++generation);
+                auto grid = [self gridWithReadings:readings];
+                auto snapshot = grid->snapshot();
+                McBopomofoSlothE::PipelineResult result = McBopomofoSlothE::RunPipeline(&engine, decoder, &scores, &slot, config, generation, readings, snapshot.get(), 0);
+                XCTAssertTrue(result.encoder != nullptr && result.decoderDone);
+                if (result.encoder == nullptr) {
+                    sentenceSame = NO;
+                    continue;
+                }
+                decoderAsked += static_cast<NSUInteger>(result.decoderCached);
+                decoderMissed += static_cast<NSUInteger>(result.decoderCalls);
+                oneReadingModel += readings.size() == 1 && result.encoder->contextLength > 0;
+                auto walk = grid->rescoredWalk(*result.encoder, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr, result.pins.empty() ? nullptr : &result.pins);
+                BOOL same = SameWalk(walk, entry[@"final"]);
+                chunksSame += same;
+                sentenceSame = sentenceSame && same;
+                ++chunks;
+                if (carry) {
+                    carried.commit(McBopomofoSlothE::CommittedChars(walk, "-"), 0);
+                }
+            }
+            sentencesSame += sentenceSame;
+            if (!sentenceSame) {
+                NSLog(@"SLOTHE_V31A %@ diff %@", cond, row[@"sid"]);
+            }
+        }
+        NSLog(@"SLOTHE_V31A cond=%@ sentences=%lu committed_text_match=%lu chunks=%lu/%lu context_match=%lu decoder_requests=%lu/%lu missed=%lu one_reading_with_context=%lu",
+            cond, (unsigned long)rows.count, (unsigned long)sentencesSame, (unsigned long)chunksSame, (unsigned long)chunks, (unsigned long)contextSame,
+            (unsigned long)decoderAsked, (unsigned long)decoderWanted, (unsigned long)decoderMissed, (unsigned long)oneReadingModel);
+        XCTAssertEqual(sentencesSame, rows.count);
+        XCTAssertEqual(contextSame, chunks);
+        XCTAssertEqual(decoderAsked, decoderWanted);
+        XCTAssertEqual(decoderMissed, 0u);
+    }
+}
+
+// v3.1a background pass with carried context on the real models (Core ML
+// encoder + decoder): the w7 dev chunks (first 150 sentences), each pass
+// with the app's own carried context vs none. Model work only; the key path
+// only copies the context into the job.
+- (void)testBackgroundPassTimeWithCarriedContext
+{
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    Engine *engine = [runtime engine];
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    XCTAssertTrue(engine != nullptr && decoder != nullptr);
+    if (engine == nullptr || decoder == nullptr) {
+        return;
+    }
+    NSArray<NSDictionary *> *rows = [[self rowsOf:@"v31a_dev_chunks.jsonl"] subarrayWithRange:NSMakeRange(0, 150)];
+    uint64_t generation = 1000000;
+    for (int withContext = 0; withContext < 2; ++withContext) {
+        std::vector<double> total, forward, dec;
+        size_t contextSyllables = 0;
+        for (NSDictionary *row in rows) {
+            std::vector<std::string> all = Readings(row[@"readings"]);
+            McBopomofoSlothE::CarriedContext carried;
+            for (NSArray *cut in row[@"chunks"]) {
+                size_t s = [cut[0] unsignedIntegerValue], e = [cut[1] unsignedIntegerValue];
+                std::vector<std::string> readings(all.begin() + static_cast<std::ptrdiff_t>(s), all.begin() + static_cast<std::ptrdiff_t>(e));
+                McBopomofoSlothE::PipelineConfig config = McBopomofoSlothE::PipelineConfig();
+                config.useDecoder = true;
+                if (withContext) {
+                    config.encoderContext = carried.encoderReadings();
+                    config.decoderContext = carried.decoderText();
+                    contextSyllables += config.encoderContext.size();
+                }
+                McBopomofoSlothE::DecoderScoreCache scores;
+                McBopomofoSlothE::PipelineSlot slot;
+                slot.latestRequested.store(++generation);
+                auto grid = [self gridWithReadings:readings];
+                auto snapshot = grid->snapshot();
+                auto t0 = std::chrono::steady_clock::now();
+                McBopomofoSlothE::PipelineResult result = McBopomofoSlothE::RunPipeline(engine, decoder, &scores, &slot, config, generation, readings, snapshot.get(), 0);
+                total.push_back(InWalkMsSince(t0));
+                forward.push_back(result.forwardMs);
+                dec.push_back(result.decoderMs);
+                if (result.encoder != nullptr) {
+                    auto walk = grid->rescoredWalk(*result.encoder, engine->vocabulary(), engine->variants(), InWalkParams(), nullptr, result.pins.empty() ? nullptr : &result.pins);
+                    carried.commit(McBopomofoSlothE::CommittedChars(walk, "-"), 0);
+                }
+            }
+        }
+        double load[3] = { 0, 0, 0 };
+        getloadavg(load, 3);
+        NSLog(@"SLOTHE_V31A_TIME context=%d passes=%zu mean_context=%.1f | pass p50=%.2f p95=%.2f | encoder p50=%.2f p95=%.2f | decoder p50=%.2f p95=%.2f ms | load %.2f",
+            withContext, total.size(), static_cast<double>(contextSyllables) / static_cast<double>(total.size()), InWalkPercentile(total, 50), InWalkPercentile(total, 95),
+            InWalkPercentile(forward, 50), InWalkPercentile(forward, 95), InWalkPercentile(dec, 50), InWalkPercentile(dec, 95), load[0]);
+    }
+}
+
+- (void)testCarriedContextRules
+{
+    using McBopomofoSlothE::CarriedChar;
+    using McBopomofoSlothE::CarriedContext;
+    using McBopomofoSlothE::SelectionCheck;
+    CarriedContext c;
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 1e6, SelectionCheck::kMismatch) == "");  // nothing to reset
+    c.commit({ { "ㄋㄧˇ", "你" }, { "ㄏㄠˇ", "好" }, { "", "，" }, { "ㄇㄚ", "媽" } }, 100);
+    XCTAssertTrue((c.encoderReadings() == std::vector<std::string> { "ㄇㄚ" }));  // stops at the comma
+    XCTAssertTrue(c.decoderText() == "你好，媽");
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 219, SelectionCheck::kOk) == "");
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 221, SelectionCheck::kOk) == "idle");  // > 120 s
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 101, SelectionCheck::kMismatch) == "moved");
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 115, SelectionCheck::kUnavailable) == "");
+    XCTAssertTrue(McBopomofoSlothE::NewBufferResetReason(c, 116, SelectionCheck::kUnavailable) == "no_selection");  // > 15 s
+    XCTAssertTrue(c.popLast() == "媽");
+    XCTAssertTrue(c.encoderReadings().empty());
+    XCTAssertEqual(c.size(), 3u);
+    // caps: 24 syllables for the encoder, 64 chars kept
+    std::vector<CarriedChar> many(70, CarriedChar { "ㄉㄜ˙", "的" });
+    c.commit(many, 200);
+    XCTAssertEqual(c.size(), CarriedContext::kMaxChars);
+    XCTAssertEqual(c.encoderReadings().size(), CarriedContext::kMaxSyllables);
+    // pairs of a committed walk: one per Zhuyin syllable; punctuation without a reading
+    auto grid = [self gridWithReadings:std::vector<std::string> { "ㄋㄧˇ", "ㄏㄠˇ", "_punctuation_!" }];
+    auto chars = McBopomofoSlothE::CommittedChars(grid->walk(), "-");
+    XCTAssertEqual(chars.size(), 3u);
+    XCTAssertTrue(chars[0].reading == "ㄋㄧˇ");
+    XCTAssertTrue(chars[1].reading == "ㄏㄠˇ");
+    XCTAssertTrue(chars[2].reading.empty() && chars[2].text == "！");
+    XCTAssertTrue(McBopomofoSlothE::IsZhuyinReading("ㄓㄨㄥˉ") && !McBopomofoSlothE::IsZhuyinReading("_punctuation_,"));
+    XCTAssertEqual(McBopomofoSlothE::TextChars("A好").size(), 2u);
 }
 
 @end

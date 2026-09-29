@@ -147,8 +147,9 @@ ReadingGrid::WalkResult SlothEGrid::rescoredWalk(
     detail->clear();
   }
   // v3.0.2b: a 1-reading buffer shows the stock walk (no neural term, no
-  // decoder pins; an empty detail means no decoder requests either).
-  if (n <= 1 || r.length() != n) {
+  // decoder pins; an empty detail means no decoder requests either) -- unless
+  // the encoder saw carried context (v3.1a, reports/w7.md Ce1).
+  if (n == 0 || (n == 1 && r.contextLength == 0) || r.length() != n) {
     return walk();
   }
 

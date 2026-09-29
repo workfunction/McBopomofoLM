@@ -107,7 +107,7 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
   // 1. encoder
   double forwardMs = 0;
   bool cacheHit = false;
-  result.encoder = engine->forward(readings, &forwardMs, &cacheHit);
+  result.encoder = engine->forward(readings, &forwardMs, &cacheHit, &config.encoderContext);
   result.forwardMs = forwardMs;
   if (result.encoder == nullptr) {
     result.decoderDone = true;
@@ -128,6 +128,9 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
   snapshot->rescoredWalk(*result.encoder, engine->vocabulary(), engine->variants(),
                          config.inWalk, nullptr, nullptr, &detail);
   std::vector<DecoderRequest> requests = BuildDecoderRequests(detail, config.decoder.topK);
+  for (DecoderRequest& request : requests) {
+    request.context = config.decoderContext + request.context;  // v3.1a
+  }
   for (const DecoderRequest& request : requests) {
     if (isStale()) {
       result.stale = true;
@@ -176,8 +179,109 @@ std::shared_ptr<const ForwardResult> ProvisionalResult(
   view->base = base->base != nullptr ? base->base : base;
   view->knownPrefix = std::min(prefix, base->base != nullptr ? base->knownPrefix : prefix);
   view->viewLength = readings.size();
+  view->contextLength = view->base->contextLength;
   *knownPrefix = view->knownPrefix;
   return view;
 }
 
+void CarriedContext::commit(const std::vector<CarriedChar>& chars, double now) {
+  chars_.insert(chars_.end(), chars.begin(), chars.end());
+  if (chars_.size() > kMaxChars) {
+    chars_.erase(chars_.begin(), chars_.end() - static_cast<std::ptrdiff_t>(kMaxChars));
+  }
+  lastCommit_ = now;
+}
+
+std::string CarriedContext::popLast() {
+  if (chars_.empty()) {
+    return {};
+  }
+  std::string text = chars_.back().text;
+  chars_.pop_back();
+  return text;
+}
+
+std::vector<std::string> CarriedContext::encoderReadings() const {
+  std::vector<std::string> out;
+  for (auto it = chars_.rbegin(); it != chars_.rend() && !it->reading.empty() && out.size() < kMaxSyllables; ++it) {
+    out.push_back(it->reading);
+  }
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
+std::string CarriedContext::decoderText() const {
+  std::string text;
+  for (const CarriedChar& c : chars_) {
+    text += c.text;
+  }
+  return text;
+}
+
+std::string NewBufferResetReason(const CarriedContext& context, double now,
+                                 SelectionCheck selection) {
+  if (context.empty()) {
+    return {};
+  }
+  double since = now - context.lastCommit();
+  if (since > CarriedContext::kIdleSeconds) {
+    return "idle";
+  }
+  if (selection == SelectionCheck::kMismatch) {
+    return "moved";
+  }
+  if (selection == SelectionCheck::kUnavailable && since > CarriedContext::kNoSelectionSeconds) {
+    return "no_selection";
+  }
+  return {};
+}
+
+bool IsZhuyinReading(const std::string& reading) {
+  if (reading.empty()) {
+    return false;
+  }
+  size_t i = 0;
+  while (i < reading.size()) {
+    uint32_t cp = NextCodePoint(reading, &i);
+    bool letter = cp >= 0x3105 && cp <= 0x3129;                              // ㄅ..ㄩ
+    bool tone = cp == 0x02CA || cp == 0x02C7 || cp == 0x02CB || cp == 0x02D9 || cp == 0x02C9;  // ˊ ˇ ˋ ˙ ˉ
+    if (!letter && !tone) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::vector<CarriedChar> TextChars(const std::string& text) {
+  std::vector<CarriedChar> out;
+  for (std::string& c : Utf8Chars(text)) {
+    out.push_back({std::string(), std::move(c)});
+  }
+  return out;
+}
+
+std::vector<CarriedChar> CommittedChars(
+    const Formosa::Gramambular2::ReadingGrid::WalkResult& walk,
+    const std::string& separator) {
+  std::vector<CarriedChar> out;
+  for (const auto& node : walk.nodes) {
+    std::vector<std::string> chars = Utf8Chars(node->value());
+    std::vector<std::string> syllables;
+    const std::string& reading = node->reading();
+    for (size_t a = 0;;) {
+      size_t b = separator.empty() ? std::string::npos : reading.find(separator, a);
+      syllables.push_back(reading.substr(a, b == std::string::npos ? std::string::npos : b - a));
+      if (b == std::string::npos) {
+        break;
+      }
+      a = b + separator.size();
+    }
+    bool paired = chars.size() == node->spanningLength() && syllables.size() == chars.size() &&
+                  std::all_of(syllables.begin(), syllables.end(), IsZhuyinReading);
+    for (size_t k = 0; k < chars.size(); ++k) {
+      out.push_back({paired ? syllables[k] : std::string(), chars[k]});
+    }
+  }
+  return out;
+}
 }  // namespace McBopomofoSlothE

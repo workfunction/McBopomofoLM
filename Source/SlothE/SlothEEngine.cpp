@@ -557,8 +557,13 @@ bool Engine::load(const std::string& resourceDir,
 
 namespace {
 
-std::string CacheKey(const std::vector<std::string>& readings) {
+std::string CacheKey(const std::vector<std::string>& readings,
+                     const std::vector<std::string>& context = {}) {
   std::string key;
+  for (const std::string& r : context) {
+    key += r;
+    key += '\x1e';  // carried syllables: a different separator
+  }
   for (const std::string& r : readings) {
     key += r;
     key += '\x1f';
@@ -579,21 +584,39 @@ std::shared_ptr<const ForwardResult> Engine::lookupLocked(
   return nullptr;
 }
 
+std::vector<std::string> Engine::usableContext(
+    const std::vector<std::string>& readings,
+    const std::vector<std::string>* context) const {
+  if (context == nullptr || context->empty()) {
+    return {};
+  }
+  size_t limit = kMaxReadings;
+  if (backend_ != nullptr) {
+    limit = std::min(limit, backend_->maxLength());
+  }
+  size_t room = readings.size() < limit ? limit - readings.size() : 0;
+  size_t take = std::min(room, context->size());
+  return std::vector<std::string>(context->end() - static_cast<std::ptrdiff_t>(take), context->end());
+}
+
 std::shared_ptr<const ForwardResult> Engine::lookup(
-    const std::vector<std::string>& readings) const {
+    const std::vector<std::string>& readings,
+    const std::vector<std::string>* context) const {
   if (readings.empty()) {
     return nullptr;
   }
+  std::string key = CacheKey(readings, usableContext(readings, context));
   std::lock_guard<std::mutex> lock(cacheMutex_);
-  return lookupLocked(CacheKey(readings));
+  return lookupLocked(key);
 }
 
 std::shared_ptr<const ForwardResult> Engine::waitFor(
-    const std::vector<std::string>& readings, double timeoutMs) const {
+    const std::vector<std::string>& readings, double timeoutMs,
+    const std::vector<std::string>* context) const {
   if (readings.empty()) {
     return nullptr;
   }
-  std::string key = CacheKey(readings);
+  std::string key = CacheKey(readings, usableContext(readings, context));
   auto deadline = std::chrono::steady_clock::now() +
                   std::chrono::microseconds(
                       static_cast<int64_t>(std::max(0.0, timeoutMs) * 1000.0));
@@ -608,17 +631,21 @@ std::shared_ptr<const ForwardResult> Engine::waitFor(
 
 std::shared_ptr<const ForwardResult> Engine::forward(
     const std::vector<std::string>& readings, double* forwardMs,
-    bool* cacheHit) {
+    bool* cacheHit, const std::vector<std::string>* context) {
   *forwardMs = 0;
   *cacheHit = false;
   if (backend_ == nullptr || readings.empty() ||
       readings.size() > std::min(kMaxReadings, backend_->maxLength())) {
     return nullptr;
   }
-  std::string key = CacheKey(readings);
-  if (auto hit = lookup(readings)) {
-    *cacheHit = true;
-    return hit;
+  const std::vector<std::string> carried = usableContext(readings, context);
+  std::string key = CacheKey(readings, carried);
+  {
+    std::lock_guard<std::mutex> lock(cacheMutex_);
+    if (auto hit = lookupLocked(key)) {
+      *cacheHit = true;
+      return hit;
+    }
   }
 
   std::lock_guard<std::mutex> modelLock(modelMutex_);
@@ -632,8 +659,10 @@ std::shared_ptr<const ForwardResult> Engine::forward(
   auto t0 = std::chrono::steady_clock::now();
   auto r = std::make_shared<ForwardResult>();
   r->charCount = vocab_.charCount();
-  r->ids.reserve(readings.size());
-  for (const std::string& reading : readings) {
+  std::vector<std::string> all = carried;
+  all.insert(all.end(), readings.begin(), readings.end());
+  r->ids.reserve(all.size());
+  for (const std::string& reading : all) {
     auto cached = syllableIds_.find(reading);
     if (cached == syllableIds_.end()) {
       cached = syllableIds_.emplace(reading, vocab_.mapSyllable(reading).id).first;
@@ -645,6 +674,14 @@ std::shared_ptr<const ForwardResult> Engine::forward(
     return nullptr;
   }
   ComputeLogZ(r.get(), vocab_);
+  if (!carried.empty()) {  // keep only the buffer's positions
+    const size_t skip = carried.size();
+    const size_t C = static_cast<size_t>(r->charCount);
+    r->ids.erase(r->ids.begin(), r->ids.begin() + static_cast<std::ptrdiff_t>(skip));
+    r->logits.erase(r->logits.begin(), r->logits.begin() + static_cast<std::ptrdiff_t>(skip * C));
+    r->logZ.erase(r->logZ.begin(), r->logZ.begin() + static_cast<std::ptrdiff_t>(skip));
+    r->contextLength = skip;
+  }
   auto t1 = std::chrono::steady_clock::now();
   *forwardMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 

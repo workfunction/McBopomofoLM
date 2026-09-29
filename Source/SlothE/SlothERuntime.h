@@ -174,6 +174,11 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// One asynchronous pass outcome: "applied", "unchanged", "stale",
 /// "skipped", "deferred", "consumed". decoder: "off", "none", "scored",
 /// "stale", "failed". endToEndMs < 0: not measured.
+/// v3.1a: one C line per new buffer (no text): carried chars, the reset since
+/// the previous buffer (none / activate / deactivate / commit_composition /
+/// key / idle / moved / no_selection), the selection check (ok / mismatch /
+/// na / slow) and the client's bundle identifier.
+- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(nullable NSString *)client;
 - (void)noteAsyncResult:(NSString *)result bufferLength:(NSUInteger)bufferLength queueMilliseconds:(double)queueMilliseconds forwardMilliseconds:(double)forwardMilliseconds decoderMilliseconds:(double)decoderMilliseconds decoderCalls:(NSInteger)decoderCalls pins:(NSInteger)pins decoder:(NSString *)decoder inWalkMilliseconds:(double)inWalkMilliseconds endToEndMilliseconds:(double)endToEndMilliseconds;
 /// Blocks until pending log writes are on disk (tests).
 - (void)flushLog;

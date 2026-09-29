@@ -107,6 +107,34 @@ extern InputMode InputModePlainBopomofo;
 /// McBopomofoLM: SlothE-T runtime used for candidate reranking and key timing.
 /// Defaults to SlothERuntime.sharedRuntime; nil disables SlothE-T entirely.
 @property (strong, nonatomic, nullable) SlothERuntime *slothERuntime;
+
+/// McBopomofoLM v3.1a carried context (reports/w7.md Ce1): the chars committed
+/// before the current buffer feed the encoder and decoder of the next buffer.
+/// Memory only; never persisted or logged. Called by the input controller:
+/// after every insertText: text = before any Simplified conversion (the
+/// model context), insertedLength = UTF-16 length of what the client got ...
+- (void)slothENoteCommittedText:(NSString *)text insertedLength:(NSInteger)insertedLength;
+/// ... on activate / deactivate / an app-requested commitComposition ...
+- (void)slothEResetCarriedContext:(NSString *)reason;
+/// ... and before each key in the Empty state. selection returns the client's
+/// selectedRange().location; it is called at most once, only for a key that
+/// can start a buffer (the handler's own empty-state conditions), and never
+/// again for a client whose answer took > 20 ms or was NSNotFound / bogus
+/// (a client without a bundle id is never turned off: only that buffer falls
+/// back). Clears the context when idle > 120 s, when the
+/// selection is not where the last buffer's text ended, or (no selection)
+/// when the last commit is > 15 s old.
+- (void)slothEPrepareKey:(KeyHandlerInput *)input inEmptyStateWithSelection:(NSInteger (^)(void))selection;
+/// YES once the current client is not asked for its selection any more.
+@property (assign, nonatomic, readonly) BOOL slothESelectionOffForClient;
++ (void)slothEResetSelectionOffClientsForTesting;
+/// Tests: carried chars, and the most recent reset that cleared a non-empty context.
+@property (assign, nonatomic, readonly) NSUInteger slothECarriedLength;
+@property (nonatomic, readonly, nullable) NSString *slothELastResetReason;
+/// Seconds on a monotonic clock (tests inject their own).
+@property (copy, nonatomic) NSTimeInterval (^slothEClock)(void);
+/// Client bundle identifier for the latency log's C lines (set on activate).
+@property (copy, nonatomic, nullable) NSString *slothEClientID;
 @end
 
 NS_ASSUME_NONNULL_END

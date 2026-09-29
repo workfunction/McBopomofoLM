@@ -176,8 +176,8 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
   // choice differs from the grid node's current value are private copies, so
   // the grid itself is never modified. r must come from this grid's readings;
   // otherwise the stock walk is returned.
-  // A 1-reading grid always gets the stock walk (v3.0.2b), with pins ignored
-  // and an empty detail.
+  // A 1-reading grid gets the stock walk (v3.0.2b), with pins ignored and an
+  // empty detail, unless r carries context (r.contextLength > 0, v3.1a Ce1).
   // pins: decoder decisions for a re-walk (walk2 --repin); the variant guard
   // still uses the unpinned stock walk as its baseline. detail: per node of
   // the returned walk (before pins are considered for the detail's own walk).

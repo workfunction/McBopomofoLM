@@ -331,7 +331,8 @@ class Preferences: NSObject {
     @UserDefault(key: kEscToCleanInputBufferKey, defaultValue: false)
     @objc static var escToCleanInputBuffer: Bool
 
-    @UserDefault(key: kKeepReadingUponCompositionError, defaultValue: false)
+    // McBopomofoLM v3.1a: on by default (stock McBopomofo: off).
+    @UserDefault(key: kKeepReadingUponCompositionError, defaultValue: true)
     @objc static var keepReadingUponCompositionError: Bool
 
     // MARK: Optional settings

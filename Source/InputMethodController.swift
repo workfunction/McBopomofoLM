@@ -201,6 +201,9 @@ class McBopomofoInputMethodController: IMKInputController {
 
         keyHandler.clear()
         keyHandler.syncWithPreferences()
+        // McBopomofoLM v3.1a: a client/field change drops the carried context.
+        keyHandler.slothEResetCarriedContext("activate")
+        keyHandler.slothEClientID = (client as? IMKTextInput)?.bundleIdentifier()
 
         #if !MCBOPOMOFO_LM_OFFLINE
         (NSApp.delegate as? AppDelegate)?.checkForUpdate()
@@ -211,6 +214,7 @@ class McBopomofoInputMethodController: IMKInputController {
         currentClient = nil
         keyHandler.clear()
         self.handle(state: .Deactivated(), client: client)
+        keyHandler.slothEResetCarriedContext("deactivate")
     }
 
     override func setValue(_ value: Any!, forTag tag: Int, client: Any!) {
@@ -236,6 +240,9 @@ class McBopomofoInputMethodController: IMKInputController {
         keyHandler.handleForceCommit(stateCallback: { newState in
             self.handle(state: newState, client: client)
         })
+        // McBopomofoLM v3.1a: the app asked (e.g. a click while composing):
+        // commit first, then drop the carried context.
+        keyHandler.slothEResetCarriedContext("commit_composition")
     }
 
     override func recognizedEvents(_ sender: Any!) -> Int {
@@ -290,6 +297,16 @@ class McBopomofoInputMethodController: IMKInputController {
         let useVerticalMode =
             (attributes?["IMKTextOrientation"] as? NSNumber)?.intValue == 0 || false
         let input = KeyHandlerInput(event: event, isVerticalMode: useVerticalMode)
+
+        // McBopomofoLM v3.1a: before a key with no buffer, check whether the
+        // carried context still applies (selection where our last insert left it).
+        // The handler asks (at most once, only for a key that can start a
+        // buffer, never again for a slow client).
+        if state is InputState.Empty || state is InputState.EmptyIgnoringPreviousState {
+            keyHandler.slothEPrepareKey(input) {
+                (client as? IMKTextInput)?.selectedRange().location ?? NSNotFound
+            }
+        }
 
         let result = keyHandler.handle(input: input, state: state) { newState in
             self.handle(state: newState, client: client)
@@ -496,6 +513,10 @@ extension McBopomofoInputMethodController {
         }
         (client as? IMKTextInput)?.insertText(
             buffer, replacementRange: NSRange(location: NSNotFound, length: NSNotFound))
+        // McBopomofoLM v3.1a: carry what was committed (memory only; the
+        // Traditional text is the model context) and how far the client's
+        // cursor moved (the inserted, possibly converted, text).
+        keyHandler.slothENoteCommittedText(text, insertedLength: buffer.utf16.count)
     }
 
     private func handle(state: InputState.Deactivated, previous: InputState, client: Any?) {

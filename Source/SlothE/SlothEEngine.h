@@ -114,6 +114,9 @@ struct ForwardResult {
   std::shared_ptr<const ForwardResult> base;
   size_t knownPrefix = 0;
   size_t viewLength = 0;
+  // v3.1a: carried syllables the encoder saw before these positions (they are
+  // not part of this result; 0 = no carried context).
+  size_t contextLength = 0;
   size_t length() const { return base != nullptr ? viewLength : ids.size(); }
   bool known(size_t pos) const { return base == nullptr || pos < knownPrefix; }
 };
@@ -184,16 +187,23 @@ class Engine {
   // Runs one forward pass over the readings, or reuses a cached one keyed by
   // the exact reading sequence. forwardMs = model time (0 on a cache hit).
   // Returns nullptr when not loaded or readings is empty.
+  // context (v3.1a, reports/w7.md Ce): carried syllables prepended to the
+  // pass (oldest dropped first so the whole fits the encoder); the result
+  // covers only `readings` (contextLength = carried syllables used), and the
+  // cache key includes the context.
   std::shared_ptr<const ForwardResult> forward(
       const std::vector<std::string>& readings, double* forwardMs,
-      bool* cacheHit);
-  // Cached result for exactly these readings, or nullptr. Never computes.
+      bool* cacheHit, const std::vector<std::string>* context = nullptr);
+  // Cached result for exactly these readings (and context), or nullptr.
+  // Never computes.
   std::shared_ptr<const ForwardResult> lookup(
-      const std::vector<std::string>& readings) const;
+      const std::vector<std::string>& readings,
+      const std::vector<std::string>* context = nullptr) const;
   // Waits up to timeoutMs for a result for these readings to be cached by
   // another thread's forward(). Returns nullptr on timeout.
   std::shared_ptr<const ForwardResult> waitFor(
-      const std::vector<std::string>& readings, double timeoutMs) const;
+      const std::vector<std::string>& readings, double timeoutMs,
+      const std::vector<std::string>* context = nullptr) const;
 
   // One throw-away pass over a single syllable (prewarm after idle). Not cached.
   bool prewarm(double* milliseconds);
@@ -206,6 +216,10 @@ class Engine {
  private:
   std::shared_ptr<const ForwardResult> lookupLocked(
       const std::string& key) const;
+  // The carried syllables a pass over readings uses: the newest that fit.
+  std::vector<std::string> usableContext(
+      const std::vector<std::string>& readings,
+      const std::vector<std::string>* context) const;
 
   std::unique_ptr<EncoderBackend> backend_;
   Vocabulary vocab_;

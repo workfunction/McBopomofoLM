@@ -97,10 +97,22 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     // so the model's threads never compete with the key handling itself.
     BOOL _slothInKeystroke;
     BOOL _slothSubmitPending;
+
+    // v3.1a carried context (reports/w7.md Ce1), memory only: what was
+    // committed before the current buffer. See slothENoteCommittedText etc.
+    McBopomofoSlothE::CarriedContext _slothCarried;
+    std::vector<McBopomofoSlothE::CarriedChar> _slothClearedChars;  // the walk last cleared, as pairs
+    std::string _slothClearedText;
+    NSInteger _slothExpectedLocation;  // client selection after our last insert (UTF-16); NSNotFound = unknown
+    NSString *_slothPendingReset;        // reset since the last new buffer (C line); nil = none
+    NSString *_slothLastReset;           // the most recent reset (tests)
+    NSString *_slothSelection;           // ok / mismatch / na, for the next new buffer's C line
 }
 
 @synthesize delegate = _delegate;
 @synthesize slothERuntime = _slothERuntime;
+@synthesize slothEClock = _slothEClock;
+@synthesize slothEClientID = _slothEClientID;
 
 - (NSString *)inputMode
 {
@@ -175,6 +187,11 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
         _slothGeneration = 1;
         _slothAppliedGeneration = 0;
         _slothSlot = std::make_shared<McBopomofoSlothE::PipelineSlot>();
+        _slothExpectedLocation = NSNotFound;
+        _slothSelection = @"na";
+        _slothEClock = ^NSTimeInterval {
+            return NSProcessInfo.processInfo.systemUptime;
+        };
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(_slothEPreferencesDidChange:) name:SlothEPreferencesDidChangeNotification object:nil];
     }
     return self;
@@ -338,6 +355,10 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
 
 - (void)clear
 {
+    // v3.1a: every commit of the buffer clears it first; keep what was shown
+    // so slothENoteCommittedText can carry its (reading, char) pairs.
+    _slothClearedChars = McBopomofoSlothE::CommittedChars(_latestWalk, _grid->readingSeparator());
+    _slothClearedText = McBopomofoSlothE::WalkText(_latestWalk);
     _bpmfReadingBuffer->clear();
     _grid->clear();
     _latestWalk = Formosa::Gramambular2::ReadingGrid::WalkResult {};
@@ -370,6 +391,26 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     return layout;
 }
 
+// Empty-state conditions of _handleInputUntimed, shared with the v3.1a
+// buffer-start predicate (_slothEKeyMayStartBuffer) so the two cannot drift.
+// A function key combination (Command, Option, numeric keypad, Control hot
+// key) is ignored with an empty buffer.
+static BOOL SlothEIsFunctionKey(KeyHandlerInput *input)
+{
+    return (input.isCommandHold || input.isOptionHold || input.isNumericPad) || input.isControlHotKey;
+}
+
+// With Caps Lock on, a key other than Backspace / Return / the arrows the
+// handler ignores is committed as is (no buffer).
+static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
+{
+    UniChar charCode = input.charCode;
+    if (charCode == 8 || charCode == 13 || input.isAbsorbedArrowKey || input.isExtraChooseCandidateKey || input.isCursorForward || input.isCursorBackward) {
+        return NO;  // do nothing if backspace is pressed -- we ignore the key
+    }
+    return input.isCapsLockOn;
+}
+
 // McBopomofoLM: times every key event (handler ms, SlothE-T forward/rerank ms,
 // buffer length) for latency.log; the actual handling is unchanged.
 - (BOOL)handleInput:(KeyHandlerInput *)input state:(InputState *)inState stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
@@ -394,13 +435,21 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
         }
     }
     BOOL bufferWasEmpty = _grid->length() == 0 && _bpmfReadingBuffer->isEmpty();
+    if (bufferWasEmpty && ([inState isKindOfClass:[InputStateEmpty class]] || [inState isKindOfClass:[InputStateEmptyIgnoringPreviousState class]])) {
+        [self _slothECarriedContextKey:input];
+    }
     _slothInKeystroke = YES;
     BOOL handled = [self _handleInputUntimed:input state:state stateCallback:stateCallback errorCallback:errorCallback];
     _slothInKeystroke = NO;
     // McBopomofoLM: the first key of a new buffer wakes the Neural Engine
     // (one dummy call per model, off the main thread) if the models idled.
-    if (bufferWasEmpty && (_grid->length() > 0 || !_bpmfReadingBuffer->isEmpty()) && [self _activeSlothEEngine] != nullptr) {
-        [runtime prewarmIfIdle];
+    if (bufferWasEmpty && (_grid->length() > 0 || !_bpmfReadingBuffer->isEmpty())) {
+        if ([self _activeSlothEEngine] != nullptr) {
+            [runtime prewarmIfIdle];
+        }
+        [runtime noteBufferStartWithContextLength:_slothCarried.size() reset:(_slothPendingReset != nil ? _slothPendingReset : @"none") selection:_slothSelection client:_slothEClientID];
+        _slothPendingReset = nil;
+        _slothSelection = @"na";
     }
     double handlerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     if (handled) {
@@ -461,15 +510,14 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     }
 
     // if the composing buffer is empty and there's no reading, and there is some function key combination, we ignore it
-    BOOL isFunctionKey = (input.isCommandHold || input.isOptionHold || input.isNumericPad) || input.isControlHotKey;
+    BOOL isFunctionKey = SlothEIsFunctionKey(input);
     if (![state isKindOfClass:[InputStateNotEmpty class]] && ![state isKindOfClass:[InputStateAssociatedPhrasesPlain class]] && !([state isKindOfClass:[InputStateAssociatedPhrases class]] && [(InputStateAssociatedPhrases *)state autoTriggered]) && isFunctionKey) {
         return NO;
     }
 
     // Caps Lock processing : if Caps Lock is on, temporarily disable bopomofo.
-    if (charCode == 8 || charCode == 13 || input.isAbsorbedArrowKey || input.isExtraChooseCandidateKey || input.isCursorForward || input.isCursorBackward) {
-        // do nothing if backspace is pressed -- we ignore the key
-    } else if (input.isCapsLockOn) {
+    // (McBopomofoLM: the condition is shared with _slothEKeyMayStartBuffer.)
+    if (SlothECapsLockCommitsDirectly(input)) {
         // process all possible combination, we hope.
         [self clear];
         InputStateEmpty *emptyState = [[InputStateEmpty alloc] init];
@@ -2651,6 +2699,147 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     return _slothERuntime.loadFailed ? @"none" : @"loading";
 }
 
+#pragma mark - SlothE carried context (v3.1a)
+
+static const NSTimeInterval kSlothESelectionTimeoutSeconds = 0.020;
+static const NSInteger kSlothESelectionMaxLocation = 1 << 30;  // larger = bogus
+
+- (NSUInteger)slothECarriedLength
+{
+    return _slothCarried.size();
+}
+
+- (nullable NSString *)slothELastResetReason
+{
+    return _slothLastReset;
+}
+
+- (void)_slothEDropProvisionalBase
+{
+    // The previous buffer's pass was made with a different carried context.
+    _slothLastEncoder.reset();
+    _slothLastReadings.clear();
+    _slothLastPins.clear();
+}
+
+- (void)slothENoteCommittedText:(NSString *)text insertedLength:(NSInteger)insertedLength
+{
+    std::string t = text.UTF8String != nullptr ? text.UTF8String : "";
+    std::vector<McBopomofoSlothE::CarriedChar> chars = (!t.empty() && t == _slothClearedText) ? _slothClearedChars : McBopomofoSlothE::TextChars(t);
+    _slothClearedChars.clear();
+    _slothClearedText.clear();
+    _slothCarried.commit(chars, _slothEClock());
+    // v3.1a.1: no client call here; the cursor moves by what the client got
+    // (after any Simplified conversion), from where the buffer started.
+    if (_slothExpectedLocation != NSNotFound) {
+        _slothExpectedLocation += insertedLength;
+    }
+    [self _slothEDropProvisionalBase];
+}
+
+- (void)slothEResetCarriedContext:(NSString *)reason
+{
+    if (!_slothCarried.empty()) {
+        _slothPendingReset = reason;
+        _slothLastReset = reason;
+    }
+    _slothCarried.clear();
+    _slothExpectedLocation = NSNotFound;
+    [self _slothEDropProvisionalBase];
+}
+
+// Clients whose selectedRange was slow (> 20 ms), NSNotFound or bogus once:
+// not asked again for the life of the process (15 s fallback rule instead).
+static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
+{
+    static NSMutableSet<NSString *> *clients;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        clients = [NSMutableSet set];
+    });
+    return clients;
+}
+
++ (void)slothEResetSelectionOffClientsForTesting
+{
+    [SlothESelectionOffClients() removeAllObjects];
+}
+
+- (BOOL)slothESelectionOffForClient
+{
+    return _slothEClientID != nil && [SlothESelectionOffClients() containsObject:_slothEClientID];
+}
+
+// A key that can start a buffer. First the handler's own empty-state exits
+// (_handleInputUntimed: no text, a function key combination, Caps Lock
+// commits directly); then keys that pass through or only reset / pop:
+// Control, Space / Return / Tab / Esc / Backspace, arrows and function keys.
+- (BOOL)_slothEKeyMayStartBuffer:(KeyHandlerInput *)input
+{
+    if (input.inputText.length == 0 || SlothEIsFunctionKey(input) || SlothECapsLockCommitsDirectly(input)) {
+        return NO;
+    }
+    UniChar c = input.charCode;
+    return !input.isControlHold && c > 0x20 && c != 0x7f && !(c >= 0xf700 && c <= 0xf8ff) && !input.isLeft && !input.isRight && !input.isUp && !input.isDown && !input.isHome && !input.isEnd && !input.isPageUp && !input.isPageDown && !input.isTab && !input.isEnter;
+}
+
+- (void)slothEPrepareKey:(KeyHandlerInput *)input inEmptyStateWithSelection:(NSInteger (^)(void))selection
+{
+    if (![self _slothEKeyMayStartBuffer:input]) {
+        return;  // never asks the client for a key it will not keep
+    }
+    NSString *client = _slothEClientID;
+    NSInteger location = NSNotFound;
+    BOOL slow = NO;
+    if (![self slothESelectionOffForClient]) {
+        NSTimeInterval t0 = _slothEClock();
+        location = selection();
+        slow = _slothEClock() - t0 > kSlothESelectionTimeoutSeconds;
+        if (slow || location == NSNotFound || location < 0 || location > kSlothESelectionMaxLocation) {
+            if (client != nil) {
+                [SlothESelectionOffClients() addObject:client];  // this client only
+            }
+            location = NSNotFound;  // no bundle id: only this buffer falls back to the 15 s rule
+        }
+    }
+    McBopomofoSlothE::SelectionCheck check = McBopomofoSlothE::SelectionCheck::kUnavailable;
+    if (location != NSNotFound && _slothExpectedLocation != NSNotFound) {
+        check = location == _slothExpectedLocation ? McBopomofoSlothE::SelectionCheck::kOk : McBopomofoSlothE::SelectionCheck::kMismatch;
+    }
+    _slothSelection = slow ? @"slow" : (check == McBopomofoSlothE::SelectionCheck::kOk ? @"ok" : (check == McBopomofoSlothE::SelectionCheck::kMismatch ? @"mismatch" : @"na"));
+    std::string reason = McBopomofoSlothE::NewBufferResetReason(_slothCarried, _slothEClock(), check);
+    if (!reason.empty()) {
+        [self slothEResetCarriedContext:@(reason.c_str())];
+    }
+    if (location != NSNotFound) {
+        _slothExpectedLocation = location;  // L0: where this buffer will be inserted
+    }
+}
+
+// A key with an empty buffer (Empty state): navigation, Tab, Esc and any
+// Command / Control / Option combination clear the carried context;
+// Backspace drops its last char; Return keeps it (the client inserts a line
+// break: one UTF-16 unit); every other key leaves it alone.
+- (void)_slothECarriedContextKey:(KeyHandlerInput *)input
+{
+    UniChar charCode = input.charCode;
+    if (input.isCommandHold || input.isControlHold || input.isOptionHold) {
+        [self slothEResetCarriedContext:@"key"];
+    } else if (charCode == 8) {
+        NSString *popped = @(_slothCarried.popLast().c_str());
+        NSInteger units = static_cast<NSInteger>(popped.length);
+        if (_slothExpectedLocation != NSNotFound && _slothExpectedLocation >= units) {
+            _slothExpectedLocation -= units;
+        }
+    } else if (charCode == 13 || input.isEnter) {
+        if (_slothExpectedLocation != NSNotFound) {
+            _slothExpectedLocation += 1;
+        }
+    } else if (charCode == 27 || input.isTab || input.isLeft || input.isRight || input.isUp || input.isDown || input.isHome || input.isEnd || input.isPageUp || input.isPageDown) {
+        [self slothEResetCarriedContext:@"key"];
+    }
+}
+
 - (BOOL)_slothEDecoderActive
 {
     return Preferences.slothEDecoderEnabled && [_slothERuntime decoder] != nullptr;
@@ -2774,6 +2963,8 @@ InputMode InputModePlainBopomofo = @"org.openvanilla.inputmethod.McBopomofoLM.Pl
     config.decoder = [runtime decoderParams];
     config.useDecoder = [self _slothEDecoderActive];
     config.debugDelayMs = runtime.debugComputeDelayMilliseconds;
+    config.encoderContext = _slothCarried.encoderReadings();
+    config.decoderContext = _slothCarried.decoderText();
     std::shared_ptr<McBopomofoSlothE::SlothEGrid> snapshot;
     if (config.useDecoder) {
         snapshot = _grid->snapshot();
@@ -2936,7 +3127,8 @@ static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
     // queued when the grid changed and the key handler settled it (waiting up
     // to the commit wait) before building the window. If it is still not
     // there, the window keeps stock order.
-    std::shared_ptr<const McBopomofoSlothE::ForwardResult> result = engine->lookup(readings);
+    std::vector<std::string> carried = _slothCarried.encoderReadings();
+    std::shared_ptr<const McBopomofoSlothE::ForwardResult> result = engine->lookup(readings, &carried);
     if (result == nullptr || result->length() != readings.size()) {
         return identity;
     }

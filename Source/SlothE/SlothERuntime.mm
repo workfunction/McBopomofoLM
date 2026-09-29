@@ -36,7 +36,12 @@ static NSString *const kLatencyLogHeader =
     @"#   gate: encoder >= 99, decoder >= 80 per function; fn_ane_pct = each function's share, e.g. L8:100.0,L16:100.0\n"
     @"#   model decoder.t32 / .t64 / .t96 = a decoder function loaded on first need (v2.1)\n"
     @"# P = prewarm: first key of a new buffer after the models idled > 1 s; one dummy call on each model:\n"
-    @"#   P time idle_ms enc_ms dec_ms\n";
+    @"#   P time idle_ms enc_ms dec_ms\n"
+    @"# C = a new buffer started (v3.1a carried context; no text): C time ctx_len reset sr client\n"
+    @"#   ctx_len = chars carried from earlier commits; reset = what cleared them since the previous buffer\n"
+    @"#   (none / activate / deactivate / commit_composition / key / idle / moved / no_selection);\n"
+    @"#   sr = client selection vs where our last insert left it (ok / mismatch / na; slow = the client took\n"
+    @"#   > 20 ms and is not asked again); client = bundle id\n";
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
@@ -969,6 +974,22 @@ static const size_t kMaxEndToEndSamples = 4096;
     [self _appendTimestampedLine:@"A" tail:tail];
 }
 
+- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(NSString *)client
+{
+    if (_logPath == nil) {
+        return;
+    }
+    // bundle identifiers are ASCII; anything else is dropped so the log never holds text
+    NSMutableString *app = [NSMutableString string];
+    for (NSUInteger i = 0; i < client.length && i < 128; ++i) {
+        unichar c = [client characterAtIndex:i];
+        if (c > 0x20 && c < 0x7f && c != '\t') {
+            [app appendFormat:@"%C", c];
+        }
+    }
+    [self _appendTimestampedLine:@"C" tail:[NSString stringWithFormat:@"\t%lu\t%@\t%@\t%@\n", (unsigned long)contextLength, reset, selection, app.length ? app : @"-"]];
+}
+
 - (void)_appendTimestampedLine:(NSString *)kind tail:(NSString *)tail
 {
     NSDate *now = [NSDate date];
@@ -1052,7 +1073,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     }
     [_logHandle seekToEndReturningOffset:nil error:nil];
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.0.2b (candidate window jump-ahead C, delta %.1f; UNK split; LM order and stock walk for 1-syllable buffers) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.1a.2 (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

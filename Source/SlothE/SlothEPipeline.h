@@ -80,6 +80,10 @@ struct PipelineConfig {
   DecoderParams decoder;
   bool useDecoder = false;
   double debugDelayMs = 0;
+  // v3.1a carried context (CarriedContext): syllables prepended to the
+  // encoder pass, and committed text prepended to every decoder context.
+  std::vector<std::string> encoderContext;
+  std::string decoderContext;
 };
 
 // Runs one job on the calling (compute) thread. onEncoder is called after the
@@ -98,6 +102,61 @@ std::shared_ptr<const ForwardResult> ProvisionalResult(
     const std::shared_ptr<const ForwardResult>& base,
     const std::vector<std::string>& baseReadings,
     const std::vector<std::string>& readings, size_t* knownPrefix);
+
+// v3.1a (reports/w7.md Ce1): what the user committed just before the current
+// buffer, kept in memory only (never persisted or logged). One entry per
+// committed char; reading is empty for a char that is not a Zhuyin syllable
+// (punctuation, symbols, text committed without the grid), which ends the
+// encoder context. The key handler decides when to clear it.
+struct CarriedChar {
+  std::string reading;
+  std::string text;
+};
+
+class CarriedContext {
+ public:
+  static constexpr size_t kMaxSyllables = 24;   // encoder context
+  static constexpr size_t kMaxChars = 64;       // decoder context (= Decoder::kMaxContextChars)
+  static constexpr double kIdleSeconds = 120;   // no commit for longer: clear
+  static constexpr double kNoSelectionSeconds = 15;  // client gives no selection: keep only this long
+
+  void commit(const std::vector<CarriedChar>& chars, double now);
+  // Backspace with an empty buffer: drops the last char; returns its text.
+  std::string popLast();
+  void clear() { chars_.clear(); }
+  bool empty() const { return chars_.empty(); }
+  size_t size() const { return chars_.size(); }
+  double lastCommit() const { return lastCommit_; }
+  // The syllables after the last non-Zhuyin char, newest kMaxSyllables.
+  std::vector<std::string> encoderReadings() const;
+  // The committed text, newest kMaxChars chars.
+  std::string decoderText() const;
+
+ private:
+  std::vector<CarriedChar> chars_;
+  double lastCommit_ = 0;
+};
+
+enum class SelectionCheck { kOk, kMismatch, kUnavailable };
+
+// Reset reason at the first key of a new buffer ("" = keep the context):
+// "idle" after kIdleSeconds without a commit; "moved" when the client's
+// selection is not where our last insert left it; "no_selection" when the
+// client gives no selection and the last commit is older than
+// kNoSelectionSeconds.
+std::string NewBufferResetReason(const CarriedContext& context, double now,
+                                 SelectionCheck selection);
+
+// (reading, char) pairs of a committed walk: a node whose value is one char
+// per Zhuyin syllable gives one pair per syllable; any other node gives its
+// chars without readings. separator joins a node's syllables ("-").
+std::vector<CarriedChar> CommittedChars(
+    const Formosa::Gramambular2::ReadingGrid::WalkResult& walk,
+    const std::string& separator);
+// Text committed without a walk: every char without a reading.
+std::vector<CarriedChar> TextChars(const std::string& text);
+// True when every char of a reading is a Bopomofo letter or tone mark.
+bool IsZhuyinReading(const std::string& reading);
 
 }  // namespace McBopomofoSlothE
 
