@@ -267,3 +267,6 @@
 "SlothE Decoder Corrections" = "SlothE 解碼器複查";
 "SlothE Sentence Check After a Pause" = "SlothE 停頓時整句複查";
 "SlothE Wrong-Syllable Suggestion" = "SlothE 錯音修正選項";
+"SlothE Shift Toggles Chinese/English" = "SlothE 單點 Shift 切換中英";
+"English Mode" = "英文模式";
+"Chinese Mode" = "中文模式";

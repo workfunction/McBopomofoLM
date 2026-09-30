@@ -59,9 +59,13 @@ static NSString *const kLatencyLogHeader =
     @"#   event = offered (the entry was in a candidate window that opened) / chosen (it was picked) / not_ready (a\n"
     @"#   window opened on a syllable whose entry was not computed yet, so it was left out); slot = its 1-based place\n"
     @"#   in the list (empty for not_ready); n_cands = list length; ready_ms = trigger to scores (empty = not ready);\n"
-    @"#   trigger = pause (150 ms idle, syllable at the cursor) / arrow (cursor moved) / open (computed for the next window)\n";
+    @"#   trigger = pause (150 ms idle, syllable at the cursor) / arrow (cursor moved) / open (computed for the next window)\n"
+    @"# M = the input mode changed (v3.2c; a single Shift tap toggles Chinese / English); no text: M time mode source\n"
+    @"#   mode = zh / en (the mode now); source = tap / tap_reading (the tap also turned a Zhuyin reading in progress into\n"
+    @"#   letters) / reset (English mode was on and the input method was activated / deactivated / changed its input mode,\n"
+    @"#   or the Shift-toggle switch was turned off)\n";
 static NSString *const kLatencyLogGMarker = @"# G = the typing-pause decoder gate";  // the v3.2 line docs start here ...
-static NSString *const kLatencyLogNewestDoc = @"# Y = the correction entry";      // ... and this one is the newest
+static NSString *const kLatencyLogNewestDoc = @"# M = the input mode changed";      // ... and this one is the newest
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
@@ -157,6 +161,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 @synthesize legalEntryOfferedCount = _legalEntryOfferedCount;
 @synthesize legalEntryChosenCount = _legalEntryChosenCount;
 @synthesize legalEntryNotReadyCount = _legalEntryNotReadyCount;
+@synthesize englishModeCount = _englishModeCount;
 
 + (BOOL)runningUnderXCTest
 {
@@ -1044,6 +1049,17 @@ static const size_t kMaxEndToEndSamples = 4096;
     [self _appendTimestampedLine:@"Y" tail:[NSString stringWithFormat:@"\t%@\t%@\t%lu\t%@\t%@\n", event, slotText, (unsigned long)candidates, ready, trigger]];
 }
 
+- (void)noteInputModeChange:(NSString *)mode source:(NSString *)source
+{
+    if ([mode isEqualToString:@"en"]) {
+        ++_englishModeCount;
+    }
+    if (_logPath == nil) {
+        return;
+    }
+    [self _appendTimestampedLine:@"M" tail:[NSString stringWithFormat:@"\t%@\t%@\n", mode, source]];
+}
+
 - (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source
 {
     if (_logPath == nil) {
@@ -1192,7 +1208,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:g.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2b (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2c (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

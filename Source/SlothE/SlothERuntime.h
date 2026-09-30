@@ -198,6 +198,12 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 @property (readonly, nonatomic) NSUInteger legalEntryOfferedCount;
 @property (readonly, nonatomic) NSUInteger legalEntryChosenCount;
 @property (readonly, nonatomic) NSUInteger legalEntryNotReadyCount;
+/// v3.2c: one M line per input mode change (no text): mode = zh / en (the mode now), source = tap (a single
+/// Shift tap), tap_reading (a tap that turned a Zhuyin reading in progress into letters), reset (a switch was
+/// turned off, or the input method was activated / deactivated with English mode on).
+- (void)noteInputModeChange:(NSString *)mode source:(NSString *)source;
+/// Input mode changes to English (main thread).
+@property (readonly, nonatomic) NSUInteger englishModeCount;
 /// Pause-gate passes: finished (any outcome), applied to the buffer, applied and changed the shown text.
 @property (readonly, nonatomic) NSUInteger pauseGateRunCount;
 @property (readonly, nonatomic) NSUInteger pauseGateAppliedCount;

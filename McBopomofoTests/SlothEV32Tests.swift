@@ -4,6 +4,7 @@
 // queueing a marker job behind the work, never by sleeping.
 
 import CandidateUI
+import InputMethodKit
 import XCTest
 
 @testable import McBopomofo
@@ -153,7 +154,6 @@ final class SlothEPauseGateTests: SlothEV32TestCase {
     func gLines(_ runtime: SlothERuntime, _ path: String) throws -> [[String]] {
         runtime.flushLog()
         let text = try String(contentsOfFile: path, encoding: .utf8)
-        XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII || $0.value == 0x3105 || true })
         return text.split(separator: "\n").filter { $0.hasPrefix("G\t") }.map {
             $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
         }
@@ -368,10 +368,11 @@ final class SlothEPauseGateTests: SlothEV32TestCase {
         try? FileManager.default.removeItem(atPath: dir)
     }
 
-    func testScanChangedRate() {
+    func testScanChangedRate() throws {
         let limit = Int(ProcessInfo.processInfo.environment["SLOTHE_V32_SCAN"] ?? "") ?? 0
         if limit == 0 { return }  // opt-in: TEST_RUNNER_SLOTHE_V32_SCAN=500
-        let runtime = makeRuntime()
+        let (dir, log) = tempLog()
+        let runtime = makeRuntime(logPath: log)
         var changed = 0
         var rows = 0
         for (i, readings) in Self.sentences.prefix(limit).enumerated() where readings.count >= 3 {
@@ -389,9 +390,21 @@ final class SlothEPauseGateTests: SlothEV32TestCase {
             rig.handler.clear()
         }
         NSLog("SLOTHE_V32A scan sentences=%d changed=%d", rows, changed)
+        // the cost of a pass, from the G lines (Debug -O0 host unless built optimized)
+        let g = try gLines(runtime, log)
+        func pct(_ v: [Double], _ p: Double) -> Double {
+            let s = v.sorted()
+            return s.isEmpty ? 0 : s[min(s.count - 1, Int(p / 100 * Double(s.count - 1) + 0.5))]
+        }
+        let e2e = g.compactMap { Double($0[11]) }
+        let dec = g.map { Double($0[10]) ?? 0 }
+        let req = g.map { Double($0[3]) ?? 0 }
+        let chars = g.map { Double($0[8]) ?? 0 }
+        NSLog("SLOTHE_V32A scan passes=%d applied=%d changed_chars_total=%d | e2e ms p50 %.1f p95 %.1f max %.1f | decoder ms p50 %.1f p95 %.1f | requests mean %.1f",
+              g.count, e2e.count, Int(chars.reduce(0, +)), pct(e2e, 50), pct(e2e, 95), pct(e2e, 100), pct(dec, 50), pct(dec, 95), req.reduce(0, +) / Double(max(g.count, 1)))
+        try? FileManager.default.removeItem(atPath: dir)
     }
 }
-
 
 // MARK: - v3.2b legal-but-wrong correction entry
 
@@ -674,5 +687,562 @@ final class SlothETypoEntryTests: SlothEV32TestCase {
             rig.handler.clear()
         }
         NSLog("SLOTHE_V32B scan typos=%d offered=%d", rows, hits)
+    }
+}
+
+// MARK: - v3.2c single-tap Shift toggles Chinese / English
+
+/// A mouse the detector can be told about: no real pointer activity may change a test's outcome.
+final class FakeMouse {
+    var downCount: UInt32 = 0
+    var buttonDown = false
+    var activity: MouseActivity {
+        MouseActivity(downCount: { self.downCount }, buttonIsDown: { self.buttonDown })
+    }
+}
+
+final class ShiftTapDetectorTests: XCTestCase {
+    let mouse = FakeMouse()
+    lazy var d = ShiftTapDetector(mouse: mouse.activity)
+
+    func testAMouseClickBetweenShiftDownAndUpCancels() {
+        // Shift + click / drag to extend a selection, released within 250 ms
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 10))
+        mouse.downCount += 1
+        XCTAssertFalse(d.flagsChanged([], timestamp: 10.1))
+        // the next press is a fresh one (the click was before its Shift down)
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 11))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 11.1))
+        // right and other buttons count the same way: all are summed into downCount
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 12))
+        mouse.downCount &+= 5
+        XCTAssertFalse(d.flagsChanged([], timestamp: 12.05))
+    }
+
+    func testAButtonHeldAtShiftDownOrAtShiftUpCancels() {
+        mouse.buttonDown = true  // dragging, then Shift pressed
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 1))
+        mouse.buttonDown = false
+        XCTAssertFalse(d.flagsChanged([], timestamp: 1.1))
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 2))  // button pressed after, still down at the release
+        mouse.buttonDown = true
+        XCTAssertFalse(d.flagsChanged([], timestamp: 2.1))
+        mouse.buttonDown = false
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 3))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 3.1))
+    }
+
+    func testTheSystemMouseSourceNeedsNoPermissionAndCountsClicks() {
+        // the real source: callable, monotonic (a wrapping UInt32 sum), and no button is down in a test run
+        let a = MouseActivity.system.downCount()
+        let b = MouseActivity.system.downCount()
+        XCTAssertLessThanOrEqual(b &- a, 1000)
+        _ = MouseActivity.system.buttonIsDown()
+    }
+
+    func flags(_ f: NSEvent.ModifierFlags = []) -> NSEvent.ModifierFlags { f }
+
+    func testDownUpWithin250msIsATap() {
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 100))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 100.249))
+        // exactly 250 ms still counts, a hair more does not
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 200))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 200.25))
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 300))
+        XCTAssertFalse(d.flagsChanged([], timestamp: 300.251))
+    }
+
+    func testAKeyDownInBetweenCancels() {
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 10))
+        d.keyDown()  // Shift + a letter
+        XCTAssertFalse(d.flagsChanged([], timestamp: 10.1))
+        // and the next press is a fresh one
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 11))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 11.1))
+    }
+
+    func testAKeyDownWithNoShiftDownDoesNotBreakTheNextTap() {
+        d.keyDown()
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 5))
+        XCTAssertTrue(d.flagsChanged([], timestamp: 5.05))
+    }
+
+    func testOtherModifiersCancel() {
+        // Command held first (Cmd+Shift shortcuts)
+        XCTAssertFalse(d.flagsChanged([.command], timestamp: 1))
+        XCTAssertFalse(d.flagsChanged([.command, .shift], timestamp: 1.05))
+        XCTAssertFalse(d.flagsChanged([.command], timestamp: 1.1))
+        XCTAssertFalse(d.flagsChanged([], timestamp: 1.15))
+        // Control pressed while Shift is held
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 2))
+        XCTAssertFalse(d.flagsChanged([.shift, .control], timestamp: 2.05))
+        XCTAssertFalse(d.flagsChanged([.control], timestamp: 2.1))
+        XCTAssertFalse(d.flagsChanged([], timestamp: 2.15))
+        // Option still held at the release
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 3))
+        XCTAssertFalse(d.flagsChanged([.option], timestamp: 3.05))
+        // Caps Lock does not matter
+        XCTAssertFalse(d.flagsChanged([.capsLock, .shift], timestamp: 4))
+        XCTAssertTrue(d.flagsChanged([.capsLock], timestamp: 4.05))
+    }
+
+    func testTheSecondShiftKeyIsNotANewPress() {
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 1))       // left Shift
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 1.05))    // right Shift too: the flag is still set
+        XCTAssertTrue(d.flagsChanged([], timestamp: 1.1))            // both released: one tap
+        // a hold longer than 250 ms, however it ends, is not a tap
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 2))
+        XCTAssertFalse(d.flagsChanged([], timestamp: 2.6))
+    }
+
+    func testResetForgetsAPressInProgress() {
+        XCTAssertFalse(d.flagsChanged([.shift], timestamp: 1))
+        d.reset()
+        XCTAssertFalse(d.flagsChanged([], timestamp: 1.05))  // the release of a press it never saw
+    }
+
+    func testSyntheticFlagsChangedEventsCarryTheirTimestamp() {
+        func event(_ f: NSEvent.ModifierFlags, _ t: TimeInterval) -> NSEvent {
+            NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: f, timestamp: t, windowNumber: 0, context: nil,
+                             characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 56)!
+        }
+        let down = event([.shift], 50), up = event([], 50.2)
+        XCTAssertFalse(d.flagsChanged(down.modifierFlags, timestamp: down.timestamp))
+        XCTAssertTrue(d.flagsChanged(up.modifierFlags, timestamp: up.timestamp))
+    }
+}
+
+final class SlothEEnglishModeTests: SlothEV32TestCase {
+    var savedShift = true
+    var savedLetter = 0
+    var savedHalf = false
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        savedShift = Preferences.slothEShiftToggleEnabled
+        savedLetter = Preferences.letterBehavior
+        savedHalf = Preferences.halfWidthPunctuationEnabled
+        Preferences.slothEPauseGateEnabled = false
+        Preferences.slothETypoEntryEnabled = false
+        Preferences.slothEShiftToggleEnabled = true
+        Preferences.letterBehavior = 0
+        Preferences.halfWidthPunctuationEnabled = false  // English mode is half-width whatever this says
+    }
+
+    override func tearDownWithError() throws {
+        Preferences.slothEShiftToggleEnabled = savedShift
+        Preferences.letterBehavior = savedLetter
+        Preferences.halfWidthPunctuationEnabled = savedHalf
+        try super.tearDownWithError()
+    }
+
+    func tap(_ rig: Rig) -> Bool {
+        rig.handler.slothEToggleEnglishMode(from: rig.delegate.state) { rig.delegate.take($0) }
+    }
+
+    /// One printable key the way a keyboard sends it: the character is what the event carries.
+    func press(_ rig: Rig, _ text: String, flags: NSEvent.ModifierFlags = []) -> Bool {
+        let input = KeyHandlerInput(inputText: text, keyCode: 0, charCode: text.utf16.first!, flags: flags, isVerticalMode: false)
+        return rig.handler.handle(input: input, state: rig.delegate.state) { rig.delegate.take($0) } errorCallback: { rig.beeps += 1 }
+    }
+
+    func testTheToggleWorksInTheEmptyStateAndLettersKeepTheirCase() {
+        let rig = Rig(makeRuntime())
+        XCTAssertFalse(rig.handler.slothEEnglishMode)
+        XCTAssertTrue(tap(rig))
+        XCTAssertTrue(rig.handler.slothEEnglishMode)
+        _ = press(rig, "H", flags: .shift)
+        for c in "ello" { _ = press(rig, String(c)) }
+        XCTAssertEqual(rig.buffer, "Hello")
+        // Caps Lock on: the letters are upper case and go into the buffer (no direct commit)
+        for c in "WORLD" { _ = press(rig, String(c), flags: .capsLock) }
+        XCTAssertEqual(rig.buffer, "HelloWORLD")
+        XCTAssertTrue(rig.delegate.committed.isEmpty)
+        rig.enter()
+        XCTAssertEqual(rig.delegate.committed.last, "HelloWORLD")
+        XCTAssertTrue(rig.handler.slothEEnglishMode, "the mode stays after Return")
+    }
+
+    func testDigitsSpaceAndHalfWidthPunctuationAreLiterals() {
+        let rig = Rig(makeRuntime())
+        _ = tap(rig)
+        for c in "a1 b,.;'/[]!?" { _ = press(rig, String(c), flags: "!?".contains(c) ? .shift : []) }
+        XCTAssertEqual(rig.buffer, "a1 b,.;'/[]!?")
+        // Shift + Space is a space; Shift + Return commits like Return
+        _ = press(rig, " ", flags: .shift)
+        XCTAssertEqual(rig.buffer, "a1 b,.;'/[]!? ")
+        let input = KeyHandlerInput(inputText: " ", keyCode: 0, charCode: 13, flags: [.shift], isVerticalMode: false)
+        _ = rig.handler.handle(input: input, state: rig.delegate.state) { rig.delegate.take($0) } errorCallback: {}
+        XCTAssertEqual(rig.delegate.committed.last, "a1 b,.;'/[]!? ")
+    }
+
+    func testASpaceWithNoBufferGoesToTheApp() {
+        let rig = Rig(makeRuntime())
+        _ = tap(rig)
+        XCTAssertFalse(press(rig, " "))
+        XCTAssertFalse(press(rig, " ", flags: .shift))
+    }
+
+    func testShortcutsAndTheKeypadAreLeftAlone() {
+        let rig = Rig(makeRuntime())
+        _ = tap(rig)
+        XCTAssertFalse(press(rig, "c", flags: .command))
+        XCTAssertFalse(press(rig, "a", flags: .option))
+        XCTAssertEqual(rig.buffer, "")
+    }
+
+    func testChineseAndEnglishMixInOneBuffer() {
+        let rig = Rig(makeRuntime())
+        rig.type("su3")             // 你
+        XCTAssertTrue(tap(rig))     // English: the buffer stays
+        XCTAssertEqual(rig.buffer, "你")
+        for c in "abc 1" { _ = press(rig, String(c)) }
+        XCTAssertTrue(tap(rig))     // back to Chinese
+        rig.type("cl3")             // 好
+        XCTAssertEqual(rig.buffer, "你abc 1好")
+        rig.drain()                 // the pipeline ran over the mixed buffer: readings the encoder maps to <unk>
+        XCTAssertEqual(rig.buffer, "你abc 1好")
+        rig.enter()
+        XCTAssertEqual(rig.delegate.committed.last, "你abc 1好")
+    }
+
+    func testShiftLetterInChineseModeGoesIntoTheBufferInsteadOfCommitting() {
+        let rig = Rig(makeRuntime())
+        rig.type("su3")
+        XCTAssertTrue(press(rig, "A", flags: .shift))
+        XCTAssertEqual(rig.buffer, "你A")
+        XCTAssertTrue(rig.delegate.committed.isEmpty)
+        // with the switch off: upstream behaviour (commits the buffer, the letter goes to the app)
+        Preferences.slothEShiftToggleEnabled = false
+        let off = Rig(makeRuntime())
+        off.type("su3")
+        XCTAssertFalse(press(off, "A", flags: .shift))
+        XCTAssertTrue(off.delegate.state is InputState.Empty, "the buffer is released (the controller commits it) and the letter goes to the app")
+        // and from the Empty state
+        XCTAssertFalse(press(Rig(makeRuntime()), "A", flags: .shift))
+        Preferences.slothEShiftToggleEnabled = true
+        let empty = Rig(makeRuntime())
+        XCTAssertTrue(press(empty, "A", flags: .shift))
+        XCTAssertEqual(empty.buffer, "A")
+    }
+
+    func testAZhuyinReadingInProgressBecomesLettersAndCancelsTheTypoJob() {
+        let runtime = makeRuntime()
+        let rig = Rig(runtime)
+        rig.type("su")              // ㄋㄧ, no tone yet: a reading in progress
+        XCTAssertEqual(rig.buffer, "ㄋㄧ")
+        XCTAssertTrue(tap(rig))
+        XCTAssertEqual(rig.buffer, "su")
+        XCTAssertTrue(rig.handler.slothEEnglishMode)
+        rig.type("d")               // English now: "sud"
+        XCTAssertEqual(rig.buffer, "sud")
+        // an illegal reading in progress: the correction-window job goes with it
+        let rig2 = Rig(runtime)
+        rig2.type("1m4")            // ㄅㄩˋ, not a reading: the job started
+        XCTAssertEqual(rig2.handler.slothETypoJobsStarted, 1)
+        XCTAssertTrue(tap(rig2))
+        XCTAssertEqual(rig2.buffer, "1m4")
+        rig2.type("x")
+        XCTAssertEqual(rig2.buffer, "1m4x")
+        XCTAssertEqual(rig2.handler.slothETypoJobsStarted, 1, "no new job: the reading is English now")
+    }
+
+    func testTheModeShowsInTheMarkedTextAndItsStateIsRestricted() {
+        let rig = Rig(makeRuntime())
+        rig.type("su3")
+        func underline() -> Int {
+            let inputting = rig.delegate.state as! InputState.Inputting
+            return inputting.attributedString.attribute(.underlineStyle, at: 0, effectiveRange: nil) as! Int
+        }
+        let chinese = underline()
+        XCTAssertEqual(chinese, NSUnderlineStyle.single.rawValue)
+        XCTAssertTrue(tap(rig))
+        XCTAssertEqual(underline(), NSUnderlineStyle.thick.rawValue)
+        XCTAssertTrue(tap(rig))
+        XCTAssertEqual(underline(), chinese)
+        // not in a candidate window
+        rig.down()
+        XCTAssertTrue(rig.delegate.state is InputState.ChoosingCandidate)
+        XCTAssertFalse(tap(rig))
+        XCTAssertFalse(rig.handler.slothEEnglishMode)
+    }
+
+    func testSwitchOffMeansNoToggleAndTurningItOffLeavesEnglishMode() {
+        let rig = Rig(makeRuntime())
+        _ = tap(rig)
+        XCTAssertTrue(rig.handler.slothEEnglishMode)
+        _ = Preferences.toggleSlothEShiftToggleEnabled()  // off, with the notification the handlers listen to
+        rig.drain()
+        XCTAssertFalse(rig.handler.slothEEnglishMode)
+        XCTAssertFalse(tap(rig))
+        _ = Preferences.toggleSlothEShiftToggleEnabled()
+    }
+
+    func testShiftLetterWithAReadingInProgressConvertsItInsteadOfBeeping() {
+        let rig = Rig(makeRuntime())
+        rig.type("su")              // ㄋㄧ, no tone yet: a reading in progress
+        XCTAssertEqual(rig.buffer, "ㄋㄧ")
+        rig.beeps = 0
+        XCTAssertTrue(press(rig, "A", flags: .shift))
+        XCTAssertEqual(rig.buffer, "suA", "the reading became its letters, then the capital")
+        XCTAssertEqual(rig.beeps, 0)
+        XCTAssertFalse(rig.handler.slothEEnglishMode, "still Chinese mode")
+        rig.type("su3")             // Chinese goes on
+        XCTAssertEqual(rig.buffer, "suA你")
+        // a tone-only reading and an illegal one; the correction-window job goes with the reading
+        let tone = Rig(makeRuntime())
+        tone.type("3")
+        XCTAssertTrue(press(tone, "Q", flags: .shift))
+        XCTAssertEqual(tone.buffer, "3Q")
+        let illegal = Rig(makeRuntime())
+        illegal.type("1m4")         // ㄅㄩˋ is not a reading: a job was started
+        XCTAssertEqual(illegal.handler.slothETypoJobsStarted, 1)
+        XCTAssertTrue(press(illegal, "B", flags: .shift))
+        XCTAssertEqual(illegal.buffer, "1m4B")
+        XCTAssertEqual(illegal.handler.slothETypoJobsStarted, 1, "cancelled, not restarted")
+        // with the switch off the old behaviour stays: the key is not a literal
+        Preferences.slothEShiftToggleEnabled = false
+        let off = Rig(makeRuntime())
+        off.type("su")
+        XCTAssertFalse(press(off, "A", flags: .shift), "upstream: not handled, the buffer is released")
+        Preferences.slothEShiftToggleEnabled = true
+    }
+
+    func testTheCorrectionEntryIsOffByDefault() {
+        // the three switches with no stored value: pause gate and Shift toggle on, the entry off
+        let keys = ["SlothEPauseGateEnabled", "SlothETypoEntryEnabled", "SlothEShiftToggleEnabled"]
+        let old = keys.map { UserDefaults.standard.object(forKey: $0) }
+        keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        XCTAssertTrue(Preferences.slothEPauseGateEnabled)
+        XCTAssertTrue(Preferences.slothEShiftToggleEnabled)
+        XCTAssertFalse(Preferences.slothETypoEntryEnabled, "the entry needs re-tuning at the last syllable before it is on")
+        Preferences.slothEPauseGateEnabled = false  // (this class runs without the gate)
+        defer {
+            for (k, v) in zip(keys, old) {
+                if let v = v { UserDefaults.standard.set(v, forKey: k) } else { UserDefaults.standard.removeObject(forKey: k) }
+            }
+        }
+        // nothing is computed and an installed entry never reaches a window
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(["ㄋㄧˇ", "ㄏㄠˇ", "ㄇㄚ"])
+        rig.drain()
+        rig.fires.last?()
+        rig.left()
+        rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+        rig.down()
+        let list = (rig.delegate.state as? InputState.ChoosingCandidate)?.candidates ?? []
+        XCTAssertFalse(list.isEmpty)
+        XCTAssertTrue(list.allSatisfy { !$0.isLegalTypoEntry })
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 0)
+    }
+
+    func testModeChangesAreLoggedWithoutText() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = makeRuntime(logPath: log)
+        let rig = Rig(runtime)
+        rig.type("su")              // a reading in progress
+        XCTAssertTrue(tap(rig))     // English, the reading becomes letters
+        XCTAssertTrue(tap(rig))     // Chinese
+        XCTAssertTrue(tap(rig))     // English
+        rig.handler.slothEEnglishMode = false  // the controller's reset (activate / deactivate / mode change)
+        rig.handler.slothEEnglishMode = false  // already off: nothing to log
+        XCTAssertEqual(runtime.englishModeCount, 2)
+        runtime.flushLog()
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        let rows = text.split(separator: "\n").filter { $0.hasPrefix("M\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        // M time mode source
+        XCTAssertEqual(rows.map { $0[2] }, ["en", "zh", "en", "zh"], "\(rows)")
+        XCTAssertEqual(rows.map { $0[3] }, ["tap_reading", "tap", "tap", "reset"])
+        XCTAssertTrue(text.split(separator: "\n").filter { !$0.hasPrefix("#") }.allSatisfy { $0.unicodeScalars.allSatisfy { $0.isASCII } }, "no typed text in the log")
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testThePauseGateAndTheCorrectionEntryIgnoreLiterals() {
+        Preferences.slothEPauseGateEnabled = true
+        Preferences.slothETypoEntryEnabled = true
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(["ㄋㄧˇ"])
+        _ = tap(rig)
+        for c in "hello" { _ = press(rig, String(c)) }
+        rig.drain()
+        rig.firePause()  // the cursor is on a literal: no entry job, the gate finds nothing to check
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 0)
+        XCTAssertEqual(rig.buffer, "你hello")
+    }
+}
+
+// MARK: - the controller's event path (v3.2d)
+
+/// A client the controller can talk to: it records the marked text and what was committed.
+final class FakeIMKClient: NSObject, IMKTextInput {
+    var marked: [NSAttributedString] = []
+    var committed: [String] = []
+    func insertText(_ string: Any!, replacementRange: NSRange) { committed.append(String(describing: string ?? "")) }
+    func setMarkedText(_ string: Any!, selectionRange: NSRange, replacementRange: NSRange) {
+        if let a = string as? NSAttributedString { marked.append(a) } else { marked.append(NSAttributedString(string: String(describing: string ?? ""))) }
+    }
+    func selectedRange() -> NSRange { NSRange(location: 0, length: 0) }
+    func markedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func attributedSubstring(from range: NSRange) -> NSAttributedString! { NSAttributedString() }
+    func length() -> Int { 0 }
+    func characterIndex(for point: NSPoint, tracking mappingMode: IMKLocationToOffsetMappingMode, inMarkedRange: UnsafeMutablePointer<ObjCBool>!) -> Int { 0 }
+    func attributes(forCharacterIndex index: Int, lineHeightRectangle lineRect: UnsafeMutablePointer<NSRect>!) -> [AnyHashable: Any]! { [:] }
+    func validAttributesForMarkedText() -> [Any]! { [] }
+    func overrideKeyboard(withKeyboardNamed keyboardUniqueName: String!) {}
+    func selectMode(_ modeIdentifier: String!) {}
+    func supportsUnicode() -> Bool { true }
+    func bundleIdentifier() -> String! { "org.example.fake" }
+    func windowLevel() -> CGWindowLevel { 0 }
+    func supportsProperty(_ property: TSMDocumentPropertyTag) -> Bool { false }
+    func uniqueClientIdentifierString() -> String! { "fake" }
+    func string(from range: NSRange, actualRange: NSRangePointer!) -> String! { "" }
+    func firstRect(forCharacterRange aRange: NSRange, actualRange: NSRangePointer!) -> NSRect { .zero }
+}
+
+/// Drives McBopomofoInputMethodController.handle(_:client:) with real NSEvents: the Empty-state
+/// flagsChanged path of PLAN.md §17 M1. The controller is made without an IMKServer (a test host
+/// creates none), and its notification is replaced by a recorder (no window).
+final class SlothEShiftControllerTests: SlothEV32TestCase {
+    let mouse = FakeMouse()
+    var savedShift = true
+    var savedLetter = 0
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        savedShift = Preferences.slothEShiftToggleEnabled
+        savedLetter = Preferences.letterBehavior
+        Preferences.slothEShiftToggleEnabled = true
+        Preferences.letterBehavior = 0
+        Preferences.slothEPauseGateEnabled = false
+    }
+
+    override func tearDownWithError() throws {
+        Preferences.slothEShiftToggleEnabled = savedShift
+        Preferences.letterBehavior = savedLetter
+        try super.tearDownWithError()
+    }
+
+    final class Setup {
+        let controller: McBopomofoInputMethodController
+        let client = FakeIMKClient()
+        var announcements: [String] = []
+        var clock: TimeInterval = 1000
+
+        init(_ mouse: FakeMouse) {
+            controller = McBopomofoInputMethodController(server: nil, delegate: nil, client: nil)
+            controller.keyHandler.slothERuntime = nil  // stock handler: nothing here needs the models
+            controller.shiftTapDetector = ShiftTapDetector(mouse: mouse.activity)
+            controller.announceModeChange = { [unowned self] in self.announcements.append($0) }
+            controller.currentClient = client
+        }
+
+        func flags(_ f: NSEvent.ModifierFlags, after seconds: TimeInterval = 0.05) -> Bool {
+            clock += seconds
+            let e = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: f, timestamp: clock, windowNumber: 0, context: nil,
+                                     characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 56)!
+            return controller.handle(e, client: client)
+        }
+
+        @discardableResult
+        func key(_ text: String, flags f: NSEvent.ModifierFlags = [], keyCode: UInt16 = 0) -> Bool {
+            clock += 0.02
+            let e = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: f, timestamp: clock, windowNumber: 0, context: nil,
+                                     characters: text, charactersIgnoringModifiers: text.lowercased(), isARepeat: false, keyCode: keyCode)!
+            return controller.handle(e, client: client)
+        }
+
+        var buffer: String { (controller.state as? InputState.Inputting)?.composingBuffer ?? "" }
+        var english: Bool { controller.keyHandler.slothEEnglishMode }
+    }
+
+    func setup() throws -> Setup {
+        let s = Setup(mouse)
+        XCTAssertNotNil(s.controller)
+        return s
+    }
+
+    func testAShiftTapInTheEmptyStateTogglesTheMode() throws {
+        let s = try setup()
+        XCTAssertTrue(s.controller.state is InputState.Empty)
+        XCTAssertFalse(s.flags([.shift]), "the press itself is not consumed in the Empty state")
+        XCTAssertTrue(s.flags([], after: 0.1), "the release that completes a tap is")
+        XCTAssertTrue(s.english)
+        XCTAssertEqual(s.announcements, [NSLocalizedString("English Mode", comment: "")])
+        XCTAssertFalse(s.flags([.shift]))
+        XCTAssertTrue(s.flags([], after: 0.1))
+        XCTAssertFalse(s.english)
+        XCTAssertEqual(s.announcements.count, 2)
+        XCTAssertEqual(s.announcements.last, NSLocalizedString("Chinese Mode", comment: ""))
+    }
+
+    func testEnglishTypingThroughTheControllerShowsTheModeInTheMarkedText() throws {
+        let s = try setup()
+        _ = s.flags([.shift]); _ = s.flags([], after: 0.1)
+        XCTAssertTrue(s.english)
+        XCTAssertTrue(s.key("h"))
+        XCTAssertTrue(s.key("i"))
+        XCTAssertEqual(s.buffer, "hi")
+        let underline = s.client.marked.last?.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(underline, NSUnderlineStyle.thick.rawValue)
+        // a tap with a non-empty buffer keeps it and switches the mode back; the marked text turns thin
+        _ = s.flags([.shift]); _ = s.flags([], after: 0.1)
+        XCTAssertFalse(s.english)
+        XCTAssertEqual(s.buffer, "hi")
+        let after = s.client.marked.last?.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int
+        XCTAssertEqual(after, NSUnderlineStyle.single.rawValue)
+        // Return commits what is shown
+        XCTAssertTrue(s.key("\r", keyCode: 36))
+        XCTAssertEqual(s.client.committed, ["hi"])
+    }
+
+    func testAKeyMouseOrLongPressBetweenShiftDownAndUpIsNotATap() throws {
+        let s = try setup()
+        // a key: Shift + A (a capital), then the release
+        _ = s.flags([.shift])
+        _ = s.key("A", flags: [.shift])
+        _ = s.flags([], after: 0.05)  // (with a buffer every flagsChanged is swallowed, tap or not)
+        XCTAssertFalse(s.english)
+        XCTAssertEqual(s.buffer, "A", "Shift + letter went into the buffer (M6)")
+        s.controller.keyHandler.clear()
+        s.controller.state = InputState.Empty()
+        // the mouse: Shift down, a click, Shift up
+        _ = s.flags([.shift])
+        mouse.downCount += 1
+        XCTAssertFalse(s.flags([], after: 0.05))
+        XCTAssertFalse(s.english)
+        // a button still held at the release
+        _ = s.flags([.shift])
+        mouse.buttonDown = true
+        XCTAssertFalse(s.flags([], after: 0.05))
+        mouse.buttonDown = false
+        XCTAssertFalse(s.english)
+        // held for more than 250 ms
+        _ = s.flags([.shift])
+        XCTAssertFalse(s.flags([], after: 0.3))
+        XCTAssertFalse(s.english)
+        XCTAssertTrue(s.announcements.isEmpty)
+        // and a clean tap right after all that still works
+        _ = s.flags([.shift])
+        XCTAssertTrue(s.flags([], after: 0.05))
+        XCTAssertTrue(s.english)
+    }
+
+    func testTheSwitchOffAndOtherInputModesLeaveShiftAlone() throws {
+        let s = try setup()
+        Preferences.slothEShiftToggleEnabled = false
+        _ = s.flags([.shift])
+        XCTAssertFalse(s.flags([], after: 0.05), "off: the old Empty-state answer, false")
+        XCTAssertFalse(s.english)
+        Preferences.slothEShiftToggleEnabled = true
+        // a candidate window is up: the tap is ignored (and, like every flagsChanged, swallowed)
+        s.key("s"); s.key("u"); s.key("3")
+        XCTAssertTrue(s.controller.state is InputState.Inputting)
+        s.key(" ", keyCode: 49)
+        XCTAssertTrue(s.controller.state is InputState.ChoosingCandidate, "\(s.controller.state)")
+        _ = s.flags([.shift])
+        XCTAssertTrue(s.flags([], after: 0.05))
+        XCTAssertFalse(s.english)
+        XCTAssertTrue(s.announcements.isEmpty)
     }
 }

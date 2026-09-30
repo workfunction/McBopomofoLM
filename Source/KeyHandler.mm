@@ -179,6 +179,7 @@ struct SlothELegalJob {
 @synthesize slothETypoWaitMilliseconds = _slothETypoWaitMilliseconds;
 @synthesize slothEPauseDelayMilliseconds = _slothEPauseDelayMilliseconds;
 @synthesize slothEPauseScheduler = _slothEPauseScheduler;
+@synthesize slothEEnglishMode = _slothEnglishMode;
 
 - (NSString *)inputMode
 {
@@ -601,7 +602,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
 
     // Caps Lock processing : if Caps Lock is on, temporarily disable bopomofo.
     // (McBopomofoLM: the condition is shared with _slothEKeyMayStartBuffer.)
-    if (SlothECapsLockCommitsDirectly(input)) {
+    if (![self _slothEEnglishModeActive] && SlothECapsLockCommitsDirectly(input)) {  // v3.2c D3: English mode keeps the event's case
         // process all possible combination, we hope.
         [self clear];
         InputStateEmpty *emptyState = [[InputStateEmpty alloc] init];
@@ -683,6 +684,11 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
 
     BOOL keyConsumedByReading = NO;
     BOOL skipBpmfHandling = input.isReservedKey || input.isControlHold;
+
+    // McBopomofoLM v3.2c: English mode, and Shift + letter in Chinese mode: a literal in the composing buffer.
+    if ([self _slothEHandleLiteralInput:input state:state stateCallback:stateCallback errorCallback:errorCallback]) {
+        return YES;
+    }
 
     // McBopomofoLM v3.1b: Space or Down on an illegal reading kept in the
     // composer opens the correction window instead of beeping.
@@ -945,7 +951,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
             stateCallback(empty);
             return YES;
         }
-        if (Preferences.shiftEnterEnabled && _inputMode == InputModeBopomofo && input.isShiftHold &&
+        if (Preferences.shiftEnterEnabled && _inputMode == InputModeBopomofo && input.isShiftHold && ![self _slothEEnglishModeActive] &&
             [state isKindOfClass:[InputStateInputting class]]) {
             return [self handleAssociatedPhraseWithState:(InputStateInputting *)state useVerticalMode:input.useVerticalMode stateCallback:stateCallback errorCallback:errorCallback autoTriggered:NO maxCandidateCount:0];
         }
@@ -2774,6 +2780,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     NSInteger cursorIndex = head.length + reading.length;
     InputStateInputting *newState = [[InputStateInputting alloc] initWithComposingBuffer:composedText cursorIndex:cursorIndex];
     newState.tooltip = tooltip;
+    newState.englishMode = [self _slothEEnglishModeActive];
     return newState;
 }
 
@@ -3093,7 +3100,7 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
 // Control, Space / Return / Tab / Esc / Backspace, arrows and function keys.
 - (BOOL)_slothEKeyMayStartBuffer:(KeyHandlerInput *)input
 {
-    if (input.inputText.length == 0 || SlothEIsFunctionKey(input) || SlothECapsLockCommitsDirectly(input)) {
+    if (input.inputText.length == 0 || SlothEIsFunctionKey(input) || (![self _slothEEnglishModeActive] && SlothECapsLockCommitsDirectly(input))) {
         return NO;
     }
     UniChar c = input.charCode;
@@ -3171,6 +3178,10 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
 // what the switch now asks for. User picks are grid state and stay.
 - (void)_slothEPreferencesDidChange:(NSNotification *)notification
 {
+    if (_slothEnglishMode && !Preferences.slothEShiftToggleEnabled) {  // v3.2c: off = the upstream Shift behaviour
+        _slothEnglishMode = NO;
+        [_slothERuntime noteInputModeChange:@"zh" source:@"reset"];
+    }
     _slothLastPins.clear();
     [self _slothEResetPauseGate];
     if ([self _activeSlothEEngine] == nullptr) {
@@ -3812,6 +3823,114 @@ static NSUInteger SlothECandidatePageSize(void)
     [self _slothESchedulePauseGate];
 }
 
+#pragma mark - SlothE English mode (v3.2c)
+
+// The controller turns the mode off when the field, the input method or the input mode changes.
+- (void)setSlothEEnglishMode:(BOOL)value
+{
+    if (_slothEnglishMode && !value) {
+        [_slothERuntime noteInputModeChange:@"zh" source:@"reset"];
+    }
+    _slothEnglishMode = value;
+}
+
+// The Shift-toggle switch is on and the input mode is Bopomofo (plain Bopomofo stays stock).
+- (BOOL)_slothEShiftFeatureActive
+{
+    return Preferences.slothEShiftToggleEnabled && [_inputMode isEqualToString:InputModeBopomofo];
+}
+
+- (BOOL)_slothEEnglishModeActive
+{
+    return _slothEnglishMode && [self _slothEShiftFeatureActive];
+}
+
+// A literal in the composing buffer: a reading "_lit_x" (McBopomofoLM) whose only unigram is the char.
+- (BOOL)_slothEInsertLiteral:(UniChar)c
+{
+    std::string reading = c == 0x20 ? std::string(" ") : std::string("_lit_") + std::string(1, static_cast<char>(c));
+    if (!_languageModel->hasUnigrams(reading) || !_grid->insertReading(reading)) {
+        return NO;
+    }
+    [self _walk];
+    return YES;
+}
+
+// English mode (D3 / D6, PLAN.md §18): every printable ASCII key goes into the buffer with the case the
+// event has (Caps Lock does not commit it): letters, digits, half-width punctuation, Space and
+// Shift + Space as a space. In Chinese mode, Shift + letter (Letter Behavior "output upper-case directly")
+// goes into the buffer too instead of committing it (M6). Command / Control / Option combinations and the
+// numeric keypad are left to the code below, as before. Space with nothing in the buffer is the app's.
+- (BOOL)_slothEHandleLiteralInput:(KeyHandlerInput *)input state:(InputState *)state stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
+{
+    if (![self _slothEShiftFeatureActive] || input.isControlHold || input.isCommandHold || input.isOptionHold || input.isNumericPad) {
+        return NO;
+    }
+    UniChar c = input.charCode;
+    if (c < 0x20 || c > 0x7e) {
+        return NO;
+    }
+    BOOL shiftLetter = input.isShiftHold && c >= 'A' && c <= 'Z' && Preferences.letterBehavior == 0;
+    if (!_slothEnglishMode && !shiftLetter) {
+        return NO;
+    }
+    if (c == 0x20 && _grid->length() == 0 && _bpmfReadingBuffer->isEmpty()) {
+        return NO;
+    }
+    if (!_languageModel->hasUnigrams(c == 0x20 ? std::string(" ") : std::string("_lit_") + std::string(1, static_cast<char>(c)))) {
+        return NO;  // (nothing to insert: leave a pending reading alone)
+    }
+    if (!_bpmfReadingBuffer->isEmpty()) {
+        // v3.2d: an unfinished Zhuyin reading (e.g. su, no tone yet) turns into the letters that spell it
+        // (as at a Shift tap, D5), then the literal follows: Shift + A after su gives suA, not a beep.
+        [self _slothEConvertPendingReadingToLetters];
+    }
+    if (![self _slothEInsertLiteral:c]) {
+        return NO;
+    }
+    stateCallback([self buildInputtingState]);
+    return YES;
+}
+
+// D5: a Zhuyin reading in progress becomes the letters that spell it on the current layout, in the buffer as English.
+- (void)_slothEConvertPendingReadingToLetters
+{
+    std::string keys;
+    const Formosa::Mandarin::BopomofoKeyboardLayout *layout = _bpmfReadingBuffer->keyboardLayout();
+    if (layout == Formosa::Mandarin::BopomofoKeyboardLayout::HanyuPinyinLayout()) {
+        keys = _bpmfReadingBuffer->composedString();  // the pinyin letters as typed
+    } else if (layout != nullptr) {
+        keys = layout->keySequenceFromSyllable(_bpmfReadingBuffer->syllable());
+    }
+    [self _slothECancelTypoJob:YES];
+    _bpmfReadingBuffer->clear();
+    for (char k : keys) {
+        [self _slothEInsertLiteral:static_cast<UniChar>(static_cast<unsigned char>(k))];
+    }
+}
+
+- (BOOL)slothEToggleEnglishModeFromState:(InputState *)state stateCallback:(void (^)(InputState *))stateCallback
+{
+    if (![self _slothEShiftFeatureActive]) {
+        return NO;
+    }
+    if (!([state isMemberOfClass:[InputStateEmpty class]] || [state isMemberOfClass:[InputStateEmptyIgnoringPreviousState class]] || [state isMemberOfClass:[InputStateInputting class]])) {
+        return NO;  // a window, marking, or another mode is up
+    }
+    BOOL toEnglish = !_slothEnglishMode;
+    NSString *source = @"tap";
+    if (toEnglish && !_bpmfReadingBuffer->isEmpty()) {
+        [self _slothEConvertPendingReadingToLetters];
+        source = @"tap_reading";
+    }
+    _slothEnglishMode = toEnglish;
+    [_slothERuntime noteInputModeChange:toEnglish ? @"en" : @"zh" source:source];
+    if (_grid->length() > 0 || !_bpmfReadingBuffer->isEmpty()) {
+        stateCallback([self buildInputtingState]);  // the marked text carries the mode
+    }
+    return YES;
+}
+
 // Keys whose outcome depends on the final walk: commits and candidate windows.
 - (BOOL)_slothEKeyNeedsSettledWalk:(KeyHandlerInput *)input
 {
@@ -3821,7 +3940,7 @@ static NSUInteger SlothECandidatePageSize(void)
     if (!_bpmfReadingBuffer->isEmpty()) {
         return NO;  // Space and the like still compose a syllable
     }
-    return input.charCode == 32 || input.isTab || input.isDown || input.isExtraChooseCandidateKey || (input.useVerticalMode && input.isVerticalModeOnlyChooseCandidateKey) || input.isControlHold;
+    return (input.charCode == 32 && ![self _slothEEnglishModeActive]) || input.isTab || input.isDown || input.isExtraChooseCandidateKey || (input.useVerticalMode && input.isVerticalModeOnlyChooseCandidateKey) || input.isControlHold;
 }
 
 // Makes _latestWalk the final in-walk result (encoder + decoder) for the

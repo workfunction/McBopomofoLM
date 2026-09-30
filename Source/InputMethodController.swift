@@ -54,6 +54,10 @@ class McBopomofoInputMethodController: IMKInputController {
     var currentClient: Any?
     var keyHandler: KeyHandler = KeyHandler()
     var state: InputState = InputState.Empty()
+    /// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English.
+    var shiftTapDetector = ShiftTapDetector()
+    /// Shows a mode change ("English Mode" / "Chinese Mode"); tests replace it (no window).
+    var announceModeChange: (String) -> Void = { NotifierController.notify(message: $0) }
 
     // Share the stored issues, so a set of issues is shown as notification only once.
     static var latestUserFileIssues: [String] = []
@@ -120,6 +124,10 @@ class McBopomofoInputMethodController: IMKInputController {
                 withTitle: NSLocalizedString("SlothE Wrong-Syllable Suggestion", comment: ""),
                 action: #selector(toggleSlothETypoEntry(_:)), keyEquivalent: "")
             typoEntryItem.state = Preferences.slothETypoEntryEnabled.state
+            let shiftToggleItem = menu.addItem(
+                withTitle: NSLocalizedString("SlothE Shift Toggles Chinese/English", comment: ""),
+                action: #selector(toggleSlothEShiftToggle(_:)), keyEquivalent: "")
+            shiftToggleItem.state = Preferences.slothEShiftToggleEnabled.state
         }
 
         // Only Bopomofo mode supports Bopomofo Font Annotation. If support is
@@ -209,6 +217,9 @@ class McBopomofoInputMethodController: IMKInputController {
 
         keyHandler.clear()
         keyHandler.syncWithPreferences()
+        // McBopomofoLM v3.2c: English mode belongs to the field that set it.
+        keyHandler.slothEEnglishMode = false
+        shiftTapDetector.reset()
         // McBopomofoLM v3.1a: a client/field change drops the carried context.
         keyHandler.slothEResetCarriedContext("activate")
         keyHandler.slothEClientID = (client as? IMKTextInput)?.bundleIdentifier()
@@ -221,6 +232,8 @@ class McBopomofoInputMethodController: IMKInputController {
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
         keyHandler.clear()
+        keyHandler.slothEEnglishMode = false
+        shiftTapDetector.reset()
         self.handle(state: .Deactivated(), client: client)
         keyHandler.slothEResetCarriedContext("deactivate")
     }
@@ -235,6 +248,8 @@ class McBopomofoInputMethodController: IMKInputController {
                 withKeyboardNamed: Preferences.basisKeyboardLayout)
             keyHandler.clear()
             keyHandler.inputMode = newInputMode
+            keyHandler.slothEEnglishMode = false
+            shiftTapDetector.reset()
             self.handle(state: .Empty(), client: client)
         }
 
@@ -265,7 +280,27 @@ class McBopomofoInputMethodController: IMKInputController {
             return false
         }
 
+        if event.type == .keyDown {
+            shiftTapDetector.keyDown()  // McBopomofoLM v3.2c: a key between Shift down and up is not a tap
+        }
+
         if event.type == .flagsChanged {
+            // McBopomofoLM v3.2c: a single tap of Shift (down and up within 250 ms, no key in between)
+            // toggles Chinese / English and keeps the composing buffer. Also with an empty buffer (M1).
+            if Preferences.slothEShiftToggleEnabled && keyHandler.inputMode == .bopomofo {
+                if shiftTapDetector.flagsChanged(event.modifierFlags, timestamp: event.timestamp),
+                    keyHandler.slothEToggleEnglishMode(
+                        from: state, stateCallback: { newState in self.handle(state: newState, client: client) })
+                {
+                    announceModeChange(
+                        keyHandler.slothEEnglishMode
+                            ? NSLocalizedString("English Mode", comment: "")
+                            : NSLocalizedString("Chinese Mode", comment: ""))
+                    return true
+                }
+            } else {
+                shiftTapDetector.reset()
+            }
             if state is InputState.Empty {
                 return false
             }
@@ -388,6 +423,11 @@ class McBopomofoInputMethodController: IMKInputController {
 
     @objc func toggleSlothETypoEntry(_ sender: Any?) {
         _ = Preferences.toggleSlothETypoEntryEnabled()
+    }
+
+    @objc func toggleSlothEShiftToggle(_ sender: Any?) {
+        _ = Preferences.toggleSlothEShiftToggleEnabled()
+        shiftTapDetector.reset()
     }
 
     @objc func togglePhraseReplacement(_ sender: Any?) {

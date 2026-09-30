@@ -36,12 +36,17 @@ class KeyHandlerBopomofoTests: XCTestCase {
     var handler = KeyHandler()
     var savedKeyboardLayout: KeyboardLayout = .standard
     var chineseConversionEnabled: Bool = false
+    var savedShiftToggle = true
 
     override func setUpWithError() throws {
         savedKeyboardLayout = Preferences.keyboardLayout
         chineseConversionEnabled = Preferences.chineseConversionEnabled
         Preferences.chineseConversionEnabled = false
         Preferences.keyboardLayout = .standard
+        // McBopomofoLM v3.2c: these are the upstream key handler's tests; its Shift behaviour
+        // (Shift + letter commits the buffer) is what the Shift-toggle switch turns back on when off.
+        savedShiftToggle = Preferences.slothEShiftToggleEnabled
+        Preferences.slothEShiftToggleEnabled = false
         LanguageModelManager.loadDataModels()
         handler = KeyHandler()
         handler.inputMode = .bopomofo
@@ -50,6 +55,7 @@ class KeyHandlerBopomofoTests: XCTestCase {
     override func tearDownWithError() throws {
         Preferences.chineseConversionEnabled = chineseConversionEnabled
         Preferences.keyboardLayout = savedKeyboardLayout
+        Preferences.slothEShiftToggleEnabled = savedShiftToggle
     }
 
     func testSyncWithPreferences() {

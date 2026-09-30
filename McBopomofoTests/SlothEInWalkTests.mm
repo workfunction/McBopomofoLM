@@ -1166,6 +1166,41 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
     XCTAssertGreaterThan(considered, 200u);
 }
 
+#pragma mark - v3.2c literal readings (English mode)
+
+// "_lit_" + one printable ASCII char (not space) is a reading whose only unigram is that char
+// (score 0): the composing buffer holds English letters, digits and half-width punctuation as literal
+// nodes. A space is the reading " " (already in the language model). Anything else is not a reading.
+- (void)testLiteralReadingsAreSynthesizedByTheLanguageModel
+{
+    XCTAssertTrue(gDataOnlyLM->isDataModelLoaded());
+    for (const char *c : { "a", "Z", "1", "0", ",", "-", "~", "!", "`", "_" }) {
+        std::string key = std::string("_lit_") + c;
+        XCTAssertTrue(gDataOnlyLM->hasUnigrams(key), @"%s", key.c_str());
+        auto unigrams = gDataOnlyLM->getUnigrams(key);
+        XCTAssertEqual(unigrams.size(), 1u);
+        if (unigrams.size() == 1) {
+            XCTAssertEqual(unigrams[0].value(), std::string(c));
+            XCTAssertEqual(unigrams[0].score(), 0.0);
+        }
+    }
+    for (const char *bad : { "_lit_", "_lit_ab", "_lit_ ", "_lit_\x7f", "_lit_\n", "lit_a", "_LIT_a", "_lit_é", "_lit_a-_lit_b" }) {
+        XCTAssertFalse(gDataOnlyLM->hasUnigrams(bad), @"%s", bad);
+        XCTAssertTrue(gDataOnlyLM->getUnigrams(bad).empty(), @"%s", bad);
+    }
+    // in a grid, mixed with Zhuyin: every node walks to what it holds; the encoder sees them like punctuation
+    std::vector<std::string> readings = { "_lit_H", "_lit_i", " ", "ㄋㄧˇ", "_lit_,", "_lit_1" };
+    auto grid = [self gridWithReadings:readings];
+    auto walk = grid->walk();
+    std::string text = McBopomofoSlothE::WalkText(walk);
+    XCTAssertTrue(text.compare(0, 3, "Hi ") == 0, @"%s", text.c_str());
+    XCTAssertTrue(text.size() > 3 && text.compare(text.size() - 2, 2, ",1") == 0, @"%s", text.c_str());
+    XCTAssertEqual(walk.nodes.size(), 6u);
+    for (const std::string &r : readings) {
+        XCTAssertEqual(gInWalkEngine->vocabulary().mapSyllable(r).how == McBopomofoSlothE::MapHow::kUnk, r != "ㄋㄧˇ", @"%s", r.c_str());
+    }
+}
+
 // v3.1a background pass with carried context on the real models (Core ML
 // encoder + decoder): the w7 dev chunks (first 150 sentences), each pass
 // with the app's own carried context vs none. Model work only; the key path

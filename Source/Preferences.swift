@@ -64,8 +64,10 @@ private let kSlothEDemoteShownCandidateKey = "SlothEDemoteShownCandidate"
 private let kSlothEDecoderEnabledKey = "SlothEDecoderEnabled"
 /// McBopomofoLM v3.2a: the full-sentence decoder gate after a typing pause (default on).
 private let kSlothEPauseGateEnabledKey = "SlothEPauseGateEnabled"
-/// McBopomofoLM v3.2b: the correction entry for a legal-but-wrong syllable in the candidate window (default on).
+/// McBopomofoLM v3.2b: the correction entry for a legal-but-wrong syllable in the candidate window (default OFF, v3.2d).
 private let kSlothETypoEntryEnabledKey = "SlothETypoEntryEnabled"
+/// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English without committing the buffer (default on).
+private let kSlothEShiftToggleEnabledKey = "SlothEShiftToggleEnabled"
 
 private let kDefaultCandidateListTextSize: CGFloat = 16
 private let kMinCandidateListTextSize: CGFloat = 12
@@ -250,6 +252,7 @@ class Preferences: NSObject {
             kSlothEDecoderEnabledKey,
             kSlothEPauseGateEnabledKey,
             kSlothETypoEntryEnabledKey,
+            kSlothEShiftToggleEnabledKey,
         ]
     }
 
@@ -528,14 +531,31 @@ extension Preferences {
     /// the last slot of page 1 offers the corrected reading, labelled with its
     /// Zhuyin (for example 媽 ㄇㄚ). Picking it replaces the reading. Off: the
     /// window is exactly the v3.1.2 one. Has no effect while the SlothE-T or
-    /// decoder switch is off.
-    @UserDefault(key: kSlothETypoEntryEnabledKey, defaultValue: true)
+    /// decoder switch is off. Default OFF (v3.2d): at the last syllable, where it runs while
+    /// typing, it offered a correction on 4.4 % of clean syllables and the intended one for 45.8 %
+    /// of typos (reports/v32-app.md), so it stays off until the threshold is re-tuned for that regime.
+    @UserDefault(key: kSlothETypoEntryEnabledKey, defaultValue: false)
     @objc static var slothETypoEntryEnabled: Bool
 
     @objc static func toggleSlothETypoEntryEnabled() -> Bool {
         slothETypoEntryEnabled = !slothETypoEntryEnabled
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothETypoEntryEnabled
+    }
+
+    /// McBopomofoLM v3.2c: a single tap of Shift (down and up within 250 ms, no key in
+    /// between) switches between Chinese and English input and leaves the composing
+    /// buffer as it is. In English mode letters (with their case), digits, space and
+    /// half-width punctuation go into the composing buffer; Return commits it. In both
+    /// modes Shift + letter goes into the buffer instead of committing it. Off: the
+    /// upstream Shift behaviour.
+    @UserDefault(key: kSlothEShiftToggleEnabledKey, defaultValue: true)
+    @objc static var slothEShiftToggleEnabled: Bool
+
+    @objc static func toggleSlothEShiftToggleEnabled() -> Bool {
+        slothEShiftToggleEnabled = !slothEShiftToggleEnabled
+        NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
+        return slothEShiftToggleEnabled
     }
 }
 

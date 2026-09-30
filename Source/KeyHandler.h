@@ -164,6 +164,15 @@ extern InputMode InputModePlainBopomofo;
 /// cursor, for this buffer and context, so the window placement and the pick can be
 /// tested without the models' opinion.
 - (void)slothEInstallLegalEntryForTestingWithReading:(NSString *)reading value:(NSString *)value;
+/// v3.2c English mode (Shift tap): letters keep their case and go into the composing buffer with digits,
+/// space and half-width punctuation as literal nodes (readings "_lit_x", McBopomofoLM); Return commits.
+/// The controller resets it on activate / deactivate / a mode change.
+@property (assign, nonatomic) BOOL slothEEnglishMode;
+/// The controller, when a single Shift tap completed in `state`: toggles the mode. Only in the Empty and plain
+/// composing states, Bopomofo mode, with the switch on. A Zhuyin reading in progress is turned into its
+/// letters (keySequenceFromSyllable) first, and the correction-window job is cancelled. Shows the composing
+/// buffer again (its marked text carries the mode). Returns whether the mode changed.
+- (BOOL)slothEToggleEnglishModeFromState:(InputState *)state stateCallback:(void (^)(InputState *))stateCallback;
 /// Client bundle identifier for the latency log's C lines (set on activate).
 @property (copy, nonatomic, nullable) NSString *slothEClientID;
 @end

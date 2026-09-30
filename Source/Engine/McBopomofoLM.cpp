@@ -38,6 +38,28 @@ namespace McBopomofo {
 static constexpr std::string_view kMacroPrefix = "MACRO@";
 static constexpr double kMacroScore = -8.0;
 
+// McBopomofoLM v3.2c (English mode): "_lit_" + one printable ASCII char (not
+// space; a space is the reading " ") is a reading whose only unigram is that
+// char, score 0. The grid holds English letters, digits and half-width
+// punctuation as literal nodes of the composing buffer; to the encoder they are
+// like punctuation (not a Zhuyin syllable: <unk>).
+static constexpr std::string_view kLiteralPrefix = "_lit_";
+
+static bool LiteralValue(const std::string& key, std::string* value) {
+  if (key.size() != kLiteralPrefix.size() + 1 ||
+      key.compare(0, kLiteralPrefix.size(), kLiteralPrefix) != 0) {
+    return false;
+  }
+  unsigned char c = static_cast<unsigned char>(key.back());
+  if (c < 0x21 || c > 0x7e) {
+    return false;
+  }
+  if (value != nullptr) {
+    *value = std::string(1, key.back());
+  }
+  return true;
+}
+
 void McBopomofoLM::loadLanguageModel(const char* languageModelDataPath) {
   if (languageModelDataPath) {
     languageModel_.close();
@@ -143,6 +165,13 @@ McBopomofoLM::getUnigrams(const std::string& key) {
     return spaceUnigrams;
   }
 
+  std::string literal;
+  if (LiteralValue(key, &literal)) {
+    std::vector<Formosa::Gramambular2::LanguageModel::Unigram> literalUnigrams;
+    literalUnigrams.emplace_back(literal, 0);
+    return literalUnigrams;
+  }
+
   std::vector<Formosa::Gramambular2::LanguageModel::Unigram> allUnigrams;
   std::vector<Formosa::Gramambular2::LanguageModel::Unigram> userUnigrams;
 
@@ -219,7 +248,7 @@ McBopomofoLM::getUnigrams(const std::string& key) {
 }
 
 bool McBopomofoLM::hasUnigrams(const std::string& key) {
-  if (key == " ") {
+  if (key == " " || LiteralValue(key, nullptr)) {
     return true;
   }
 

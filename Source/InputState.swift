@@ -313,6 +313,9 @@ class InputState: NSObject {
     @objc(InputStateInputting)
     class Inputting: NotEmpty {
         @objc var tooltip: String = ""
+        /// McBopomofoLM v3.2c: English mode is on (Shift tap). The mode shows in the marked
+        /// text: a thick underline under the whole composing buffer instead of a thin one.
+        @objc var englishMode: Bool = false
 
         @objc override init(composingBuffer: String, cursorIndex: UInt) {
             super.init(composingBuffer: composingBuffer, cursorIndex: cursorIndex)
@@ -322,7 +325,7 @@ class InputState: NSObject {
             let attributedSting = NSAttributedString(
                 string: composingBuffer,
                 attributes: [
-                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .underlineStyle: (englishMode ? NSUnderlineStyle.thick : NSUnderlineStyle.single).rawValue,
                     .markedClauseSegment: 0,
                 ])
             return attributedSting
