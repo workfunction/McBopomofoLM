@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <tuple>
 
 #include "Mandarin.h"
@@ -325,6 +326,207 @@ bool ScoreTypoWindow(Engine* engine, Decoder* decoder, std::vector<TypoCandidate
     return decoder->firstCharLogProb(lp, ch);
   };
   *entries = TypoWindowOrder(cands, enc, leftText.empty(), haveD ? &D : nullptr, source);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// v3.2b legal-but-wrong correction entry
+
+namespace {
+
+// typo/t2_e.cpp splitNeighbors(): the neighbor keys split by direction.
+struct DirectionTables {
+  std::map<char, std::string> row, diag;
+};
+
+const DirectionTables& Directions() {
+  static const DirectionTables tables = [] {
+    DirectionTables t;
+    const char* rows[4] = {"1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"};
+    for (int r = 0; r < 4; ++r) {
+      for (int c = 0; c < static_cast<int>(strlen(rows[r])); ++c) {
+        char k = rows[r][c];
+        auto nb = Neighbors().find(k);
+        if (nb == Neighbors().end()) continue;
+        for (char n : nb->second) {
+          bool row = false;
+          for (int d : {-1, 1}) {
+            if (c + d >= 0 && c + d < static_cast<int>(strlen(rows[r])) && rows[r][c + d] == n) row = true;
+          }
+          (row ? t.row : t.diag)[k] += n;
+        }
+      }
+    }
+    t.diag[' '] = Neighbors().at(' ');
+    return t;
+  }();
+  return tables;
+}
+
+std::vector<std::string> SingleChars(const std::vector<std::string>& values) {
+  std::vector<std::string> out;
+  for (const std::string& v : values) {
+    if (Utf8Length(v) == 1) out.push_back(v);
+  }
+  return out;
+}
+
+}  // namespace
+
+double LegalTypoLogWeight(NeighborDirection d) {
+  return d == NeighborDirection::kRow ? 0.0 : std::log(0.5);
+}
+
+std::vector<NeighborDirection> LegalTypoDirections(
+    const std::string& typed, const std::vector<TypoCandidate>& cands,
+    Formosa::Gramambular2::LanguageModel& lm) {
+  std::set<std::string> row, diag;
+  const std::string k = KeysOf(typed);
+  for (int pass = 0; pass < 2; ++pass) {
+    const std::map<char, std::string>& table = pass ? Directions().diag : Directions().row;
+    for (size_t p = 0; p < k.size(); ++p) {
+      auto it = table.find(k[p]);
+      if (it == table.end()) continue;
+      for (char n : it->second) {
+        std::string kk = k;
+        kk[p] = n;
+        Sim sim;
+        for (char x : kk) sim.key(x);
+        if (sim.composed.size() == 1 && sim.buf.isEmpty() && !sim.stray && sim.composed[0] != typed &&
+            lm.hasUnigrams(sim.composed[0])) {
+          (pass ? diag : row).insert(sim.composed[0]);
+        }
+      }
+    }
+  }
+  std::vector<NeighborDirection> out;
+  for (const TypoCandidate& c : cands) {
+    out.push_back(row.count(c.reading) ? NeighborDirection::kRow
+                                       : diag.count(c.reading) ? NeighborDirection::kDiag
+                                                               : NeighborDirection::kOther);
+  }
+  return out;
+}
+
+LegalTypoDecision DecideLegalTypo(const std::vector<TypoCandidate>& cands,
+                                  const std::vector<NeighborDirection>& dirs,
+                                  const std::vector<double>& eGain,
+                                  const std::vector<double>& dGain) {
+  LegalTypoDecision best;
+  bool any = false;
+  for (size_t i = 0; i < cands.size(); ++i) {
+    // t2.py: e = E + pr; d = D + pr; gain = e + w * (d - pr)
+    const double pr = LegalTypoLogWeight(dirs[i]);
+    const double e = eGain[i] + pr;
+    const double d = dGain[i] + pr;
+    const double gain = e + kLegalTypoBlend * (d - pr);
+    if (!std::isfinite(gain)) continue;
+    if (!any || gain > best.gain || (gain == best.gain && cands[i].reading < cands[best.index].reading)) {
+      best.index = i;
+      best.gain = gain;
+      any = true;
+    }
+  }
+  best.offered = any && best.gain >= kLegalTypoTheta;
+  return best;
+}
+
+LegalTypoPlan MakeLegalTypoPlan(SlothEGrid* grid, size_t pos,
+                                Formosa::Gramambular2::LanguageModel& lm) {
+  LegalTypoPlan plan;
+  if (grid == nullptr || pos >= grid->readings().size()) {
+    return plan;
+  }
+  plan.pos = pos;
+  plan.typed = grid->readings()[pos];
+  std::vector<std::string> typedValues;
+  for (const auto& u : lm.getUnigrams(plan.typed)) typedValues.push_back(u.value());
+  plan.typedChars = SingleChars(typedValues);
+  plan.cands = TypoCandidates(plan.typed, lm);
+  plan.dirs = LegalTypoDirections(plan.typed, plan.cands, lm);
+  plan.typedPatch = grid->patchFor(pos, plan.typed);
+  for (const TypoCandidate& c : plan.cands) {
+    plan.chars.push_back(SingleChars(c.chars));
+    plan.patches.push_back(grid->patchFor(pos, c.reading));
+  }
+  return plan;
+}
+
+bool ScoreLegalTypo(Engine* engine, Decoder* decoder, const SlothEGrid& base,
+                    const LegalTypoPlan& plan,
+                    const std::vector<std::string>& readings,
+                    const std::vector<std::string>& context,
+                    const std::string& leftText, const InWalkParams& params,
+                    const std::atomic<bool>& cancelled, LegalTypoResult* result) {
+  *result = LegalTypoResult();
+  if (engine == nullptr || decoder == nullptr || !decoder->hasFirstChars() ||
+      plan.pos >= readings.size() || plan.cands.size() != plan.patches.size()) {
+    return false;
+  }
+  result->candidates = plan.cands.size();
+  auto total = [&](const std::string& reading, const std::vector<SlothEGrid::SpanPatch>& patch,
+                   double* t, std::shared_ptr<const ForwardResult>* keep) {
+    std::vector<std::string> rs = readings;
+    rs[plan.pos] = reading;
+    double ms = 0;
+    bool hit = false;
+    std::shared_ptr<const ForwardResult> r = engine->forward(rs, &ms, &hit, &context, false);
+    if (r == nullptr) return false;
+    std::unique_ptr<SlothEGrid> grid = base.snapshotWithReading(plan.pos, reading, patch);
+    if (!InWalkTotal(grid.get(), *r, engine->vocabulary(), engine->variants(), params, t)) return false;
+    if (keep != nullptr) *keep = r;
+    return true;
+  };
+  if (cancelled.load()) return false;
+  double baseTotal = 0;
+  if (!total(plan.typed, plan.typedPatch, &baseTotal, nullptr)) return true;  // finished, nothing to offer
+  std::vector<double> eGain(plan.cands.size(), -std::numeric_limits<double>::infinity());
+  for (size_t i = 0; i < plan.cands.size(); ++i) {
+    if (cancelled.load()) return false;
+    double t = 0;
+    if (total(plan.cands[i].reading, plan.patches[i], &t, nullptr)) eGain[i] = t - baseTotal;
+  }
+  if (cancelled.load()) return false;
+  std::vector<float> lp;
+  DecoderCallStats stats;
+  if (!decoder->nextTokenLogProbs(leftText, &lp, &stats)) {
+    result->retry = stats.unavailable;  // the n* function is loading: try again later
+    return true;
+  }
+  const double typedScore = decoder->charsLogProb(lp, plan.typedChars);
+  std::vector<double> dGain(plan.cands.size());
+  for (size_t i = 0; i < plan.cands.size(); ++i) {
+    dGain[i] = decoder->charsLogProb(lp, plan.chars[i]) - typedScore;
+  }
+  LegalTypoDecision d = DecideLegalTypo(plan.cands, plan.dirs, eGain, dGain);
+  result->finished = true;
+  result->gain = d.gain;
+  if (!d.offered) {
+    return true;
+  }
+  result->offered = true;
+  result->reading = plan.cands[d.index].reading;
+  result->eGain = eGain[d.index];
+  result->dGain = dGain[d.index];
+  // the char the buffer shows at pos once the syllable is changed
+  std::vector<std::string> rs = readings;
+  rs[plan.pos] = result->reading;
+  double ms = 0;
+  bool hit = false;
+  std::shared_ptr<const ForwardResult> r = engine->forward(rs, &ms, &hit, &context, false);
+  std::string shown;
+  if (r != nullptr) {
+    std::unique_ptr<SlothEGrid> grid = base.snapshotWithReading(plan.pos, result->reading, plan.patches[d.index]);
+    auto walk = grid->rescoredWalk(*r, engine->vocabulary(), engine->variants(), params, nullptr);
+    std::vector<std::string> chars = DisplayedChars(walk, rs.size());
+    if (plan.pos < chars.size()) shown = chars[plan.pos];
+  }
+  if (shown.empty() && !plan.chars[d.index].empty()) shown = plan.chars[d.index][0];
+  if (shown.empty()) {
+    result->offered = false;  // nothing to label the entry with
+    return true;
+  }
+  result->value = shown;
   return true;
 }
 

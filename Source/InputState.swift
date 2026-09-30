@@ -500,6 +500,10 @@ class InputState: NSObject {
         /// if a user turns on Chinese conversion, or a candidate is a macro, the
         /// original value would be converted to another value.
         @objc private(set) var rawValue: String
+        /// McBopomofoLM v3.2b: the correction entry for a legal-but-wrong syllable. Its
+        /// `reading` is the corrected syllable; picking it replaces the reading at the
+        /// cursor instead of choosing a word for the node.
+        @objc var isLegalTypoEntry = false
 
         @objc init(reading: String, value: String, displayText: String, rawValue: String) {
             self.reading = reading

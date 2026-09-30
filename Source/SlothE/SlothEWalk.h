@@ -196,6 +196,23 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
   // state with this grid.
   std::unique_ptr<SlothEGrid> snapshot() const;
 
+  // v3.2b (legal-but-wrong correction entry, reports/typo.md §8): a copy of this
+  // grid in which the reading at `pos` is another one, with every user override
+  // cleared (the study scored sentences without picks). Only the spans that
+  // cover `pos` change; their nodes need language-model lookups, which happen
+  // on the calling (main) thread in patchFor() and are handed over as a
+  // SpanPatch list, so the copy itself is made on any thread without the model.
+  struct SpanPatch {
+    size_t start = 0;
+    size_t len = 0;
+    std::string reading;  // the joined key looked up
+    std::vector<Formosa::Gramambular2::LanguageModel::Unigram> unigrams;  // score-ranked, as the grid's own nodes
+  };
+  // Main thread (looks the language model up). Empty when pos is out of range.
+  std::vector<SpanPatch> patchFor(size_t pos, const std::string& reading);
+  std::unique_ptr<SlothEGrid> snapshotWithReading(
+      size_t pos, const std::string& reading,
+      const std::vector<SpanPatch>& patch) const;
   // Snapshots alive right now (all threads); tests check the backlog.
   static int64_t LiveSnapshots();
 
@@ -204,6 +221,14 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
  private:
   bool isSnapshot_ = false;
 };
+
+// v3.2b: the in-walk's total path score of `grid`'s walk over the encoder result
+// r: the sum over the walked nodes of LM + beta * neural (typo/t2_e.cpp `total`).
+// False when the walk has no model detail (a 1-reading buffer without carried
+// context shows the stock walk).
+bool InWalkTotal(SlothEGrid* grid, const ForwardResult& r, const Vocabulary& vocab,
+                 const VariantTable& variants, const InWalkParams& params,
+                 double* total);
 
 // Candidate-window option (walk2 report 8.1 b'): within the aligned block at
 // the front of `order` (as produced by RerankOrder), move the entry equal to

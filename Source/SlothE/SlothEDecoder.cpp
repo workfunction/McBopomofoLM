@@ -460,6 +460,23 @@ double Decoder::firstCharLogProb(const std::vector<float>& lp, const std::string
   return std::log(std::max(sum, 1e-12));
 }
 
+double Decoder::charsLogProb(const std::vector<float>& lp,
+                             const std::vector<std::string>& chars) const {
+  double sum = 0;
+  for (const std::string& c : chars) {
+    auto it = firstChars_.find(c);
+    if (it == firstChars_.end()) {
+      continue;
+    }
+    for (int32_t id : it->second) {
+      if (id >= 0 && static_cast<size_t>(id) < lp.size()) {
+        sum += std::exp(static_cast<double>(lp[static_cast<size_t>(id)]));
+      }
+    }
+  }
+  return std::log(std::max(sum, 1e-12));
+}
+
 std::vector<size_t> Decoder::loadedLengths() const {
   return backend_ != nullptr ? backend_->loadedLengths() : std::vector<size_t> {};
 }

@@ -189,6 +189,15 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// forwardMs / decoderMs = model time, totalMs = from the pause to the result applied (< 0: not applied),
 /// result = applied / stale / skipped / deferred / failed.
 - (void)notePauseGateWithBufferLength:(NSUInteger)bufferLength requests:(NSInteger)requests calls:(NSInteger)calls cached:(NSInteger)cached noDecision:(NSInteger)noDecision pins:(NSInteger)pins changedChars:(NSInteger)changedChars forwardMilliseconds:(double)forwardMilliseconds decoderMilliseconds:(double)decoderMilliseconds totalMilliseconds:(double)totalMilliseconds result:(NSString *)result;
+/// v3.2b: one Y line per event of the legal-but-wrong correction entry (no text). event = offered (the
+/// entry was in a candidate window that opened), chosen (it was picked) or not_ready (a window opened on a
+/// syllable whose entry had not been computed yet, so it was left out). slot = its 1-based position in the
+/// list (0 = none), candidates = the list's length, readyMilliseconds = trigger to scores (< 0: not ready),
+/// trigger = pause / arrow / open.
+- (void)noteLegalEntryEvent:(NSString *)event slot:(NSInteger)slot candidates:(NSUInteger)candidates readyMilliseconds:(double)readyMilliseconds trigger:(NSString *)trigger;
+@property (readonly, nonatomic) NSUInteger legalEntryOfferedCount;
+@property (readonly, nonatomic) NSUInteger legalEntryChosenCount;
+@property (readonly, nonatomic) NSUInteger legalEntryNotReadyCount;
 /// Pause-gate passes: finished (any outcome), applied to the buffer, applied and changed the shown text.
 @property (readonly, nonatomic) NSUInteger pauseGateRunCount;
 @property (readonly, nonatomic) NSUInteger pauseGateAppliedCount;

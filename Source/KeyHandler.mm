@@ -83,6 +83,24 @@ struct SlothETypoJob {
     double readyMs = -1;
 };
 
+// McBopomofoLM v3.2b: the correction entry of one syllable of the buffer
+// (reports/typo.md §8), scored on the compute queue.
+struct SlothELegalJob {
+    size_t pos = 0;
+    std::vector<std::string> readings;   // the buffer it was made for
+    std::string left;                    // decoder: carried text + shown text left of pos
+    std::vector<std::string> context;    // encoder: carried syllables
+    std::string trigger;                 // pause / arrow / open
+    std::atomic<bool> cancelled{false};
+    McBopomofoSlothE::LegalTypoPlan plan;                    // made on the main thread (language model)
+    std::shared_ptr<McBopomofoSlothE::SlothEGrid> base;      // the buffer's grid, copied
+    std::chrono::steady_clock::time_point start;
+    std::mutex mu;
+    bool done = false;
+    McBopomofoSlothE::LegalTypoResult result;
+    double readyMs = -1;
+};
+
 @implementation KeyHandler {
     std::shared_ptr<Formosa::Gramambular2::LanguageModel> _emptySharedPtr;
 
@@ -147,6 +165,11 @@ struct SlothETypoJob {
     std::vector<McBopomofoSlothE::WalkPin> _slothPausePins;   // sticky = true
     std::vector<std::string> _slothPauseReadings;             // the buffer that pass covered
     size_t _slothPauseCoverage;                               // leading readings it still covers
+
+    // v3.2b correction entry (main thread): the latest job, and the job whose entry the open window shows
+    std::shared_ptr<SlothELegalJob> _slothLegalJob;
+    std::shared_ptr<SlothELegalJob> _slothLegalShownJob;
+    NSUInteger _slothLegalJobsStarted;
 }
 
 @synthesize delegate = _delegate;
@@ -516,6 +539,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         [self _slothESubmitPipelineFromKey:YES];
     }
     [self _slothESchedulePauseGate];
+    // v3.2b: the cursor moved onto another syllable: score its correction entry now
+    if (handled && [inState isMemberOfClass:[InputStateInputting class]] && !input.isShiftHold && !input.isControlHold && (input.isCursorBackward || input.isCursorForward || input.isHome || input.isEnd || input.emacsKey == McBopomofoEmacsKeyBackward || input.emacsKey == McBopomofoEmacsKeyForward || input.emacsKey == McBopomofoEmacsKeyHome || input.emacsKey == McBopomofoEmacsKeyEnd)) {
+        [self _slothEStartLegalJobAtCursor:@"arrow"];
+    }
     return handled;
 }
 
@@ -832,7 +859,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         if (originalCursorIndex == _grid->length() && Preferences.selectPhraseAfterCursorAsCandidate && Preferences.moveCursorAfterSelectingCandidate) {
             _grid->setCursor(originalCursorIndex - 1);
         }
-        InputStateChoosingCandidate *choosingCandidates = [self _buildCandidateStateFromInputtingState:(InputStateInputting *)[self buildInputtingState] useVerticalMode:input.useVerticalMode];
+        InputStateChoosingCandidate *choosingCandidates = [self _buildCandidateStateFromInputtingState:(InputStateInputting *)[self buildInputtingState] useVerticalMode:input.useVerticalMode withCorrectionEntry:YES];
         choosingCandidates.originalCursorIndex = originalCursorIndex;
         stateCallback(choosingCandidates);
         return YES;
@@ -1715,7 +1742,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
                 return YES;
             }
         }
-        InputState *newState = [self _buildCandidateStateFromInputtingState:(InputStateInputting *)[self buildInputtingState] useVerticalMode:[(InputStateChoosingCandidate *)state useVerticalMode]];
+        InputState *newState = [self _buildCandidateStateFromInputtingState:(InputStateInputting *)[self buildInputtingState] useVerticalMode:[(InputStateChoosingCandidate *)state useVerticalMode] withCorrectionEntry:YES];
         stateCallback(newState);
         return YES;
     }
@@ -1736,6 +1763,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
             NSInteger index = gCurrentCandidateController.selectedCandidateIndex;
             InputStateCandidate *candidate = currentState.candidates[index];
             NSString *reading = candidate.reading;
+            if (candidate.isLegalTypoEntry) {  // v3.2b: not a phrase of the language model
+                errorCallback();
+                return YES;
+            }
 
             // The vlalue of a candidate might be an expanced input macro, and
             // we should not let the users to boost or exclude such candidates.
@@ -1814,6 +1845,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
             NSInteger index = gCurrentCandidateController.selectedCandidateIndex;
             InputStateCandidate *candidate = currentState.candidates[index];
             NSString *reading = candidate.reading;
+            if (candidate.isLegalTypoEntry) {  // v3.2b
+                errorCallback();
+                return YES;
+            }
             for (NSString *invalidPrefix in invalidPrefixArray) {
                 if ([reading hasPrefix:invalidPrefix]) {
                     errorCallback();
@@ -1939,6 +1974,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
             InputStateChoosingCandidate *current = (InputStateChoosingCandidate *)state;
             NSInteger selectedCandidateIndex = gCurrentCandidateController.selectedCandidateIndex;
             InputStateCandidate *candidate = current.candidates[selectedCandidateIndex];
+            if (candidate.isLegalTypoEntry) {  // v3.2b: no associated phrases for a reading correction
+                errorCallback();
+                return YES;
+            }
             NSString *prefixReading = candidate.reading;
             NSString *prefixValue = candidate.value;
 
@@ -2778,9 +2817,14 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
 // The composing text left of the grid cursor, as shown (walk values).
 - (std::string)_slothEDisplayedTextBeforeCursor
 {
+    return [self _slothEDisplayedTextBefore:_grid->cursor()];
+}
+
+// ... left of reading position `cursor`.
+- (std::string)_slothEDisplayedTextBefore:(size_t)cursor
+{
     std::string left;
     size_t pos = 0;
-    size_t cursor = _grid->cursor();
     for (const auto &node : _latestWalk.nodes) {
         size_t len = node->spanningLength();
         if (pos + len <= cursor) {
@@ -3341,6 +3385,7 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
         _slothPauseCancel->store(true);
         _slothPauseCancel.reset();
     }
+    [self _slothECancelLegalJobIfRunning];
 }
 
 // Buffer cleared, another grid, or a switch changed: no sticky decision survives.
@@ -3355,6 +3400,7 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
     _slothPauseReadings.clear();
     _slothPauseCoverage = 0;
     _slothPauseGenerationDone = 0;
+    [self _slothEResetLegalEntry];
 }
 
 // The pause pass' decisions no longer hold from reading `position` on (a pick on
@@ -3415,7 +3461,12 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
 // be checked (this generation's pass was applied) or the gate cannot run.
 - (void)_slothESchedulePauseGate
 {
-    if (_grid->length() == 0 || _slothPauseGenerationDone == _slothGeneration || !Preferences.slothEPauseGateEnabled || [self _activeSlothEEngine] == nullptr || ![self _slothEDecoderActive]) {
+    if (_grid->length() == 0 || [self _activeSlothEEngine] == nullptr || ![self _slothEDecoderActive]) {
+        return;
+    }
+    // v3.2b: the correction entry of the syllable at the cursor is computed at the pause too
+    BOOL gateWanted = Preferences.slothEPauseGateEnabled && _slothPauseGenerationDone != _slothGeneration;
+    if (!gateWanted && !Preferences.slothETypoEntryEnabled) {
         return;
     }
     uint64_t seq = _slothPauseKeySeq;
@@ -3434,12 +3485,16 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
 - (void)_slothEPauseTimerFired:(uint64_t)seq
 {
     McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
-    if (seq != _slothPauseKeySeq || engine == nullptr || !Preferences.slothEPauseGateEnabled || ![self _slothEDecoderActive] || _grid->length() == 0 || _slothPauseGenerationDone == _slothGeneration) {
+    if (seq != _slothPauseKeySeq || engine == nullptr || ![self _slothEDecoderActive] || _grid->length() == 0) {
         return;
     }
     id<KeyHandlerDelegate> delegate = _delegate;
     if (![delegate respondsToSelector:@selector(keyHandlerCanRefreshComposingBuffer:)] || ![delegate keyHandlerCanRefreshComposingBuffer:self]) {
         return;  // a candidate window or another state is up: nothing is replaced under it
+    }
+    if (!Preferences.slothEPauseGateEnabled || _slothPauseGenerationDone == _slothGeneration) {
+        [self _slothEStartLegalJobAtCursor:@"pause"];  // no gate pass to wait for
+        return;
     }
     SlothERuntime *runtime = _slothERuntime;
     uint64_t generation = _slothGeneration;
@@ -3519,6 +3574,242 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
         [delegate keyHandler:self didRefreshComposingBufferWithState:[self buildInputtingState]];
     }
     note(@"applied", changed, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    [self _slothEStartLegalJobAtCursor:@"pause"];  // v3.2b: after the gate, so the left text is the one that stays
+}
+
+#pragma mark - SlothE correction entry for a legal-but-wrong syllable (v3.2b)
+
+// The last slot of page 1 is where the entry goes. PLAN.md §18: it is also where
+// ③'s English original will go; when both exist the entry moves to the slot before
+// it. ponytail: ③ is not built, so nothing reserves the last slot yet; when it is,
+// set this to 1 (the English original then takes slot pageSize, the entry pageSize - 1).
+static const NSUInteger kSlothELegalEntryReservedSlots = 0;
+
+// The candidate window's page size (CandidateUI: the key labels; fewer than 4 keys = the default 9).
+static NSUInteger SlothECandidatePageSize(void)
+{
+    NSString *keys = Preferences.candidateKeys;
+    return keys.length >= 4 ? keys.length : Preferences.defaultCandidateKeys.length;
+}
+
+// Bopomofo mode, the switch on, both models there and the decoder's next-token function loaded once.
+- (BOOL)_slothELegalEntryActive
+{
+    if (!Preferences.slothETypoEntryEnabled || [self _activeSlothEEngine] == nullptr || ![self _slothEDecoderActive]) {
+        return NO;
+    }
+    McBopomofoSlothE::Decoder *decoder = [_slothERuntime decoder];
+    return decoder != nullptr && decoder->hasFirstChars();
+}
+
+- (void)_slothECancelLegalJobIfRunning
+{
+    std::shared_ptr<SlothELegalJob> job = _slothLegalJob;
+    if (job == nullptr) {
+        return;
+    }
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(job->mu);
+        done = job->done;
+    }
+    if (!done) {  // a finished job's scores stay for the window
+        job->cancelled.store(true);
+        _slothLegalJob.reset();
+    }
+}
+
+- (void)_slothEResetLegalEntry
+{
+    if (_slothLegalJob != nullptr) {
+        _slothLegalJob->cancelled.store(true);
+    }
+    _slothLegalJob.reset();
+    _slothLegalShownJob.reset();
+}
+
+- (NSUInteger)slothELegalJobsStarted
+{
+    return _slothLegalJobsStarted;
+}
+
+// Is `job` the entry of reading `pos` of this buffer, in this context?
+- (BOOL)_slothELegalJob:(const std::shared_ptr<SlothELegalJob> &)job matchesPosition:(size_t)pos left:(const std::string &)left context:(const std::vector<std::string> &)context
+{
+    return job != nullptr && !job->cancelled.load() && job->pos == pos && job->readings == _grid->readings() && job->left == left && job->context == context;
+}
+
+// Starts the entry job for reading `pos` (main thread: the plan needs the language
+// model): the syllable must be legal Zhuyin. A job for the same syllable in the same
+// buffer and context is reused unless it ended for want of the next-token function.
+- (void)_slothEStartLegalJobAt:(size_t)pos trigger:(NSString *)trigger
+{
+    if (![self _slothELegalEntryActive] || pos >= _grid->length()) {
+        return;
+    }
+    const std::vector<std::string> &readings = _grid->readings();
+    const std::string &typed = readings[pos];
+    if (!McBopomofoSlothE::IsZhuyinReading(typed) || !_languageModel->hasUnigrams(typed)) {
+        return;
+    }
+    std::string left = _slothCarried.decoderText() + [self _slothEDisplayedTextBefore:pos];
+    std::vector<std::string> context = _slothCarried.encoderReadings();
+    if ([self _slothELegalJob:_slothLegalJob matchesPosition:pos left:left context:context]) {
+        std::lock_guard<std::mutex> lock(_slothLegalJob->mu);
+        if (!(_slothLegalJob->done && _slothLegalJob->result.retry)) {
+            return;
+        }
+    }
+    if (_slothLegalJob != nullptr) {
+        _slothLegalJob->cancelled.store(true);
+    }
+    auto job = std::make_shared<SlothELegalJob>();
+    job->pos = pos;
+    job->readings = readings;
+    job->left = left;
+    job->context = context;
+    job->trigger = trigger.UTF8String;
+    job->plan = McBopomofoSlothE::MakeLegalTypoPlan(_grid, pos, *_languageModel);
+    job->base = _grid->snapshot();
+    job->start = std::chrono::steady_clock::now();
+    _slothLegalJob = job;
+    ++_slothLegalJobsStarted;
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    McBopomofoSlothE::Decoder *decoder = [_slothERuntime decoder];
+    McBopomofoSlothE::InWalkParams params = [_slothERuntime inWalkParams];
+    [_slothERuntime submitSideComputeJob:^{
+        McBopomofoSlothE::LegalTypoResult result;
+        bool ran = McBopomofoSlothE::ScoreLegalTypo(engine, decoder, *job->base, job->plan, job->readings, job->context, job->left, params, job->cancelled, &result);
+        std::lock_guard<std::mutex> lock(job->mu);
+        if (ran) {
+            job->result = result;
+            job->readyMs = result.finished ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job->start).count() : -1;
+        }
+        job->base.reset();
+        job->done = true;
+    }];
+}
+
+// The syllable the candidate window opens on: what the cursor is on.
+- (void)_slothEStartLegalJobAtCursor:(NSString *)trigger
+{
+    if (_grid->length() == 0 || !_bpmfReadingBuffer->isEmpty()) {
+        return;
+    }
+    [self _slothEStartLegalJobAt:static_cast<size_t>(self.actualCandidateCursorIndex) trigger:trigger];
+}
+
+- (nullable NSArray<NSString *> *)slothELegalEntryForTesting
+{
+    std::shared_ptr<SlothELegalJob> job = _slothLegalJob;
+    if (job == nullptr || _grid->length() == 0) {
+        return nil;
+    }
+    size_t pos = static_cast<size_t>(self.actualCandidateCursorIndex);
+    std::string left = _slothCarried.decoderText() + [self _slothEDisplayedTextBefore:pos];
+    if (![self _slothELegalJob:job matchesPosition:pos left:left context:_slothCarried.encoderReadings()]) {
+        return nil;
+    }
+    std::lock_guard<std::mutex> lock(job->mu);
+    if (!job->done || !job->result.finished || !job->result.offered) {
+        return nil;
+    }
+    return @[ @(job->result.reading.c_str()), @(job->result.value.c_str()) ];
+}
+
+- (void)slothEInstallLegalEntryForTestingWithReading:(NSString *)reading value:(NSString *)value
+{
+    if (_grid->length() == 0) {
+        return;
+    }
+    size_t pos = static_cast<size_t>(self.actualCandidateCursorIndex);
+    auto job = std::make_shared<SlothELegalJob>();
+    job->pos = pos;
+    job->readings = _grid->readings();
+    job->left = _slothCarried.decoderText() + [self _slothEDisplayedTextBefore:pos];
+    job->context = _slothCarried.encoderReadings();
+    job->trigger = "test";
+    job->done = true;
+    job->readyMs = 1.5;
+    job->result.finished = true;
+    job->result.offered = true;
+    job->result.reading = reading.UTF8String;
+    job->result.value = value.UTF8String;
+    _slothLegalJob = job;
+}
+
+// Called with the candidates of a window that is being built for the syllable at
+// the cursor: puts the entry into the last slot of page 1 (appends it when the
+// list is shorter than a page) when its scores are there. Never waits: if they are
+// not, the window is built without it and the job is started for the next time.
+- (void)_slothEAddLegalEntryTo:(NSMutableArray *)candidates
+{
+    _slothLegalShownJob.reset();
+    if (![self _slothELegalEntryActive] || _grid->length() == 0) {
+        return;
+    }
+    size_t pos = static_cast<size_t>(self.actualCandidateCursorIndex);
+    const std::vector<std::string> &readings = _grid->readings();
+    if (pos >= readings.size() || !McBopomofoSlothE::IsZhuyinReading(readings[pos]) || !_languageModel->hasUnigrams(readings[pos])) {
+        return;
+    }
+    std::string left = _slothCarried.decoderText() + [self _slothEDisplayedTextBefore:pos];
+    std::vector<std::string> context = _slothCarried.encoderReadings();
+    std::shared_ptr<SlothELegalJob> job = _slothLegalJob;
+    if (![self _slothELegalJob:job matchesPosition:pos left:left context:context]) {
+        [self _slothEStartLegalJobAt:pos trigger:@"open"];  // for the next time; this window goes without
+        [_slothERuntime noteLegalEntryEvent:@"not_ready" slot:0 candidates:candidates.count readyMilliseconds:-1 trigger:@"open"];
+        return;
+    }
+    McBopomofoSlothE::LegalTypoResult result;
+    double readyMs = -1;
+    bool done = false;
+    {
+        std::lock_guard<std::mutex> lock(job->mu);
+        done = job->done;
+        result = job->result;
+        readyMs = job->readyMs;
+    }
+    if (!done || result.retry) {
+        if (done) {
+            [self _slothEStartLegalJobAt:pos trigger:@"open"];
+        }
+        [_slothERuntime noteLegalEntryEvent:@"not_ready" slot:0 candidates:candidates.count readyMilliseconds:-1 trigger:@(job->trigger.c_str())];
+        return;
+    }
+    if (!result.finished || !result.offered) {
+        return;  // scored: nothing to correct here
+    }
+    NSString *reading = @(result.reading.c_str());
+    NSString *value = @(result.value.c_str());
+    InputStateCandidate *entry = [[InputStateCandidate alloc] initWithReading:reading value:value displayText:[NSString stringWithFormat:@"%@ %@", value, reading] rawValue:value];
+    entry.isLegalTypoEntry = YES;
+    NSUInteger pageSize = SlothECandidatePageSize();
+    NSUInteger slot = std::min<NSUInteger>(candidates.count, pageSize - 1 - kSlothELegalEntryReservedSlots);
+    [candidates insertObject:entry atIndex:slot];
+    _slothLegalShownJob = job;
+    [_slothERuntime noteLegalEntryEvent:@"offered" slot:static_cast<NSInteger>(slot) + 1 candidates:candidates.count readyMilliseconds:readyMs trigger:@(job->trigger.c_str())];
+}
+
+- (void)slothEApplyLegalTypoCorrectionWithReading:(NSString *)reading slot:(NSInteger)slot originalCursorIndex:(NSInteger)originalCursorIndex
+{
+    std::shared_ptr<SlothELegalJob> job = _slothLegalShownJob;
+    _slothLegalShownJob.reset();
+    std::string corrected = reading.UTF8String;
+    if (job == nullptr || job->readings != _grid->readings() || job->pos >= _grid->length() || !_languageModel->hasUnigrams(corrected)) {
+        _grid->setCursor(static_cast<size_t>(std::max<NSInteger>(originalCursorIndex, 0)));  // the buffer moved on: change nothing
+        return;
+    }
+    [_slothERuntime noteLegalEntryEvent:@"chosen" slot:slot + 1 candidates:0 readyMilliseconds:job->readyMs trigger:@(job->trigger.c_str())];
+    size_t pos = job->pos;
+    [self _slothEDropStickyPinsFrom:pos];
+    [self _slothEResetLegalEntry];
+    _grid->setCursor(pos + 1);
+    _grid->deleteReadingBeforeCursor();
+    _grid->insertReading(corrected);  // the cursor is at pos + 1 again
+    _grid->setCursor(std::min(static_cast<size_t>(std::max<NSInteger>(originalCursorIndex, 0)), _grid->length()));
+    [self _walk];
+    [self _slothESchedulePauseGate];
 }
 
 // Keys whose outcome depends on the final walk: commits and candidate windows.
@@ -3631,6 +3922,13 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
 
 - (InputStateChoosingCandidate *)_buildCandidateStateFromInputtingState:(InputStateInputting *)inputting useVerticalMode:(BOOL)useVerticalMode
 {
+    return [self _buildCandidateStateFromInputtingState:inputting useVerticalMode:useVerticalMode withCorrectionEntry:NO];
+}
+
+// withCorrectionEntry: the window of the buffer's syllable at the cursor (Space / Down, and moving the cursor
+// inside it): v3.2b adds the correction entry of a legal-but-wrong syllable. Not for Tab cycling or plain mode.
+- (InputStateChoosingCandidate *)_buildCandidateStateFromInputtingState:(InputStateInputting *)inputting useVerticalMode:(BOOL)useVerticalMode withCorrectionEntry:(BOOL)withCorrectionEntry
+{
     auto candidates = _grid->candidatesAt(self.actualCandidateCursorIndex);
     std::vector<size_t> order = [self _slothECandidateOrder:candidates];
 
@@ -3660,6 +3958,9 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
         [candidatesArray addObject:candidate];
     }
 
+    if (withCorrectionEntry && _inputMode == InputModeBopomofo) {
+        [self _slothEAddLegalEntryTo:candidatesArray];
+    }
     InputStateChoosingCandidate *state = [[InputStateChoosingCandidate alloc] initWithComposingBuffer:inputting.composingBuffer cursorIndex:inputting.cursorIndex candidates:candidatesArray useVerticalMode:useVerticalMode];
     return state;
 }

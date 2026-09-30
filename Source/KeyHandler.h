@@ -150,6 +150,20 @@ extern InputMode InputModePlainBopomofo;
 /// (delay in seconds, block to run when it fires). The block does nothing if a
 /// key event came after it was armed.
 @property (copy, nonatomic, nullable) void (^slothEPauseScheduler)(NSTimeInterval delay, dispatch_block_t fire);
+/// v3.2b legal-but-wrong correction entry (the controller, for a candidate with
+/// isLegalTypoEntry): deletes the reading at the syllable the window is on,
+/// inserts `reading` there, puts the cursor back to originalCursorIndex and
+/// re-walks. It is not a pick of a word: nothing goes to the user override model.
+- (void)slothEApplyLegalTypoCorrectionWithReading:(NSString *)reading slot:(NSInteger)slot originalCursorIndex:(NSInteger)originalCursorIndex;
+/// Tests: correction-entry jobs started (one per syllable + context), and the
+/// entry of the finished job for the syllable at the cursor ((reading, char),
+/// nil when there is none, or it is not finished / not for this buffer).
+@property (assign, nonatomic, readonly) NSUInteger slothELegalJobsStarted;
+- (nullable NSArray<NSString *> *)slothELegalEntryForTesting;
+/// Tests: install a finished job that offers (reading, value) for the syllable at the
+/// cursor, for this buffer and context, so the window placement and the pick can be
+/// tested without the models' opinion.
+- (void)slothEInstallLegalEntryForTestingWithReading:(NSString *)reading value:(NSString *)value;
 /// Client bundle identifier for the latency log's C lines (set on activate).
 @property (copy, nonatomic, nullable) NSString *slothEClientID;
 @end

@@ -53,8 +53,15 @@ static NSString *const kLatencyLogHeader =
     @"#   requests the decoder could not answer (text too long for its longest function, function not loaded, call\n"
     @"#   failed); pins = decisions of this pass; changed_chars = chars of the shown text that differ from before the\n"
     @"#   result was applied; e2e_ms = pause start to applied (empty = not applied); result = applied / stale (a newer\n"
-    @"#   key came) / skipped (already stale at start) / deferred (a window or another state was up) / failed\n";
-static NSString *const kLatencyLogGMarker = @"# G = the typing-pause decoder gate";
+    @"#   key came) / skipped (already stale at start) / deferred (a window or another state was up) / failed\n"
+    @"# Y = the correction entry for a legal-but-wrong syllable (v3.2b; page 1's last slot); no text:\n"
+    @"#   Y time event slot n_cands ready_ms trigger\n"
+    @"#   event = offered (the entry was in a candidate window that opened) / chosen (it was picked) / not_ready (a\n"
+    @"#   window opened on a syllable whose entry was not computed yet, so it was left out); slot = its 1-based place\n"
+    @"#   in the list (empty for not_ready); n_cands = list length; ready_ms = trigger to scores (empty = not ready);\n"
+    @"#   trigger = pause (150 ms idle, syllable at the cursor) / arrow (cursor moved) / open (computed for the next window)\n";
+static NSString *const kLatencyLogGMarker = @"# G = the typing-pause decoder gate";  // the v3.2 line docs start here ...
+static NSString *const kLatencyLogNewestDoc = @"# Y = the correction entry";      // ... and this one is the newest
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
@@ -147,6 +154,9 @@ static const size_t kMaxEndToEndSamples = 4096;
 @synthesize pauseGateRunCount = _pauseGateRunCount;
 @synthesize pauseGateAppliedCount = _pauseGateAppliedCount;
 @synthesize pauseGateChangedCount = _pauseGateChangedCount;
+@synthesize legalEntryOfferedCount = _legalEntryOfferedCount;
+@synthesize legalEntryChosenCount = _legalEntryChosenCount;
+@synthesize legalEntryNotReadyCount = _legalEntryNotReadyCount;
 
 + (BOOL)runningUnderXCTest
 {
@@ -1017,6 +1027,23 @@ static const size_t kMaxEndToEndSamples = 4096;
     [self _appendTimestampedLine:@"G" tail:tail];
 }
 
+- (void)noteLegalEntryEvent:(NSString *)event slot:(NSInteger)slot candidates:(NSUInteger)candidates readyMilliseconds:(double)readyMilliseconds trigger:(NSString *)trigger
+{
+    if ([event isEqualToString:@"offered"]) {
+        ++_legalEntryOfferedCount;
+    } else if ([event isEqualToString:@"chosen"]) {
+        ++_legalEntryChosenCount;
+    } else if ([event isEqualToString:@"not_ready"]) {
+        ++_legalEntryNotReadyCount;
+    }
+    if (_logPath == nil) {
+        return;
+    }
+    NSString *slotText = slot > 0 ? [NSString stringWithFormat:@"%ld", (long)slot] : @"";
+    NSString *ready = readyMilliseconds >= 0 ? [NSString stringWithFormat:@"%.3f", readyMilliseconds] : @"";
+    [self _appendTimestampedLine:@"Y" tail:[NSString stringWithFormat:@"\t%@\t%@\t%lu\t%@\t%@\n", event, slotText, (unsigned long)candidates, ready, trigger]];
+}
+
 - (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source
 {
     if (_logPath == nil) {
@@ -1153,7 +1180,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     if (attrs != nil) {
         // (the log is at most 4 MB and this runs once per process start)
         NSData *all = [NSData dataWithContentsOfFile:_logPath options:NSDataReadingMappedIfSafe error:nil];
-        needsV32Doc = all == nil || [all rangeOfData:[kLatencyLogGMarker dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, all.length)].location == NSNotFound;
+        needsV32Doc = all == nil || [all rangeOfData:[kLatencyLogNewestDoc dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, all.length)].location == NSNotFound;
     }
     _logHandle = [NSFileHandle fileHandleForWritingAtPath:_logPath];
     if (_logHandle == nil) {
@@ -1165,7 +1192,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:g.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2a (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2b (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

@@ -20,7 +20,8 @@ class SlothEKeyHandlerTests: XCTestCase {
     }()
 
     var saved: [String: Any] = [:]
-    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
+    var savedPause = true  // v3.2: this suite pins the v3.1.2 behaviour (pause gate and correction entry off)
+    var savedEntry = true
 
     override func setUpWithError() throws {
         saved = [
@@ -43,6 +44,8 @@ class SlothEKeyHandlerTests: XCTestCase {
         Preferences.slothEDemoteShownCandidate = false
         savedPause = Preferences.slothEPauseGateEnabled
         Preferences.slothEPauseGateEnabled = false
+        savedEntry = Preferences.slothETypoEntryEnabled
+        Preferences.slothETypoEntryEnabled = false
         LanguageModelManager.loadDataModels()
         XCTAssertTrue(Self.loadedRuntime.loaded, "bundled SlothE-T model did not load: \(Self.loadedRuntime.loadError ?? "")")
     }
@@ -50,6 +53,7 @@ class SlothEKeyHandlerTests: XCTestCase {
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
         Preferences.slothEPauseGateEnabled = savedPause
+        Preferences.slothETypoEntryEnabled = savedEntry
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
         Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
         Preferences.selectPhraseAfterCursorAsCandidate = saved["after"] as! Bool
@@ -477,7 +481,8 @@ class SlothETypoWindowTests: XCTestCase {
         return runtime
     }()
     var saved: [String: Any] = [:]
-    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
+    var savedPause = true  // v3.2: this suite pins the v3.1.2 behaviour (pause gate and correction entry off)
+    var savedEntry = true
     var beeps = 0
 
     override func setUpWithError() throws {
@@ -493,6 +498,8 @@ class SlothETypoWindowTests: XCTestCase {
         Preferences.associatedPhrasesEnabled = false
         savedPause = Preferences.slothEPauseGateEnabled
         Preferences.slothEPauseGateEnabled = false
+        savedEntry = Preferences.slothETypoEntryEnabled
+        Preferences.slothETypoEntryEnabled = false
         LanguageModelManager.loadDataModels()
         XCTAssertTrue(Self.loadedRuntime.loaded)
     }
@@ -500,6 +507,7 @@ class SlothETypoWindowTests: XCTestCase {
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
         Preferences.slothEPauseGateEnabled = savedPause
+        Preferences.slothETypoEntryEnabled = savedEntry
         Preferences.slothERerankEnabled = saved["sloth"] as! Bool
         Preferences.keepReadingUponCompositionError = saved["keep"] as! Bool
         Preferences.slothEDecoderEnabled = saved["decoder"] as! Bool

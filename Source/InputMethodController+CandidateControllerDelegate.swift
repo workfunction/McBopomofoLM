@@ -61,6 +61,15 @@ extension McBopomofoInputMethodController: CandidateControllerDelegate {
             handle(state: keyHandler.buildInputtingState(), client: client)
         case let state as InputState.ChoosingCandidate:
             let selectedCandidate = state.candidates[Int(index)]
+            if selectedCandidate.isLegalTypoEntry {
+                // McBopomofoLM v3.2b: delete the typed reading and insert the corrected one, then
+                // re-walk; not a pick of a word, so the user override model never sees it.
+                keyHandler.slothEApplyLegalTypoCorrection(
+                    withReading: selectedCandidate.reading, slot: Int(index),
+                    originalCursorIndex: Int(state.originalCursorIndex))
+                handle(state: keyHandler.buildInputtingState(), client: client)
+                return
+            }
             keyHandler.fixNode(
                 reading: selectedCandidate.reading, value: selectedCandidate.value,
                 originalCursorIndex: Int(state.originalCursorIndex),

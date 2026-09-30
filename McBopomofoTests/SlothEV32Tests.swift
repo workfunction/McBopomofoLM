@@ -392,3 +392,287 @@ final class SlothEPauseGateTests: SlothEV32TestCase {
     }
 }
 
+
+// MARK: - v3.2b legal-but-wrong correction entry
+
+final class SlothETypoEntryTests: SlothEV32TestCase {
+    /// Rows of the T2 dev sample: a typo that gave another legal syllable at p (population L).
+    static let rows: [[String: Any]] = fixtureRows("v32b_dev_t2.jsonl")
+    var savedKeys = ""
+    var savedEntry = true
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        savedKeys = Preferences.candidateKeys
+        savedEntry = Preferences.slothETypoEntryEnabled
+        Preferences.slothEPauseGateEnabled = false  // the entry alone here; the gate has its own tests
+        Preferences.slothETypoEntryEnabled = true
+        XCTAssertTrue(SlothERuntime.sharedLoadedRuntimeForTesting.loadNextTokenFunctions(forTesting: 600))
+    }
+
+    override func tearDownWithError() throws {
+        Preferences.candidateKeys = savedKeys
+        Preferences.slothETypoEntryEnabled = savedEntry
+        try super.tearDownWithError()
+    }
+
+    func typedBuffer(_ row: [String: Any]) -> [String] {
+        let rd = row["rd"] as! [String]
+        return Array(rd.prefix((row["p"] as! Int) + 1))
+    }
+
+    /// 你好嗎 (three syllables, cursor at the end): the window is for 嗎's syllable.
+    let niHaoMa = ["ㄋㄧˇ", "ㄏㄠˇ", "ㄇㄚ"]
+
+    func windowCandidates(_ rig: Rig) -> [InputState.Candidate] {
+        rig.down()
+        return (rig.delegate.state as? InputState.ChoosingCandidate)?.candidates ?? []
+    }
+
+    func testSwitchOffStartsNoJobAndLeavesTheWindowAlone() {
+        Preferences.slothETypoEntryEnabled = false
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(niHaoMa)
+        rig.drain()
+        rig.fires.last?()  // the pause: nothing to compute
+        rig.left()
+        rig.right()
+        rig.drain()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 0)
+        let off = windowCandidates(rig)
+        XCTAssertFalse(off.isEmpty)
+        XCTAssertTrue(off.allSatisfy { !$0.isLegalTypoEntry })
+        // the same buffer with the switch on and an entry installed: exactly one more candidate
+        Preferences.slothETypoEntryEnabled = true
+        let on = Rig(makeRuntime())
+        on.typeReadings(niHaoMa)
+        on.drain()
+        on.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+        let with = windowCandidates(on)
+        XCTAssertEqual(with.count, off.count + 1)
+        XCTAssertEqual(with.filter { $0.isLegalTypoEntry }.count, 1)
+        XCTAssertEqual(with.filter { !$0.isLegalTypoEntry }.map { $0.value }, off.map { $0.value })
+    }
+
+    func testTheEntryTakesTheLastSlotOfPageOneAndLabelsTheReading() {
+        for keys in ["123456789", "asdf", "asdfghjkl;'", "123456789abcdef"] {
+            Preferences.candidateKeys = keys
+            let rig = Rig(makeRuntime())
+            rig.typeReadings(niHaoMa)
+            rig.drain()
+            rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+            let list = windowCandidates(rig)
+            let page = keys.count
+            let stock = list.filter { !$0.isLegalTypoEntry }
+            let slot = list.firstIndex { $0.isLegalTypoEntry }
+            XCTAssertEqual(slot, min(stock.count, page - 1), "candidateKeys \(keys): page of \(page), \(stock.count) candidates")
+            if let slot = slot {
+                XCTAssertEqual(list[slot].displayText, "馬 ㄇㄚˇ")
+                XCTAssertEqual(list[slot].reading, "ㄇㄚˇ")
+                XCTAssertEqual(list[slot].value, "馬")
+                // the candidate that was in the last slot is the first of page 2
+                if stock.count >= page {
+                    XCTAssertEqual(list[page].value, stock[page - 1].value)
+                }
+            }
+            XCTAssertTrue(stock.count > page - 1 || slot == stock.count, "appended when the list is shorter than a page")
+        }
+    }
+
+    func testAShortListGetsTheEntryAppended() {
+        Preferences.candidateKeys = "123456789abcdef"  // a page of 15
+        var found = false
+        for r in ["ㄗㄨㄥˋ", "ㄏㄨㄥ˙", "ㄉㄧㄡ", "ㄕㄨㄞˇ", "ㄎㄜˇ", "ㄋㄩㄝˋ", "ㄆㄧㄥ", "ㄔㄨㄞ"] {
+            let rig = Rig(makeRuntime())
+            rig.typeReadings(["ㄋㄧˇ", r])
+            rig.drain()
+            rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+            let list = windowCandidates(rig)
+            let stock = list.filter { !$0.isLegalTypoEntry }
+            if stock.count > 0 && stock.count < 14 {
+                XCTAssertTrue(list.last?.isLegalTypoEntry ?? false, "\(r): \(list.map { $0.displayText })")
+                XCTAssertEqual(list.count, stock.count + 1)
+                found = true
+                break
+            }
+        }
+        XCTAssertTrue(found, "no reading with a short list to test the append rule")
+    }
+
+    func testPickingTheEntryReplacesTheReadingAndSkipsTheUserOverrideModel() {
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(niHaoMa)
+        rig.drain()
+        let before = rig.buffer
+        rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+        let list = windowCandidates(rig)
+        guard let slot = list.firstIndex(where: { $0.isLegalTypoEntry }),
+            let window = rig.delegate.state as? InputState.ChoosingCandidate
+        else { return XCTFail("no entry in the window") }
+        rig.handler.slothEApplyLegalTypoCorrection(withReading: "ㄇㄚˇ", slot: slot, originalCursorIndex: Int(window.originalCursorIndex))
+        rig.delegate.take(rig.handler.buildInputtingState())
+        XCTAssertEqual(rig.buffer.count, before.count)
+        XCTAssertNotEqual(rig.buffer, before)
+        XCTAssertTrue(rig.buffer.hasPrefix(String(before.prefix(2))), rig.buffer)
+        // the last syllable is ㄇㄚˇ now: its window lists 馬, and it is not overridden (the model picks in context)
+        rig.drain()
+        let again = windowCandidates(rig)
+        XCTAssertTrue(again.contains { $0.reading == "ㄇㄚˇ" && $0.value == "馬" }, "\(again.map { $0.displayText })")
+        XCTAssertFalse(again.contains { $0.isLegalTypoEntry }, "the job of the old buffer is gone")
+        XCTAssertEqual(rig.runtime.legalEntryChosenCount, 1)
+    }
+
+    func testOfferedChosenAndNotReadyAreLogged() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = makeRuntime(logPath: log)
+        let rig = Rig(runtime)
+        rig.typeReadings(niHaoMa)
+        rig.drain()
+        // not ready: the compute queue is busy, the window opens at once without the entry
+        runtime.submitSideComputeJob { usleep(300_000) }
+        let t0 = Date()
+        var list = windowCandidates(rig)
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 0.25, "never waits for the scores")
+        XCTAssertTrue(list.allSatisfy { !$0.isLegalTypoEntry })
+        XCTAssertEqual(runtime.legalEntryNotReadyCount, 1)
+        rig.key("\u{1b}", keyCode: 53, charCode: 27)
+        rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+        list = windowCandidates(rig)
+        let slot = try XCTUnwrap(list.firstIndex { $0.isLegalTypoEntry })
+        let window = try XCTUnwrap(rig.delegate.state as? InputState.ChoosingCandidate)
+        rig.handler.slothEApplyLegalTypoCorrection(withReading: "ㄇㄚˇ", slot: slot, originalCursorIndex: Int(window.originalCursorIndex))
+        XCTAssertEqual(runtime.legalEntryOfferedCount, 1)
+        XCTAssertEqual(runtime.legalEntryChosenCount, 1)
+        runtime.flushLog()
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        let rows = text.split(separator: "\n").filter { $0.hasPrefix("Y\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        // Y time event slot n_cands ready_ms trigger
+        XCTAssertEqual(rows.count, 3, "\(rows)")
+        XCTAssertEqual(rows.map { $0[2] }, ["not_ready", "offered", "chosen"])
+        XCTAssertEqual(rows[1][3], String(slot + 1))
+        XCTAssertEqual(rows[1][4], String(list.count))
+        XCTAssertFalse(rows[1][5].isEmpty)
+        XCTAssertTrue(text.split(separator: "\n").filter { !$0.hasPrefix("#") }.allSatisfy { $0.unicodeScalars.allSatisfy { $0.isASCII } }, "no typed text in the log")
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testTabCyclingNeverBuildsOrPicksTheEntry() {
+        // Tab cycles the ordinary candidates (fixNode on each): its candidate list has no entry, so it can
+        // neither stop at one nor pick a reading that is not a node's (the order of the ordinary list itself
+        // depends on the jump-ahead's wall-clock budget, so only the entry is checked here)
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(niHaoMa)
+        rig.drain()
+        rig.handler.slothEInstallLegalEntryForTesting(withReading: "ㄇㄚˇ", value: "馬")
+        for _ in 0..<12 {
+            rig.key("\t", keyCode: 48, charCode: 9)
+            XCTAssertFalse(rig.buffer.contains("馬"), rig.buffer)
+        }
+        XCTAssertEqual(rig.runtime.legalEntryOfferedCount, 0, "the Tab path never built the entry")
+    }
+
+    func testThePauseAndArrowKeysStartTheScoresForTheSyllableAtTheCursor() {
+        let runtime = makeRuntime()
+        let rig = Rig(runtime)
+        rig.typeReadings(niHaoMa)
+        rig.drain()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 0)
+        rig.fires.last!()  // the 150 ms pause: the last syllable
+        rig.drain()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 1)
+        rig.left()  // the cursor moves onto 好
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 2)
+        rig.drain()
+        rig.right()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 3)
+        rig.drain()
+        // the same syllable in the same context reuses its scores
+        rig.left()
+        rig.drain()
+        rig.left()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 5)
+    }
+
+    func row(_ id: String) -> [String: Any] {
+        Self.rows.first { ($0["id"] as! String) == id }!
+    }
+
+    /// 一點都沒有 typed 一點都沒養 (ㄧㄡˇ -> ㄧㄤˇ, the T2 study's dev position L5_4): at the pause after the last key
+    /// the entry for the last syllable is computed, and the window offers 有 ㄧㄡˇ in the last slot of page 1.
+    func testATypoAtTheLastSyllableIsOfferedAtThePauseAndPickedFromTheWindow() throws {
+        let runtime = makeRuntime()
+        let rig = Rig(runtime)
+        let typed = typedBuffer(row("L5_4_adj_sub"))
+        rig.typeReadings(typed)
+        rig.drain()
+        XCTAssertEqual(rig.buffer, "一點都沒養")
+        XCTAssertNil(rig.handler.slothELegalEntryForTesting(), "nothing is computed before the pause")
+        rig.firePause()
+        let entry = try XCTUnwrap(rig.handler.slothELegalEntryForTesting())
+        XCTAssertEqual(entry, ["ㄧㄡˇ", "有"])
+        let list = windowCandidates(rig)
+        let slot = try XCTUnwrap(list.firstIndex { $0.isLegalTypoEntry })
+        XCTAssertEqual(slot, 8, "the last slot of page 1 (9 keys)")
+        XCTAssertEqual(list[slot].displayText, "有 ㄧㄡˇ")
+        let window = try XCTUnwrap(rig.delegate.state as? InputState.ChoosingCandidate)
+        rig.handler.slothEApplyLegalTypoCorrection(withReading: list[slot].reading, slot: slot, originalCursorIndex: Int(window.originalCursorIndex))
+        rig.delegate.take(rig.handler.buildInputtingState())
+        rig.drain()
+        XCTAssertEqual(rig.buffer, "一點都沒有")
+        // the same buffer with the switch off: no job, no entry
+        Preferences.slothETypoEntryEnabled = false
+        let off = Rig(makeRuntime())
+        off.typeReadings(typed)
+        off.drain()
+        off.firePause()
+        XCTAssertEqual(off.handler.slothELegalJobsStarted, 0)
+        XCTAssertTrue(windowCandidates(off).allSatisfy { !$0.isLegalTypoEntry })
+    }
+
+    /// The T2 dev position L3_5 (一篇文章隨機 typed 隨七): a syllable in the middle of the sentence; the cursor
+    /// moves onto it with Left, which computes its entry with the text on its right as context.
+    func testMovingTheCursorOntoATypoScoresItsEntry() throws {
+        let r = row("L3_5_adj_sub")
+        let rd = r["rd"] as! [String]
+        let p = r["p"] as! Int
+        let rig = Rig(makeRuntime())
+        rig.typeReadings(rd)
+        rig.drain()
+        XCTAssertEqual(rig.handler.slothELegalJobsStarted, 0)
+        for _ in 0..<(rd.count - 1 - p) { rig.left() }
+        XCTAssertGreaterThan(rig.handler.slothELegalJobsStarted, 0)
+        rig.drain()
+        let entry = try XCTUnwrap(rig.handler.slothELegalEntryForTesting())
+        XCTAssertEqual(entry[0], r["intended"] as! String)
+        let list = windowCandidates(rig)
+        let slot = try XCTUnwrap(list.firstIndex { $0.isLegalTypoEntry })
+        XCTAssertEqual(list[slot].reading, r["intended"] as! String)
+        XCTAssertEqual(slot, min(list.count - 1, 8))
+        XCTAssertEqual(list[slot].displayText, "\(list[slot].value) \(list[slot].reading)")
+    }
+
+    func testScanForExamples() {
+        let limit = Int(ProcessInfo.processInfo.environment["SLOTHE_V32B_SCAN"] ?? "") ?? 0
+        if limit == 0 { return }  // opt-in: TEST_RUNNER_SLOTHE_V32B_SCAN=600
+        let runtime = makeRuntime()
+        var hits = 0
+        var rows = 0
+        for row in Self.rows where (row["pop"] as! String) == "L" && (row["p"] as! Int) >= 2 {
+            rows += 1
+            if rows > limit { break }
+            let rig = Rig(runtime)
+            rig.typeReadings(typedBuffer(row))
+            rig.drain()
+            rig.firePause()
+            rig.drain()
+            if let entry = rig.handler.slothELegalEntryForTesting() {
+                hits += 1
+                let ok = entry[0] == (row["intended"] as! String)
+                NSLog("SLOTHE_V32B example %@ intended=%@ offered=%@ char=%@ ok=%d buffer=%@ typed=%@", row["id"] as! String, row["intended"] as! String, entry[0], entry[1], ok ? 1 : 0, rig.buffer, (row["rd"] as! [String])[row["p"] as! Int])
+            }
+            rig.handler.clear()
+        }
+        NSLog("SLOTHE_V32B scan typos=%d offered=%d", rows, hits)
+    }
+}

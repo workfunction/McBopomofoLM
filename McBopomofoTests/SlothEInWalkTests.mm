@@ -922,6 +922,250 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
     }
 }
 
+#pragma mark - v3.2b legal-but-wrong correction entry
+
+// The rule of reports/typo.md §8 (E+D w=0.25, prior 1 : 0.5, theta 1.766) on 1,226
+// dev positions of the T2 study (SlothE/make_v32b_fixture.py, 604 legal-but-wrong
+// positions and 622 clean ones): with the study's E and D gains, the app's
+// candidate set, neighbor directions and decision equal t2.py's.
+- (void)testLegalTypoRuleMatchesTheT2StudyOnDev
+{
+    XCTAssertTrue(gDataOnlyLM->isDataModelLoaded());
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v32b_dev_t2.jsonl"];
+    XCTAssertEqual(rows.count, 1226u);
+    NSUInteger candsSame = 0, dirsSame = 0, decisionSame = 0, offeredC = 0, nC = 0, top1L = 0, nL = 0;
+    for (NSDictionary *row in rows) {
+        std::string typed = Bytes(row[@"rd"][[row[@"p"] unsignedIntegerValue]]);
+        std::vector<McBopomofoSlothE::TypoCandidate> cands = McBopomofoSlothE::TypoCandidates(typed, *gDataOnlyLM);
+        NSSet *want = [NSSet setWithArray:row[@"cands"]];
+        NSMutableSet *got = [NSMutableSet set];
+        for (const auto &c : cands) {
+            [got addObject:@(c.reading.c_str())];
+        }
+        BOOL sameCands = [want isEqualToSet:got] && got.count == cands.size();
+        candsSame += sameCands;
+        if (!sameCands) {
+            NSLog(@"SLOTHE_V32B cands differ %@ typed=%s", row[@"id"], typed.c_str());
+            continue;
+        }
+        std::vector<McBopomofoSlothE::NeighborDirection> dirs = McBopomofoSlothE::LegalTypoDirections(typed, cands, *gDataOnlyLM);
+        BOOL sameDirs = YES;
+        std::vector<double> e, d;
+        for (size_t i = 0; i < cands.size(); ++i) {
+            NSString *r = @(cands[i].reading.c_str());
+            NSString *dir = row[@"dir"][r];
+            NSString *mine = dirs[i] == McBopomofoSlothE::NeighborDirection::kRow ? @"row" : dirs[i] == McBopomofoSlothE::NeighborDirection::kDiag ? @"diag" : @"other";
+            sameDirs = sameDirs && [dir isEqualToString:mine];
+            e.push_back([row[@"E"][r] doubleValue]);
+            d.push_back([row[@"D"][r] doubleValue]);
+        }
+        dirsSame += sameDirs;
+        if (!sameDirs) {
+            NSLog(@"SLOTHE_V32B directions differ %@", row[@"id"]);
+        }
+        McBopomofoSlothE::LegalTypoDecision decision = McBopomofoSlothE::DecideLegalTypo(cands, dirs, e, d);
+        BOOL wantOffered = [row[@"offered"] boolValue];
+        BOOL same = decision.offered == wantOffered && (!decision.offered || (cands[decision.index].reading == Bytes(row[@"top"]) && std::fabs(decision.gain - [row[@"gain"] doubleValue]) < 1e-9));
+        decisionSame += same;
+        if (!same) {
+            NSLog(@"SLOTHE_V32B decision differs %@ got=%s/%.9f want=%@/%@", row[@"id"], decision.offered ? cands[decision.index].reading.c_str() : "-", decision.gain, row[@"top"], row[@"gain"]);
+        }
+        if ([row[@"pop"] isEqualToString:@"C"]) {
+            ++nC;
+            offeredC += decision.offered;
+        } else {
+            ++nL;
+            top1L += decision.offered && cands[decision.index].reading == Bytes(row[@"intended"]);
+        }
+    }
+    NSLog(@"SLOTHE_V32B t2 rows=%lu candidates_same=%lu directions_same=%lu decision_same=%lu | false alarms on clean %lu/%lu, top-1 = intended on typos %lu/%lu (theta %.6f)",
+        (unsigned long)rows.count, (unsigned long)candsSame, (unsigned long)dirsSame, (unsigned long)decisionSame, (unsigned long)offeredC, (unsigned long)nC, (unsigned long)top1L, (unsigned long)nL, McBopomofoSlothE::kLegalTypoTheta);
+    XCTAssertEqual(candsSame, rows.count);
+    XCTAssertEqual(dirsSame, rows.count);
+    XCTAssertEqual(decisionSame, rows.count);
+}
+
+// A grid copy with the reading at pos replaced (the rebuilt spans looked up by patchFor)
+// is the grid a fresh insertion of the changed readings builds: same nodes, same walk.
+- (void)testPatchedGridEqualsAFreshGridOfTheChangedReadings
+{
+    XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
+    if (gInWalkEngine == nullptr) {
+        return;
+    }
+    const auto &vocab = gInWalkEngine->vocabulary();
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v32b_dev_t2.jsonl"];
+    NSUInteger checked = 0, same = 0;
+    for (NSUInteger i = 0; i < rows.count; i += 12) {
+        NSDictionary *row = rows[i];
+        std::vector<std::string> readings = Readings(row[@"rd"]);
+        size_t pos = [row[@"p"] unsignedIntegerValue];
+        auto grid = [self gridWithReadings:readings];
+        auto base = grid->snapshot();
+        NSArray *cands = row[@"cands"];
+        for (NSUInteger k = 0; k < cands.count && k < 4; ++k) {
+            std::string reading = Bytes(cands[k]);
+            std::vector<std::string> changed = readings;
+            changed[pos] = reading;
+            auto fresh = [self gridWithReadings:changed];
+            auto patch = grid->patchFor(pos, reading);
+            auto patched = base->snapshotWithReading(pos, reading, patch);
+            double fwd = 0;
+            bool hit = false;
+            auto r = gInWalkEngine->forward(changed, &fwd, &hit, nullptr, false);
+            XCTAssertTrue(r != nullptr);
+            if (r == nullptr) {
+                continue;
+            }
+            double a = 0, b = 0;
+            BOOL okA = McBopomofoSlothE::InWalkTotal(fresh.get(), *r, vocab, gInWalkEngine->variants(), InWalkParams(), &a);
+            BOOL okB = McBopomofoSlothE::InWalkTotal(patched.get(), *r, vocab, gInWalkEngine->variants(), InWalkParams(), &b);
+            std::string ta = McBopomofoSlothE::WalkText(fresh->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr));
+            std::string tb = McBopomofoSlothE::WalkText(patched->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr));
+            BOOL ok = okA == okB && a == b && ta == tb && patched->readings() == changed;
+            ++checked;
+            same += ok;
+            if (!ok) {
+                NSLog(@"SLOTHE_V32B patched grid differs %@ %s: fresh %.6f %s, patched %.6f %s", row[@"id"], reading.c_str(), a, ta.c_str(), b, tb.c_str());
+            }
+        }
+    }
+    NSLog(@"SLOTHE_V32B patched_grid checked=%lu same=%lu", (unsigned long)checked, (unsigned long)same);
+    XCTAssertGreaterThan(checked, 300u);
+    XCTAssertEqual(same, checked);
+}
+
+// The whole score on the real models (Core ML encoder, ANE next-token function) over the same
+// sample: the study's sentence with the typed syllable at p (E: whole-buffer encoder passes and
+// walks of the changed buffers; D: one next-token call on the walk's own text left of p). The
+// models differ from the study's (fp16 on the ANE vs fp32 / llama.cpp), so this is a rate check,
+// not an equality: the offer rate on clean positions and the recall on typos stay near the
+// study's (2.1 % and 68.2 % on this sample). Also the cost of one job.
+- (void)testLegalTypoOnTheRealModelsKeepsTheStudysRates
+{
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    Engine *engine = [runtime engine];
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    XCTAssertTrue(engine != nullptr && decoder != nullptr && gDataOnlyLM->isDataModelLoaded());
+    if (engine == nullptr || decoder == nullptr) {
+        return;
+    }
+    XCTAssertTrue([runtime loadNextTokenFunctionsForTesting:600]);
+    XCTAssertTrue(decoder->hasFirstChars());
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v32b_dev_t2.jsonl"];
+    std::atomic<bool> cancelled { false };
+    NSUInteger nC = 0, faC = 0, nL = 0, top1L = 0, offeredL = 0, agree = 0, compared = 0, retries = 0;
+    std::vector<double> jobMs, planMs;
+    NSUInteger limit = 400;  // every third row of the sample
+    for (NSUInteger i = 0; i < rows.count && compared < limit; i += 3) {
+        NSDictionary *row = rows[i];
+        std::vector<std::string> readings = Readings(row[@"rd"]);
+        size_t pos = [row[@"p"] unsignedIntegerValue];
+        auto grid = [self gridWithReadings:readings];
+        auto t0 = std::chrono::steady_clock::now();
+        McBopomofoSlothE::LegalTypoPlan plan = McBopomofoSlothE::MakeLegalTypoPlan(grid.get(), pos, *gDataOnlyLM);
+        planMs.push_back(InWalkMsSince(t0));
+        // the text left of pos as the study's D saw it: the model's own walk of the typed buffer
+        double fwd = 0;
+        bool hit = false;
+        auto r = engine->forward(readings, &fwd, &hit);
+        XCTAssertTrue(r != nullptr);
+        if (r == nullptr) {
+            continue;
+        }
+        auto walk = grid->rescoredWalk(*r, engine->vocabulary(), engine->variants(), InWalkParams(), nullptr);
+        std::vector<std::string> shown = McBopomofoSlothE::DisplayedChars(walk, readings.size());
+        std::string left;
+        for (size_t k = 0; k < pos; ++k) {
+            left += shown[k];
+        }
+        auto base = grid->snapshot();
+        McBopomofoSlothE::LegalTypoResult result;
+        t0 = std::chrono::steady_clock::now();
+        BOOL ran = McBopomofoSlothE::ScoreLegalTypo(engine, decoder, *base, plan, readings, {}, left, InWalkParams(), cancelled, &result);
+        jobMs.push_back(InWalkMsSince(t0));
+        XCTAssertTrue(ran);
+        retries += result.retry;
+        if (!result.finished) {
+            continue;
+        }
+        ++compared;
+        agree += result.offered == [row[@"offered"] boolValue] && (!result.offered || result.reading == Bytes(row[@"top"]));
+        if ([row[@"pop"] isEqualToString:@"C"]) {
+            ++nC;
+            faC += result.offered;
+        } else {
+            ++nL;
+            offeredL += result.offered;
+            top1L += result.offered && result.reading == Bytes(row[@"intended"]);
+            if (result.offered) {
+                XCTAssertFalse(result.value.empty());
+            }
+        }
+    }
+    NSLog(@"SLOTHE_V32B real_models positions=%lu (clean %lu, typos %lu) false_alarms=%lu (%.1f %%) offered_on_typos=%lu top1_intended=%lu (%.1f %%) same_decision_as_study=%.1f %% retries=%lu | plan ms p50 %.2f p95 %.2f | job ms p50 %.1f p95 %.1f max %.1f",
+        (unsigned long)compared, (unsigned long)nC, (unsigned long)nL, (unsigned long)faC, nC ? 100.0 * faC / nC : 0.0, (unsigned long)offeredL, (unsigned long)top1L, nL ? 100.0 * top1L / nL : 0.0,
+        compared ? 100.0 * agree / compared : 0.0, (unsigned long)retries, InWalkPercentile(planMs, 50), InWalkPercentile(planMs, 95), InWalkPercentile(jobMs, 50), InWalkPercentile(jobMs, 95), InWalkPercentile(jobMs, 100));
+    XCTAssertGreaterThan(compared, 300u);
+    XCTAssertLessThan(nC ? 100.0 * faC / nC : 0.0, 6.0);           // study 2.1 %
+    XCTAssertGreaterThan(nL ? 100.0 * top1L / nL : 0.0, 55.0);     // study 68.2 %
+    XCTAssertGreaterThan(compared ? 100.0 * agree / compared : 0.0, 88.0);
+}
+
+// The regime the entry runs in while typing: the buffer ends at the syllable (no text on its right,
+// so the encoder's right context is missing) -- measured, not asserted (reports/v32-app.md).
+- (void)testLegalTypoAtTheLastSyllableOfATypedBuffer
+{
+    SlothERuntime *runtime = SlothERuntime.sharedLoadedRuntimeForTesting;
+    Engine *engine = [runtime engine];
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    if (engine == nullptr || decoder == nullptr) {
+        return;
+    }
+    XCTAssertTrue([runtime loadNextTokenFunctionsForTesting:600]);
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v32b_dev_t2.jsonl"];
+    std::atomic<bool> cancelled { false };
+    NSUInteger nC = 0, faC = 0, nL = 0, offeredL = 0, top1L = 0, considered = 0;
+    for (NSUInteger i = 0; i < rows.count; i += 3) {
+        NSDictionary *row = rows[i];
+        size_t pos = [row[@"p"] unsignedIntegerValue];
+        if (pos < 2) {
+            continue;  // the first syllables have no left text worth measuring
+        }
+        std::vector<std::string> readings = Readings(row[@"rd"]);
+        readings.resize(pos + 1);  // typing stops at the typed syllable
+        auto grid = [self gridWithReadings:readings];
+        McBopomofoSlothE::LegalTypoPlan plan = McBopomofoSlothE::MakeLegalTypoPlan(grid.get(), pos, *gDataOnlyLM);
+        double fwd = 0;
+        bool hit = false;
+        auto r = engine->forward(readings, &fwd, &hit);
+        auto walk = grid->rescoredWalk(*r, engine->vocabulary(), engine->variants(), InWalkParams(), nullptr);
+        std::vector<std::string> shown = McBopomofoSlothE::DisplayedChars(walk, readings.size());
+        std::string left;
+        for (size_t k = 0; k < pos; ++k) {
+            left += shown[k];
+        }
+        auto base = grid->snapshot();
+        McBopomofoSlothE::LegalTypoResult result;
+        McBopomofoSlothE::ScoreLegalTypo(engine, decoder, *base, plan, readings, {}, left, InWalkParams(), cancelled, &result);
+        if (!result.finished) {
+            continue;
+        }
+        ++considered;
+        if ([row[@"pop"] isEqualToString:@"C"]) {
+            ++nC;
+            faC += result.offered;
+        } else {
+            ++nL;
+            offeredL += result.offered;
+            top1L += result.offered && result.reading == Bytes(row[@"intended"]);
+        }
+    }
+    NSLog(@"SLOTHE_V32B last_syllable positions=%lu clean=%lu offered_on_clean=%lu (%.1f %%) typos=%lu offered=%lu top1_intended=%lu (%.1f %%)",
+        (unsigned long)considered, (unsigned long)nC, (unsigned long)faC, nC ? 100.0 * faC / nC : 0.0, (unsigned long)nL, (unsigned long)offeredL, (unsigned long)top1L, nL ? 100.0 * top1L / nL : 0.0);
+    XCTAssertGreaterThan(considered, 200u);
+}
+
 // v3.1a background pass with carried context on the real models (Core ML
 // encoder + decoder): the w7 dev chunks (first 150 sentences), each pass
 // with the app's own carried context vs none. Model work only; the key path

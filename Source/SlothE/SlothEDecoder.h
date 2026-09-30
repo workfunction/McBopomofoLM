@@ -125,6 +125,10 @@ class Decoder {
   // log P(next text starts with c) = log max(sum of exp(lp) over c's tokens,
   // 1e-12); log(1e-12) for a char no token starts with.
   double firstCharLogProb(const std::vector<float>& lp, const std::string& c) const;
+  // v3.2b: a syllable's score in typo/t2.py _dwork: log max(sum over its chars
+  // of P(next text starts with c), 1e-12) (polyphones count under every reading).
+  double charsLogProb(const std::vector<float>& lp,
+                      const std::vector<std::string>& chars) const;
   // One throw-away call (prewarm after idle): <bos> + tokenize("的").
   bool prewarm(double* milliseconds);
   // v2.1: requests refused because their function was not loaded yet (each

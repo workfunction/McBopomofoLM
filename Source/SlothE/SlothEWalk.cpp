@@ -384,6 +384,83 @@ std::unique_ptr<SlothEGrid> SlothEGrid::snapshot() const {
   return copy;
 }
 
+std::vector<SlothEGrid::SpanPatch> SlothEGrid::patchFor(size_t pos, const std::string& reading) {
+  std::vector<SpanPatch> out;
+  const size_t n = readings_.size();
+  if (pos >= n) {
+    return out;
+  }
+  std::vector<std::string> rs = readings_;
+  rs[pos] = reading;
+  // the spans update() queries for an insertion at pos (reading_grid.cpp)
+  const size_t begin = pos < kMaximumSpanLength ? 0 : pos + 1 - kMaximumSpanLength;
+  for (size_t s = begin; s <= pos; ++s) {
+    const size_t maximum = std::min(kMaximumSpanLength, n - s);
+    for (size_t len = pos - s + 1; len <= maximum; ++len) {
+      std::string key;
+      for (size_t k = s; k < s + len; ++k) {
+        key += rs[k];
+        if (k + 1 < s + len) {
+          key += separator_;
+        }
+      }
+      std::vector<Formosa::Gramambular2::LanguageModel::Unigram> unigrams = lm_.getUnigrams(key);
+      if (unigrams.empty()) {
+        continue;
+      }
+      out.push_back(SpanPatch{s, len, std::move(key), std::move(unigrams)});
+    }
+  }
+  return out;
+}
+
+std::unique_ptr<SlothEGrid> SlothEGrid::snapshotWithReading(
+    size_t pos, const std::string& reading,
+    const std::vector<SpanPatch>& patch) const {
+  auto copy = std::make_unique<SlothEGrid>(std::make_shared<NoLookupLanguageModel>());
+  copy->isSnapshot_ = true;
+  gLiveSnapshots.fetch_add(1);
+  copy->separator_ = separator_;
+  copy->cursor_ = cursor_;
+  copy->readings_ = readings_;
+  if (pos < copy->readings_.size()) {
+    copy->readings_[pos] = reading;
+  }
+  copy->spans_.resize(spans_.size());
+  for (size_t i = 0; i < spans_.size(); ++i) {
+    for (size_t len = 1; len <= spans_[i].maxLength(); ++len) {
+      const NodePtr& node = spans_[i].nodeOf(len);
+      if (node == nullptr || (i <= pos && pos < i + len)) {
+        continue;  // covers pos: rebuilt from the patch
+      }
+      auto n = std::make_shared<Node>(*node);
+      n->reset();
+      copy->spans_[i].add(n);
+    }
+  }
+  for (const SpanPatch& p : patch) {
+    copy->spans_[p.start].add(std::make_shared<Node>(p.reading, p.len, p.unigrams));
+  }
+  return copy;
+}
+
+bool InWalkTotal(SlothEGrid* grid, const ForwardResult& r, const Vocabulary& vocab,
+                 const VariantTable& variants, const InWalkParams& params,
+                 double* total) {
+  std::vector<InWalkNode> detail;
+  grid->rescoredWalk(r, vocab, variants, params, nullptr, nullptr, &detail);
+  if (detail.empty()) {
+    return false;
+  }
+  double t = 0;
+  for (const InWalkNode& d : detail) {
+    t += grid->unigramScore(d.start, d.len, d.raw) +
+         params.beta * InWalkNeuralScore(r, vocab, d.start, d.len, d.raw, params.penalty);
+  }
+  *total = t;
+  return true;
+}
+
 std::vector<DecoderRequest> BuildDecoderRequests(
     const std::vector<InWalkNode>& nodes, size_t topK) {
   std::vector<DecoderRequest> out;

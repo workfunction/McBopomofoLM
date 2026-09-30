@@ -64,6 +64,8 @@ private let kSlothEDemoteShownCandidateKey = "SlothEDemoteShownCandidate"
 private let kSlothEDecoderEnabledKey = "SlothEDecoderEnabled"
 /// McBopomofoLM v3.2a: the full-sentence decoder gate after a typing pause (default on).
 private let kSlothEPauseGateEnabledKey = "SlothEPauseGateEnabled"
+/// McBopomofoLM v3.2b: the correction entry for a legal-but-wrong syllable in the candidate window (default on).
+private let kSlothETypoEntryEnabledKey = "SlothETypoEntryEnabled"
 
 private let kDefaultCandidateListTextSize: CGFloat = 16
 private let kMinCandidateListTextSize: CGFloat = 12
@@ -247,6 +249,7 @@ class Preferences: NSObject {
             kSlothEDemoteShownCandidateKey,
             kSlothEDecoderEnabledKey,
             kSlothEPauseGateEnabledKey,
+            kSlothETypoEntryEnabledKey,
         ]
     }
 
@@ -518,6 +521,21 @@ extension Preferences {
         slothEPauseGateEnabled = !slothEPauseGateEnabled
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothEPauseGateEnabled
+    }
+
+    /// McBopomofoLM v3.2b: when the candidate window opens on a syllable that the
+    /// model thinks was typed wrong (a neighboring key gave another legal syllable),
+    /// the last slot of page 1 offers the corrected reading, labelled with its
+    /// Zhuyin (for example 媽 ㄇㄚ). Picking it replaces the reading. Off: the
+    /// window is exactly the v3.1.2 one. Has no effect while the SlothE-T or
+    /// decoder switch is off.
+    @UserDefault(key: kSlothETypoEntryEnabledKey, defaultValue: true)
+    @objc static var slothETypoEntryEnabled: Bool
+
+    @objc static func toggleSlothETypoEntryEnabled() -> Bool {
+        slothETypoEntryEnabled = !slothETypoEntryEnabled
+        NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
+        return slothETypoEntryEnabled
     }
 }
 

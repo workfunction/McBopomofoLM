@@ -25,6 +25,7 @@
 
 #include "SlothEDecoder.h"
 #include "SlothEEngine.h"
+#include "SlothEWalk.h"
 #include "language_model.h"
 
 namespace McBopomofoSlothE {
@@ -86,6 +87,86 @@ bool ScoreTypoWindow(Engine* engine, Decoder* decoder, std::vector<TypoCandidate
                      const std::vector<std::string>& context, const std::string& leftText,
                      const std::atomic<bool>& cancelled, std::vector<TypoEntry>* entries,
                      std::string* source);
+
+// ---------------------------------------------------------------------------
+// v3.2b: the correction entry for a typo that gave a DIFFERENT LEGAL syllable
+// (reports/typo.md §8; frozen typo/t2_frozen.json: E+D w = 0.25, neighbor prior
+// row : diagonal = 1 : 0.5 with "other" = diagonal, theta 1.766).
+//
+// For the syllable at reading position p of the buffer, over the T1 slot1_nb
+// candidates c of its reading:
+//   E(c) = total(buffer with c at p) - total(buffer)   (A' in-walk path totals:
+//          sum over the walked nodes of LM + beta * neural; no picks, no pins)
+//   D(c) = score(c) - score(typed)  with score(x) = log sum, over x's chars, of
+//          P_dec(next text starts with the char | text left of p)
+//   gain(c) = E(c) + log w(c) + 0.25 * D(c)
+// The best gain (ties: reading order) is offered when it is >= theta.
+
+constexpr double kLegalTypoBlend = 0.25;
+constexpr double kLegalTypoTheta = 1.765735609807406;
+
+enum class NeighborDirection { kRow = 0, kDiag = 1, kOther = 2 };
+
+// log w of a direction: 0 for a same-row neighbor, log 0.5 otherwise.
+double LegalTypoLogWeight(NeighborDirection d);
+
+// t2_e.cpp dirCands(): row = a same-row left/right neighbor-key substitution in
+// the typed syllable's canonical keys gives the candidate; else diag = an
+// up/down-row neighbor (Space <-> the bottom row counts as diag); else other.
+std::vector<NeighborDirection> LegalTypoDirections(
+    const std::string& typed, const std::vector<TypoCandidate>& cands,
+    Formosa::Gramambular2::LanguageModel& lm);
+
+struct LegalTypoDecision {
+  bool offered = false;
+  size_t index = 0;   // into cands
+  double gain = 0;
+};
+// eGain / dGain per candidate. t2.py gains() + ranked(): in this operation order.
+LegalTypoDecision DecideLegalTypo(const std::vector<TypoCandidate>& cands,
+                                  const std::vector<NeighborDirection>& dirs,
+                                  const std::vector<double>& eGain,
+                                  const std::vector<double>& dGain);
+
+// Everything the score needs from the language model, gathered on the main thread.
+struct LegalTypoPlan {
+  size_t pos = 0;
+  std::string typed;
+  std::vector<std::string> typedChars;                 // single-char unigram values of typed
+  std::vector<TypoCandidate> cands;
+  std::vector<NeighborDirection> dirs;
+  std::vector<std::vector<std::string>> chars;         // per candidate, like typedChars
+  std::vector<SlothEGrid::SpanPatch> typedPatch;
+  std::vector<std::vector<SlothEGrid::SpanPatch>> patches;  // per candidate
+};
+// Main thread. The buffer's reading at pos must be a legal syllable.
+LegalTypoPlan MakeLegalTypoPlan(SlothEGrid* grid, size_t pos,
+                                Formosa::Gramambular2::LanguageModel& lm);
+
+struct LegalTypoResult {
+  bool finished = false;      // false: cancelled, or a model was not available
+  bool retry = false;         // not finished only because the next-token function was not loaded yet
+  bool offered = false;
+  std::string reading;        // the offered syllable
+  std::string value;          // the char the buffer shows there after the change
+  double gain = 0;
+  double eGain = 0;
+  double dGain = 0;
+  size_t candidates = 0;
+};
+
+// Compute queue. base = a snapshot of the buffer's grid (SlothEGrid::snapshot());
+// readings = its readings; context = carried encoder syllables (v3.1a);
+// leftText = carried text + shown text left of pos; a decoder without the
+// next-token function (or not loaded yet) finishes nothing (retry). `cancelled`
+// is checked before every model call; the return value is false only when it was
+// set (the result says whether the job finished, and why not).
+bool ScoreLegalTypo(Engine* engine, Decoder* decoder, const SlothEGrid& base,
+                    const LegalTypoPlan& plan,
+                    const std::vector<std::string>& readings,
+                    const std::vector<std::string>& context,
+                    const std::string& leftText, const InWalkParams& params,
+                    const std::atomic<bool>& cancelled, LegalTypoResult* result);
 
 }  // namespace McBopomofoSlothE
 
