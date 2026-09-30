@@ -20,6 +20,7 @@ class SlothEKeyHandlerTests: XCTestCase {
     }()
 
     var saved: [String: Any] = [:]
+    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
 
     override func setUpWithError() throws {
         saved = [
@@ -40,12 +41,15 @@ class SlothEKeyHandlerTests: XCTestCase {
         // Phase-1 ordering tests: pure SlothE-T order, no demotion of the shown word
         // (the demotion has its own tests in SlothEAsyncTests / SlothEInWalkTests).
         Preferences.slothEDemoteShownCandidate = false
+        savedPause = Preferences.slothEPauseGateEnabled
+        Preferences.slothEPauseGateEnabled = false
         LanguageModelManager.loadDataModels()
         XCTAssertTrue(Self.loadedRuntime.loaded, "bundled SlothE-T model did not load: \(Self.loadedRuntime.loadError ?? "")")
     }
 
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
+        Preferences.slothEPauseGateEnabled = savedPause
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
         Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
         Preferences.selectPhraseAfterCursorAsCandidate = saved["after"] as! Bool
@@ -473,6 +477,7 @@ class SlothETypoWindowTests: XCTestCase {
         return runtime
     }()
     var saved: [String: Any] = [:]
+    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
     var beeps = 0
 
     override func setUpWithError() throws {
@@ -486,12 +491,15 @@ class SlothETypoWindowTests: XCTestCase {
         Preferences.keepReadingUponCompositionError = true
         Preferences.slothEDecoderEnabled = true
         Preferences.associatedPhrasesEnabled = false
+        savedPause = Preferences.slothEPauseGateEnabled
+        Preferences.slothEPauseGateEnabled = false
         LanguageModelManager.loadDataModels()
         XCTAssertTrue(Self.loadedRuntime.loaded)
     }
 
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
+        Preferences.slothEPauseGateEnabled = savedPause
         Preferences.slothERerankEnabled = saved["sloth"] as! Bool
         Preferences.keepReadingUponCompositionError = saved["keep"] as! Bool
         Preferences.slothEDecoderEnabled = saved["decoder"] as! Bool

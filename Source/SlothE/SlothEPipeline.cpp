@@ -161,6 +161,72 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
   return result;
 }
 
+PauseGateResult RunPauseGate(Engine* engine, Decoder* decoder,
+                             DecoderScoreCache* scoreCache,
+                             const PipelineConfig& config, uint64_t generation,
+                             const std::vector<std::string>& readings,
+                             SlothEGrid* snapshot,
+                             const std::function<bool()>& isStale) {
+  PauseGateResult result;
+  result.generation = generation;
+  if (isStale()) {
+    result.skipped = true;
+    return result;
+  }
+  bool cacheHit = false;
+  result.encoder = engine->forward(readings, &result.forwardMs, &cacheHit, &config.encoderContext);
+  if (result.encoder == nullptr) {
+    result.encoderFailed = true;
+    return result;
+  }
+  auto t0 = std::chrono::steady_clock::now();
+  std::vector<InWalkNode> detail;
+  snapshot->rescoredWalk(*result.encoder, engine->vocabulary(), engine->variants(),
+                         config.inWalk, nullptr, nullptr, &detail);
+  std::vector<DecoderRequest> requests = BuildDecoderRequests(detail, config.decoder.topK);
+  result.requests = static_cast<int>(requests.size());
+  std::vector<std::string> pinnedValue(detail.size());  // "" = not pinned in this pass
+  for (const DecoderRequest& request : requests) {
+    if (isStale()) {
+      result.stale = true;
+      result.decoderMs = MsSince(t0);
+      return result;
+    }
+    // walk2/w9.py gate() mode "F": left text with this pass's pins, candidate, right text as shown
+    std::string left = config.decoderContext;
+    for (size_t j = 0; j < request.node; ++j) {
+      left += pinnedValue[j].empty() ? detail[j].shown : pinnedValue[j];
+    }
+    std::string right;
+    for (size_t j = request.node + 1; j < detail.size(); ++j) {
+      right += detail[j].shown;
+    }
+    std::vector<std::string> texts;
+    for (const std::string& v : request.values) {
+      texts.push_back(v + right);
+    }
+    std::vector<double> scores;
+    if (scoreCache->lookup(left, texts, &scores)) {
+      ++result.decoderCached;
+    } else {
+      DecoderCallStats stats;
+      if (decoder == nullptr || !decoder->score(left, texts, &scores, &stats)) {
+        ++result.noDecision;
+        continue;
+      }
+      ++result.decoderCalls;
+      scoreCache->store(left, texts, scores);
+    }
+    WalkPin pin;
+    if (DecideDecoderPin(request, scores, config.decoder, engine->variants(), &pin)) {
+      pinnedValue[request.node] = pin.value;
+      result.pins.push_back(pin);
+    }
+  }
+  result.decoderMs = MsSince(t0);
+  return result;
+}
+
 std::shared_ptr<const ForwardResult> ProvisionalResult(
     const std::shared_ptr<const ForwardResult>& base,
     const std::vector<std::string>& baseReadings,

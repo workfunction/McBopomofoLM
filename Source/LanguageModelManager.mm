@@ -465,6 +465,11 @@ static void LTLoadVariantAnnotatorData()
     return &gUserOverrideModel;
 }
 
++ (void)resetUserOverrideModelForTesting
+{
+    gUserOverrideModel = McBopomofo::UserOverrideModel(kUserOverrideModelCapacity, kObservedOverrideHalflife);
+}
+
 + (McBopomofo::VariantAnnotator *)variantAnnotator
 {
     return &gVariantAnnotator;

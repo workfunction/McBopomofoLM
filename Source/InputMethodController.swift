@@ -112,6 +112,10 @@ class McBopomofoInputMethodController: IMKInputController {
             let decoderItem = menu.addItem(
                 withTitle: decoderTitle, action: #selector(toggleSlothEDecoder(_:)), keyEquivalent: "")
             decoderItem.state = Preferences.slothEDecoderEnabled.state
+            let pauseGateItem = menu.addItem(
+                withTitle: NSLocalizedString("SlothE Sentence Check After a Pause", comment: ""),
+                action: #selector(toggleSlothEPauseGate(_:)), keyEquivalent: "")
+            pauseGateItem.state = Preferences.slothEPauseGateEnabled.state
         }
 
         // Only Bopomofo mode supports Bopomofo Font Annotation. If support is
@@ -372,6 +376,10 @@ class McBopomofoInputMethodController: IMKInputController {
 
     @objc func toggleSlothEDecoder(_ sender: Any?) {
         _ = Preferences.toggleSlothEDecoderEnabled()
+    }
+
+    @objc func toggleSlothEPauseGate(_ sender: Any?) {
+        _ = Preferences.toggleSlothEPauseGateEnabled()
     }
 
     @objc func togglePhraseReplacement(_ sender: Any?) {

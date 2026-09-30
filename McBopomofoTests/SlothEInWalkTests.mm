@@ -794,6 +794,134 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
     }
 }
 
+// v3.2a parity (reports/w9.md fix 1, config A; walk2/w9.py gate() mode "F"): on
+// the 500 dev sentences typed as one buffer, the app's RunPauseGate (encoder
+// scores from the fixture, decoder scores served from the score cache; a
+// request w9 did not make would go to the real decoder and count as a call)
+// makes the same decisions in the same order, and the re-walk with them shows
+// the committed text w9 measured. SlothE/make_v32a_fixture.py.
+- (void)testPauseGateMatchesW9FullSentenceGateOnDev
+{
+    XCTAssertTrue(gInWalkEngine != nullptr && gDataOnlyLM->isDataModelLoaded());
+    McBopomofoSlothE::Decoder *decoder = [SlothERuntime.sharedLoadedRuntimeForTesting decoder];
+    XCTAssertTrue(decoder != nullptr && decoder->isLoaded());
+    if (gInWalkEngine == nullptr || decoder == nullptr) {
+        return;
+    }
+    const auto &vocab = gInWalkEngine->vocabulary();
+    auto backend = std::make_unique<FixtureEncoder>(vocab);
+    FixtureEncoder *fixture = backend.get();
+    Engine engine;
+    std::string error;
+    NSString *dir = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
+    XCTAssertTrue(engine.load(dir.fileSystemRepresentation, std::move(backend), &error), @"%s", error.c_str());
+    NSArray<NSDictionary *> *rows = [self rowsOf:@"v32a_dev_full_gate.jsonl"];
+    XCTAssertEqual(rows.count, 500u);
+    NSUInteger pinsSame = 0, finalSame = 0, requests = 0, cached = 0, wanted = 0, calls = 0, withPins = 0, pinsTotal = 0;
+    uint64_t generation = 0;
+    for (NSDictionary *row in rows) {
+        std::vector<std::string> readings = Readings(row[@"readings"]);
+        std::vector<std::string> f = SplitOn(Bytes(row[@"line"]), '\t');
+        fixture->next.clear();
+        for (size_t t = 3; t < f.size(); ++t) {
+            fixture->next.push_back(SplitOn(f[t], ' '));
+        }
+        McBopomofoSlothE::DecoderScoreCache scores;
+        for (NSArray *d in row[@"dec"]) {
+            std::vector<double> sc;
+            for (NSNumber *x in d[2]) {
+                sc.push_back(x.doubleValue);
+            }
+            scores.store(Bytes(d[0]), Readings(d[1]), sc);
+        }
+        wanted += [row[@"dec"] count];
+        auto grid = [self gridWithReadings:readings];
+        auto snapshot = grid->snapshot();
+        McBopomofoSlothE::PipelineConfig config;
+        config.useDecoder = true;
+        McBopomofoSlothE::PauseGateResult result = McBopomofoSlothE::RunPauseGate(&engine, decoder, &scores, config, ++generation, readings, snapshot.get(), [] { return false; });
+        XCTAssertTrue(result.encoder != nullptr && !result.stale && !result.skipped);
+        if (result.encoder == nullptr) {
+            continue;
+        }
+        std::vector<McBopomofoSlothE::WalkPin> want = Pins(row[@"pins"]);
+        BOOL same = result.pins.size() == want.size();
+        for (size_t k = 0; same && k < want.size(); ++k) {
+            same = result.pins[k].start == want[k].start && result.pins[k].len == want[k].len && result.pins[k].value == want[k].value;
+        }
+        pinsSame += same;
+        if (!same) {
+            NSLog(@"SLOTHE_V32A pins differ %@ got=%zu want=%zu", row[@"sid"], result.pins.size(), want.size());
+        }
+        withPins += !want.empty();
+        pinsTotal += want.size();
+        requests += static_cast<NSUInteger>(result.requests);
+        cached += static_cast<NSUInteger>(result.decoderCached);
+        calls += static_cast<NSUInteger>(result.decoderCalls);
+        auto walk = grid->rescoredWalk(*result.encoder, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr, result.pins.empty() ? nullptr : &result.pins);
+        BOOL ok = SameWalk(walk, row[@"final"]);
+        finalSame += ok;
+        if (!ok) {
+            NSLog(@"SLOTHE_V32A final differs %@ got=%s", row[@"sid"], McBopomofoSlothE::WalkText(walk).c_str());
+        }
+    }
+    NSLog(@"SLOTHE_V32A pause_gate sentences=%lu pins_match=%lu final_match=%lu sentences_with_pins=%lu pins=%lu requests=%lu decoder_cached=%lu/%lu decoder_calls_missed=%lu",
+        (unsigned long)rows.count, (unsigned long)pinsSame, (unsigned long)finalSame, (unsigned long)withPins, (unsigned long)pinsTotal, (unsigned long)requests, (unsigned long)cached, (unsigned long)wanted, (unsigned long)calls);
+    XCTAssertEqual(pinsSame, rows.count);
+    XCTAssertEqual(finalSame, rows.count);
+    XCTAssertEqual(cached, wanted);
+    XCTAssertEqual(calls, 0u);
+}
+
+// v3.2a sticky pins (PLAN.md §18 D7): a sticky pin is applied only while its node
+// is on the un-pinned in-walk path; a plain pin is always applied.
+- (void)testStickyPinNeedsItsNodeOnTheUnpinnedPath
+{
+    XCTAssertTrue(gInWalkEngine != nullptr);
+    if (gInWalkEngine == nullptr) {
+        return;
+    }
+    // 大家看得到嗎 (config A'): the walk shows 嗎 at the last syllable; pin 媽 there.
+    std::vector<std::string> readings = { "ㄉㄚˋ", "ㄐㄧㄚ", "ㄎㄢˋ", "ㄉㄜˊ", "ㄉㄠˋ", "ㄇㄚ" };
+    double fwd = 0;
+    bool hit = false;
+    auto r = gInWalkEngine->forward(readings, &fwd, &hit);
+    XCTAssertTrue(r != nullptr);
+    auto grid = [self gridWithReadings:readings];
+    const auto &vocab = gInWalkEngine->vocabulary();
+    std::string free = McBopomofoSlothE::WalkText(grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr));
+    std::vector<McBopomofoSlothE::WalkPin> plain = { { 5, 1, "媽" } };
+    std::vector<McBopomofoSlothE::WalkPin> sticky = plain;
+    sticky[0].sticky = true;
+    InWalkStats stats;
+    std::string pinned = McBopomofoSlothE::WalkText(grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), &stats, &plain));
+    XCTAssertEqual(stats.pinsApplied, 1u);
+    XCTAssertTrue(pinned != free, @"%s vs %s", pinned.c_str(), free.c_str());
+    // the node (5, 1) is on the free path: the sticky pin acts like the plain one
+    XCTAssertEqual(McBopomofoSlothE::WalkText(grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), &stats, &sticky)), pinned);
+    XCTAssertEqual(stats.pinsApplied, 1u);
+    // a single-syllable node inside a longer word of the free walk is NOT on the free path
+    auto freeWalk = grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), nullptr);
+    size_t at = 0, inside = readings.size();
+    for (const auto &n : freeWalk.nodes) {
+        if (n->spanningLength() >= 2 && inside == readings.size()) {
+            inside = at;
+        }
+        at += n->spanningLength();
+    }
+    XCTAssertLessThan(inside, readings.size(), @"no multi-syllable node in %s", free.c_str());
+    if (inside < readings.size()) {
+        const auto &top = grid->spans()[inside].nodeOf(1)->unigrams();
+        XCTAssertFalse(top.empty());
+        std::vector<McBopomofoSlothE::WalkPin> off = { { inside, 1, top[0].value() } };
+        grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), &stats, &off);
+        XCTAssertEqual(stats.pinsApplied, 1u);  // a plain pin forces it
+        off[0].sticky = true;
+        grid->rescoredWalk(*r, vocab, gInWalkEngine->variants(), InWalkParams(), &stats, &off);
+        XCTAssertEqual(stats.pinsApplied, 0u);  // a sticky pin is left alone: its node is off the free path
+    }
+}
+
 // v3.1a background pass with carried context on the real models (Core ML
 // encoder + decoder): the w7 dev chunks (first 150 sentences), each pass
 // with the app's own carried context vs none. Model work only; the key path

@@ -193,11 +193,22 @@ ReadingGrid::WalkResult SlothEGrid::rescoredWalk(
   std::vector<long> pinIndex;
   if (pins != nullptr && !pins->empty()) {
     pinIndex.assign(all.size(), -1);
+    // v3.2a: a sticky pin needs its node on the un-pinned path (one extra Viterbi, only then)
+    std::vector<bool> onFreePath;
+    if (std::any_of(pins->begin(), pins->end(), [](const WalkPin& p) { return p.sticky; })) {
+      onFreePath.assign(all.size(), false);
+      for (const Pick& p : WalkEdges(all, n, params.beta, params.gamma, nullptr)) {
+        onFreePath[p.nodeIndex] = true;
+      }
+    }
     for (const WalkPin& pin : *pins) {
       for (size_t ni = 0; ni < all.size(); ++ni) {
         const NodeEdges& ne = all[ni];
         if (ne.pinned || ne.start != pin.start || ne.len != pin.len) {
           continue;
+        }
+        if (pin.sticky && !onFreePath[ni]) {
+          break;
         }
         const auto& us = ne.node->unigrams();
         for (size_t u = 0; u < us.size(); ++u) {

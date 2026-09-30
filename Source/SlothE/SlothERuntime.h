@@ -183,6 +183,16 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// chosen rank (1-based) or "esc", ms from the illegal reading to its scores
 /// ("" if not ready), source (dn = decoder next-token + encoder, t1 = a T1 rule).
 - (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source;
+/// v3.2a: one G line per typing-pause gate pass (no text): requests = nodes checked, calls / cached =
+/// decoder calls made / answered from the score cache, noDecision = requests the decoder could not answer,
+/// pins = decisions of the pass, changed = chars of the shown text that differ from before (applied only),
+/// forwardMs / decoderMs = model time, totalMs = from the pause to the result applied (< 0: not applied),
+/// result = applied / stale / skipped / deferred / failed.
+- (void)notePauseGateWithBufferLength:(NSUInteger)bufferLength requests:(NSInteger)requests calls:(NSInteger)calls cached:(NSInteger)cached noDecision:(NSInteger)noDecision pins:(NSInteger)pins changedChars:(NSInteger)changedChars forwardMilliseconds:(double)forwardMilliseconds decoderMilliseconds:(double)decoderMilliseconds totalMilliseconds:(double)totalMilliseconds result:(NSString *)result;
+/// Pause-gate passes: finished (any outcome), applied to the buffer, applied and changed the shown text.
+@property (readonly, nonatomic) NSUInteger pauseGateRunCount;
+@property (readonly, nonatomic) NSUInteger pauseGateAppliedCount;
+@property (readonly, nonatomic) NSUInteger pauseGateChangedCount;
 /// v3.1b: runs `job` on the compute queue after what is queued, never coalesced
 /// (the pipeline's own jobs replace each other; this one must run).
 - (void)submitSideComputeJob:(dispatch_block_t)job;

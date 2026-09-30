@@ -265,3 +265,4 @@
 "(loading)" = "（載入中）";
 "SlothE-T: List Current Word Last" = "SlothE-T：候選窗把目前的字排最後";
 "SlothE Decoder Corrections" = "SlothE 解碼器複查";
+"SlothE Sentence Check After a Pause" = "SlothE 停頓時整句複查";

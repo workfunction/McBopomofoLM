@@ -53,6 +53,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// The following methods are merely for testing.
 @interface LanguageModelManager ()
 + (void)loadDataModels;
+/// Tests: forget every pick the user override model has observed (it is process-wide, so an earlier test's
+/// picks would otherwise change later tests' walks).
++ (void)resetUserOverrideModelForTesting;
 @end
 
 @interface LanguageModelManager ()

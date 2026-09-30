@@ -15,6 +15,7 @@ import XCTest
 class SlothEPipelineTests: XCTestCase {
     static let resourcePath = (Bundle.main.resourcePath! as NSString).appendingPathComponent("SlothE")
     var saved: [String: Any] = [:]
+    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
 
     override func setUpWithError() throws {
         saved = [
@@ -37,11 +38,14 @@ class SlothEPipelineTests: XCTestCase {
         Preferences.slothEDemoteShownCandidate = true
         Preferences.slothEDecoderEnabled = true
         Preferences.chooseCandidateUsingSpace = true
+        savedPause = Preferences.slothEPauseGateEnabled
+        Preferences.slothEPauseGateEnabled = false
         LanguageModelManager.loadDataModels()
     }
 
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
+        Preferences.slothEPauseGateEnabled = savedPause
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
         Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
         Preferences.selectPhraseAfterCursorAsCandidate = saved["after"] as! Bool

@@ -135,6 +135,18 @@ struct SlothETypoJob {
     NSUInteger _slothTypoShownCount;
     NSUInteger _slothTypoJobsStarted;                   // tests
     NSString *_slothTypoShownSource;
+
+    // v3.2a typing-pause gate (PLAN.md §18), main thread. Every key event bumps
+    // _slothPauseKeySeq (a pause timer fires only if no key came after it was
+    // armed) and cancels the running pass. The last applied pass's decisions are
+    // sticky (D7): merged over the per-key left-context gate's pins for the
+    // readings it covered, until the next pause pass or a pick on that word.
+    uint64_t _slothPauseKeySeq;
+    uint64_t _slothPauseGenerationDone;  // grid generation whose pause pass was applied
+    std::shared_ptr<std::atomic<bool>> _slothPauseCancel;
+    std::vector<McBopomofoSlothE::WalkPin> _slothPausePins;   // sticky = true
+    std::vector<std::string> _slothPauseReadings;             // the buffer that pass covered
+    size_t _slothPauseCoverage;                               // leading readings it still covers
 }
 
 @synthesize delegate = _delegate;
@@ -142,6 +154,8 @@ struct SlothETypoJob {
 @synthesize slothEClock = _slothEClock;
 @synthesize slothEClientID = _slothEClientID;
 @synthesize slothETypoWaitMilliseconds = _slothETypoWaitMilliseconds;
+@synthesize slothEPauseDelayMilliseconds = _slothEPauseDelayMilliseconds;
+@synthesize slothEPauseScheduler = _slothEPauseScheduler;
 
 - (NSString *)inputMode
 {
@@ -181,6 +195,7 @@ struct SlothETypoJob {
             _grid->setReadingSeparator("-");
         }
         ++_slothGeneration;
+        [self _slothEResetPauseGate];
 
         if (!_bpmfReadingBuffer->isEmpty()) {
             _bpmfReadingBuffer->clear();
@@ -219,6 +234,7 @@ struct SlothETypoJob {
         _slothExpectedLocation = NSNotFound;
         _slothSelection = @"na";
         _slothETypoWaitMilliseconds = 50;
+        _slothEPauseDelayMilliseconds = 150;
         _slothEClock = ^NSTimeInterval {
             return NSProcessInfo.processInfo.systemUptime;
         };
@@ -270,6 +286,7 @@ struct SlothETypoJob {
     if (!_grid->overrideCandidate(actualCursor, candidate)) {
         return;
     }
+    [self _slothEDropStickyPinsForPickAt:actualCursor reading:reading];
 
     [self _walk];
 
@@ -289,6 +306,7 @@ struct SlothETypoJob {
     } else {
         _grid->setCursor(originalCursorIndex);
     }
+    [self _slothESchedulePauseGate];  // a click on a candidate is not a key event
 }
 
 - (void)fixNodeForAssociatedPhraseWithPrefixAt:(size_t)prefixCursorIndex prefixReading:(NSString *)pfxReading prefixValue:(NSString *)pfxValue associatedPhraseReading:(NSString *)phraseReading associatedPhraseValue:(NSString *)phraseValue
@@ -297,6 +315,7 @@ struct SlothETypoJob {
     if (_grid->length() == 0) {
         return;
     }
+    [self _slothEDropStickyPinsFrom:0];  // v3.2a: a phrase pick rewrites the words around the prefix
 
     // Unlike actualCandidateCursorIndex() which takes the Hanyin/MS IME cursor
     // modes into consideration, prefixCursorIndex is *already* the actual node
@@ -394,6 +413,7 @@ struct SlothETypoJob {
     _grid->clear();
     _latestWalk = Formosa::Gramambular2::ReadingGrid::WalkResult {};
     ++_slothGeneration;
+    [self _slothEResetPauseGate];
 }
 
 - (void)handleForceCommitWithStateCallback:(void (^)(InputState *))stateCallback
@@ -450,6 +470,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     [runtime beginKeystroke];
     auto start = std::chrono::steady_clock::now();
     _slothKeyStart = start;
+    [self _slothEPauseKeyArrived];
     InputState *state = inState;
     // McBopomofoLM: in the plain composing state, bring the in-walk result for
     // the current buffer in first. Keys that commit or open the candidate
@@ -494,6 +515,7 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         _slothSubmitPending = NO;
         [self _slothESubmitPipelineFromKey:YES];
     }
+    [self _slothESchedulePauseGate];
     return handled;
 }
 
@@ -3106,6 +3128,7 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
 - (void)_slothEPreferencesDidChange:(NSNotification *)notification
 {
     _slothLastPins.clear();
+    [self _slothEResetPauseGate];
     if ([self _activeSlothEEngine] == nullptr) {
         _slothLastEncoder.reset();
         _slothLastReadings.clear();
@@ -3141,7 +3164,7 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
 {
     std::vector<McBopomofoSlothE::WalkPin> pins;
     if (result.decoderDone && [self _slothEDecoderActive]) {
-        pins = result.pins;  // never apply decoder pins while the decoder switch is off
+        pins = [self _slothEMergeStickyPins:result.pins];  // never apply decoder pins while the decoder switch is off
     }
     double ms = [self _slothEWalkWithEncoder:result.encoder pins:pins engine:engine];
     _slothAppliedGeneration = _slothGeneration;
@@ -3293,6 +3316,209 @@ static NSString *SlothEDecoderStageName(McBopomofoSlothE::DecoderStage stage)
     }
     double e2eMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - keyStart).count();
     note(changed ? @"applied" : @"unchanged", inWalkMs, e2eMs);
+}
+
+#pragma mark - SlothE typing-pause gate (v3.2a)
+
+// Chars of `after` that differ from `before`, by position (a missing char counts).
+static NSInteger SlothEChangedChars(const std::string &before, const std::string &after)
+{
+    std::vector<std::string> a = McBopomofoSlothE::Utf8Chars(before);
+    std::vector<std::string> b = McBopomofoSlothE::Utf8Chars(after);
+    NSInteger changed = 0;
+    for (size_t i = 0; i < std::max(a.size(), b.size()); ++i) {
+        changed += (i >= a.size() || i >= b.size() || a[i] != b[i]) ? 1 : 0;
+    }
+    return changed;
+}
+
+// Any key event: it aborts the running pause pass (its next model call is not made)
+// and disarms the pause timers set before it.
+- (void)_slothEPauseKeyArrived
+{
+    ++_slothPauseKeySeq;
+    if (_slothPauseCancel != nullptr) {
+        _slothPauseCancel->store(true);
+        _slothPauseCancel.reset();
+    }
+}
+
+// Buffer cleared, another grid, or a switch changed: no sticky decision survives.
+- (void)_slothEResetPauseGate
+{
+    if (_slothPauseCancel != nullptr) {
+        _slothPauseCancel->store(true);
+        _slothPauseCancel.reset();
+    }
+    ++_slothPauseKeySeq;
+    _slothPausePins.clear();
+    _slothPauseReadings.clear();
+    _slothPauseCoverage = 0;
+    _slothPauseGenerationDone = 0;
+}
+
+// The pause pass' decisions no longer hold from reading `position` on (a pick on
+// that word, or a phrase pick): the per-key gate takes over there until the next pause.
+- (void)_slothEDropStickyPinsFrom:(size_t)position
+{
+    _slothPauseCoverage = std::min(_slothPauseCoverage, position);
+    auto stale = [position](const McBopomofoSlothE::WalkPin &pin) { return pin.start + pin.len > position; };
+    _slothPausePins.erase(std::remove_if(_slothPausePins.begin(), _slothPausePins.end(), stale), _slothPausePins.end());
+    _slothLastPins.erase(std::remove_if(_slothLastPins.begin(), _slothLastPins.end(), [&stale](const McBopomofoSlothE::WalkPin &pin) { return pin.sticky && stale(pin); }), _slothLastPins.end());
+    _slothPauseGenerationDone = 0;
+}
+
+// A pick of a candidate whose reading has k syllables at loc rewrites a node that
+// starts within k - 1 readings before loc.
+- (void)_slothEDropStickyPinsForPickAt:(size_t)loc reading:(NSString *)reading
+{
+    if (_slothPauseCoverage == 0) {
+        return;
+    }
+    size_t k = 1;
+    for (NSUInteger i = 0; i < reading.length; ++i) {
+        k += [reading characterAtIndex:i] == '-' ? 1 : 0;
+    }
+    [self _slothEDropStickyPinsFrom:loc + 1 >= k ? loc + 1 - k : 0];
+}
+
+// The pins a per-key result is applied with: the last pause pass' decisions for the
+// readings that are still where it left them (a pass is authoritative there: an
+// earlier left-gate pin on a node it did not pin is superseded), plus the per-key
+// gate's pins for everything after them.
+- (std::vector<McBopomofoSlothE::WalkPin>)_slothEMergeStickyPins:(const std::vector<McBopomofoSlothE::WalkPin> &)left
+{
+    if (_slothPauseCoverage == 0) {
+        return left;
+    }
+    const std::vector<std::string> &readings = _grid->readings();
+    size_t common = 0;
+    while (common < _slothPauseReadings.size() && common < readings.size() && _slothPauseReadings[common] == readings[common]) {
+        ++common;
+    }
+    size_t covered = std::min(_slothPauseCoverage, common);
+    std::vector<McBopomofoSlothE::WalkPin> out;
+    for (const auto &pin : _slothPausePins) {
+        if (pin.start + pin.len <= covered) {
+            out.push_back(pin);
+        }
+    }
+    for (const auto &pin : left) {
+        if (pin.start + pin.len > covered) {
+            out.push_back(pin);
+        }
+    }
+    return out;
+}
+
+// After a key (or a mouse pick): arm the pause timer. Skipped when nothing new would
+// be checked (this generation's pass was applied) or the gate cannot run.
+- (void)_slothESchedulePauseGate
+{
+    if (_grid->length() == 0 || _slothPauseGenerationDone == _slothGeneration || !Preferences.slothEPauseGateEnabled || [self _activeSlothEEngine] == nullptr || ![self _slothEDecoderActive]) {
+        return;
+    }
+    uint64_t seq = _slothPauseKeySeq;
+    __weak KeyHandler *weakSelf = self;
+    dispatch_block_t fire = ^{
+        [weakSelf _slothEPauseTimerFired:seq];
+    };
+    NSTimeInterval delay = _slothEPauseDelayMilliseconds / 1000.0;
+    if (_slothEPauseScheduler != nil) {
+        _slothEPauseScheduler(delay, fire);
+    } else {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), fire);
+    }
+}
+
+- (void)_slothEPauseTimerFired:(uint64_t)seq
+{
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    if (seq != _slothPauseKeySeq || engine == nullptr || !Preferences.slothEPauseGateEnabled || ![self _slothEDecoderActive] || _grid->length() == 0 || _slothPauseGenerationDone == _slothGeneration) {
+        return;
+    }
+    id<KeyHandlerDelegate> delegate = _delegate;
+    if (![delegate respondsToSelector:@selector(keyHandlerCanRefreshComposingBuffer:)] || ![delegate keyHandlerCanRefreshComposingBuffer:self]) {
+        return;  // a candidate window or another state is up: nothing is replaced under it
+    }
+    SlothERuntime *runtime = _slothERuntime;
+    uint64_t generation = _slothGeneration;
+    std::shared_ptr<McBopomofoSlothE::PipelineSlot> slot = _slothSlot;
+    slot->latestRequested.store(generation);  // older per-key jobs are stale from here on
+    std::vector<std::string> readings = _grid->readings();
+    McBopomofoSlothE::PipelineConfig config;
+    config.inWalk = [runtime inWalkParams];
+    config.decoder = [runtime decoderParams];
+    config.useDecoder = YES;
+    config.encoderContext = _slothCarried.encoderReadings();
+    config.decoderContext = _slothCarried.decoderText();
+    std::shared_ptr<McBopomofoSlothE::SlothEGrid> snapshot = _grid->snapshot();
+    McBopomofoSlothE::Decoder *decoder = [runtime decoder];
+    McBopomofoSlothE::DecoderScoreCache *scoreCache = [runtime decoderScoreCache];
+    auto cancel = std::make_shared<std::atomic<bool>>(false);
+    if (_slothPauseCancel != nullptr) {
+        _slothPauseCancel->store(true);
+    }
+    _slothPauseCancel = cancel;
+    auto start = std::chrono::steady_clock::now();
+    __weak KeyHandler *weakSelf = self;
+    [runtime submitSideComputeJob:^{
+        auto isStale = [cancel, slot, generation] {
+            return cancel->load() || slot->latestRequested.load() != generation;
+        };
+        McBopomofoSlothE::PauseGateResult result = McBopomofoSlothE::RunPauseGate(engine, decoder, scoreCache, config, generation, readings, snapshot.get(), isStale);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf _slothEDidFinishPauseGate:result readings:readings cancel:cancel start:start];
+            (void)runtime;
+        });
+    }];
+}
+
+- (void)_slothEDidFinishPauseGate:(const McBopomofoSlothE::PauseGateResult &)result readings:(const std::vector<std::string> &)readings cancel:(const std::shared_ptr<std::atomic<bool>> &)cancel start:(std::chrono::steady_clock::time_point)start
+{
+    SlothERuntime *runtime = _slothERuntime;
+    McBopomofoSlothE::Engine *engine = [self _activeSlothEEngine];
+    auto note = ^(NSString *outcome, NSInteger changed, double totalMs) {
+        [runtime notePauseGateWithBufferLength:readings.size() requests:result.requests calls:result.decoderCalls cached:result.decoderCached noDecision:result.noDecision pins:static_cast<NSInteger>(result.pins.size()) changedChars:changed forwardMilliseconds:result.forwardMs decoderMilliseconds:result.decoderMs totalMilliseconds:totalMs result:outcome];
+    };
+    if (result.skipped) {
+        note(@"skipped", 0, -1);
+        return;
+    }
+    if (result.encoderFailed || result.encoder == nullptr) {
+        note(@"failed", 0, -1);
+        return;
+    }
+    if (result.stale || cancel->load() || result.generation != _slothGeneration || readings != _grid->readings() || engine == nullptr || !Preferences.slothEPauseGateEnabled || ![self _slothEDecoderActive]) {
+        note(@"stale", 0, -1);
+        return;
+    }
+    id<KeyHandlerDelegate> delegate = _delegate;
+    if (![delegate respondsToSelector:@selector(keyHandlerCanRefreshComposingBuffer:)] || ![delegate keyHandlerCanRefreshComposingBuffer:self]) {
+        note(@"deferred", 0, -1);
+        return;
+    }
+    // Apply: this pass' decisions are the sticky ones (all readings covered).
+    _slothPausePins = result.pins;
+    for (auto &pin : _slothPausePins) {
+        pin.sticky = true;
+    }
+    _slothPauseReadings = readings;
+    _slothPauseCoverage = readings.size();
+    std::string before = McBopomofoSlothE::WalkText(_latestWalk);
+    McBopomofoSlothE::PipelineResult applied;
+    applied.generation = result.generation;
+    applied.encoder = result.encoder;
+    applied.decoderDone = true;
+    applied.decoderStage = McBopomofoSlothE::DecoderStage::kScored;
+    [self _slothEApplyPipelineResult:applied engine:engine];
+    _slothPauseGenerationDone = _slothGeneration;
+    std::string after = McBopomofoSlothE::WalkText(_latestWalk);
+    NSInteger changed = SlothEChangedChars(before, after);
+    if (before != after && [delegate respondsToSelector:@selector(keyHandler:didRefreshComposingBufferWithState:)]) {
+        [delegate keyHandler:self didRefreshComposingBufferWithState:[self buildInputtingState]];
+    }
+    note(@"applied", changed, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 }
 
 // Keys whose outcome depends on the final walk: commits and candidate windows.

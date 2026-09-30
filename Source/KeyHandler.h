@@ -143,6 +143,13 @@ extern InputMode InputModePlainBopomofo;
 @property (assign, nonatomic) double slothETypoWaitMilliseconds;
 /// Tests: correction-score jobs started (one per reading + context).
 @property (assign, nonatomic, readonly) NSUInteger slothETypoJobsStarted;
+/// v3.2a typing-pause gate (PLAN.md §18): this long after the last key the decoder
+/// gate runs over the whole buffer (150 ms). Tests set it, or inject a scheduler.
+@property (assign, nonatomic) double slothEPauseDelayMilliseconds;
+/// Tests: called instead of dispatch_after (main queue) to arm the pause timer:
+/// (delay in seconds, block to run when it fires). The block does nothing if a
+/// key event came after it was armed.
+@property (copy, nonatomic, nullable) void (^slothEPauseScheduler)(NSTimeInterval delay, dispatch_block_t fire);
 /// Client bundle identifier for the latency log's C lines (set on activate).
 @property (copy, nonatomic, nullable) NSString *slothEClientID;
 @end

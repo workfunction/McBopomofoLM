@@ -116,6 +116,8 @@
 		5E1A0C0DE0000000000000A2 /* SlothECoreML.mm in Sources */ = {isa = PBXBuildFile; fileRef = 5E1A0C0DE0000000000000A1 /* SlothECoreML.mm */; };
 		69939E3A2A48DD1BAD787FB4 /* SlothEDecoderTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */; };
 		90A55C40213AA9BC041C6CD8 /* SlothEPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */; };
+		32267D4053DB250CF3718B5F /* SlothEV32Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */; };
+		E2846FA9377304CF95BED0C0 /* SlothEV32ParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -297,6 +299,8 @@
 		5E1A0C0DE0000000000000A3 /* SlothECoreML.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SlothECoreML.h; sourceTree = "<group>"; };
 		08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEDecoderTests.mm; sourceTree = "<group>"; };
 		7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEPipelineTests.swift; sourceTree = "<group>"; };
+		6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEV32Tests.swift; sourceTree = "<group>"; };
+		B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEV32ParityTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -571,6 +575,8 @@
 				11085A74ED96C0C94BB7F319 /* SlothEAsyncTests.swift */,
 				08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */,
 				7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */,
+				6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */,
+				B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */,
 				657C968F3D0EC799A7A703FB /* SlothEFixtures */,
 				D4C2A9852B4309D600113711 /* McBopomofoTests-Bridging-Header.h */,
 			);
@@ -865,6 +871,8 @@
 				D63B87D9C50274C12415C5B8 /* SlothEAsyncTests.swift in Sources */,
 				69939E3A2A48DD1BAD787FB4 /* SlothEDecoderTests.mm in Sources */,
 				90A55C40213AA9BC041C6CD8 /* SlothEPipelineTests.swift in Sources */,
+				32267D4053DB250CF3718B5F /* SlothEV32Tests.swift in Sources */,
+				E2846FA9377304CF95BED0C0 /* SlothEV32ParityTests.swift in Sources */,
 				D4A8E43627A9E982002F7A07 /* KeyHandlerPlainBopomofoTests.swift in Sources */,
 				D436E23F2CD20BA700C6155D /* AssociatedPhrasesTests.swift in Sources */,
 				D449AD5F2B393C00000C5812 /* InputMacroTests.swift in Sources */,

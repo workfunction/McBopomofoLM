@@ -45,6 +45,7 @@ class SlothEAsyncTests: XCTestCase {
     static let resourcePath = (Bundle.main.resourcePath! as NSString).appendingPathComponent("SlothE")
 
     var saved: [String: Any] = [:]
+    var savedPause = true  // v3.2a: this suite pins the v3.1.2 behaviour (pause gate off)
 
     override func setUpWithError() throws {
         saved = [
@@ -68,11 +69,14 @@ class SlothEAsyncTests: XCTestCase {
         Preferences.chooseCandidateUsingSpace = true
         // Phase-2 tests of the encoder in-walk path; the decoder has its own tests.
         Preferences.slothEDecoderEnabled = false
+        savedPause = Preferences.slothEPauseGateEnabled
+        Preferences.slothEPauseGateEnabled = false
         LanguageModelManager.loadDataModels()
     }
 
     override func tearDownWithError() throws {
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
+        Preferences.slothEPauseGateEnabled = savedPause
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
         Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
         Preferences.selectPhraseAfterCursorAsCandidate = saved["after"] as! Bool

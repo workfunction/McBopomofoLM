@@ -11,6 +11,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -94,6 +95,43 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
                            const PipelineConfig& config, uint64_t generation,
                            const std::vector<std::string>& readings,
                            SlothEGrid* snapshot, double queueMs);
+
+// v3.2a pause gate (reports/w9.md fix 1, config A: lambda 2, tau 0.5, top-3;
+// PLAN.md §18): the decoder gate over the WHOLE buffer, run once after a
+// typing pause. Same requests and the same decision rule as the per-key gate
+// (BuildDecoderRequests, DecideDecoderPin), but every candidate is scored
+// with the text around it: decoderContext + the text left of the node (a pin
+// already decided in this pass replaces the shown value) + candidate + the
+// shown text right of the node (walk2/w9.py gate(), mode "F"). Nodes are
+// visited left to right, one decoder call each. A request whose longest
+// sequence does not fit the decoder's largest length function, or whose
+// function is not loaded yet, gets no decision (Decoder::score returns false).
+struct PauseGateResult {
+  uint64_t generation = 0;
+  bool skipped = false;       // stale before it started
+  bool stale = false;         // abandoned part-way (isStale became true)
+  bool encoderFailed = false;
+  std::shared_ptr<const ForwardResult> encoder;
+  // every decision of this pass; a node without a pin here needs none. The
+  // pass is authoritative for the whole buffer: an earlier per-key pin on a
+  // node this pass did not pin is superseded.
+  std::vector<WalkPin> pins;
+  int requests = 0;           // nodes with >= 2 aligned candidates
+  int decoderCalls = 0;       // model calls (cache misses)
+  int decoderCached = 0;      // answered from the score cache
+  int noDecision = 0;         // too long, function not loaded, or the call failed
+  double forwardMs = 0;
+  double decoderMs = 0;
+};
+
+// Runs on the calling (compute) thread. isStale is polled before each model
+// call. snapshot is a deep copy of the buffer's grid (SlothEGrid::snapshot()).
+PauseGateResult RunPauseGate(Engine* engine, Decoder* decoder,
+                             DecoderScoreCache* scoreCache,
+                             const PipelineConfig& config, uint64_t generation,
+                             const std::vector<std::string>& readings,
+                             SlothEGrid* snapshot,
+                             const std::function<bool()>& isStale);
 
 // Provisional rescoring input for the anti-flicker re-pick: the previous pass
 // `base` for readings `baseReadings` viewed over `readings` -- positions of the

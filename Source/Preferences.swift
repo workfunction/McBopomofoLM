@@ -62,6 +62,8 @@ private let kSlothERerankEnabledKey = "SlothERerankEnabled"
 private let kSlothEDemoteShownCandidateKey = "SlothEDemoteShownCandidate"
 /// McBopomofoLM phase 3: the SlothE decoder's gated corrections on top of the in-walk re-pick.
 private let kSlothEDecoderEnabledKey = "SlothEDecoderEnabled"
+/// McBopomofoLM v3.2a: the full-sentence decoder gate after a typing pause (default on).
+private let kSlothEPauseGateEnabledKey = "SlothEPauseGateEnabled"
 
 private let kDefaultCandidateListTextSize: CGFloat = 16
 private let kMinCandidateListTextSize: CGFloat = 12
@@ -244,6 +246,7 @@ class Preferences: NSObject {
             kSlothERerankEnabledKey,
             kSlothEDemoteShownCandidateKey,
             kSlothEDecoderEnabledKey,
+            kSlothEPauseGateEnabledKey,
         ]
     }
 
@@ -501,6 +504,20 @@ extension Preferences {
         slothEDecoderEnabled = !slothEDecoderEnabled
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothEDecoderEnabled
+    }
+
+    /// McBopomofoLM v3.2a: about 150 ms after the last key, run the decoder gate
+    /// over the whole buffer (each candidate scored with the text on both sides)
+    /// and keep its decisions until the next pause or a pick on that word. Off:
+    /// exactly the v3.1.2 behaviour (left-context gate only). Has no effect while
+    /// the SlothE-T or decoder switch is off.
+    @UserDefault(key: kSlothEPauseGateEnabledKey, defaultValue: true)
+    @objc static var slothEPauseGateEnabled: Bool
+
+    @objc static func toggleSlothEPauseGateEnabled() -> Bool {
+        slothEPauseGateEnabled = !slothEPauseGateEnabled
+        NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
+        return slothEPauseGateEnabled
     }
 }
 

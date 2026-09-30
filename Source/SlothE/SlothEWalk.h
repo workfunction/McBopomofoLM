@@ -48,6 +48,11 @@ struct WalkPin {
   size_t start = 0;
   size_t len = 0;
   std::string value;
+  // v3.2a (PLAN.md §18 D7): a pin kept from an earlier pause pass. It is
+  // applied only while its node is still on the un-pinned in-walk path of the
+  // current buffer (a node that a later syllable turned into a longer word is
+  // not forced back).
+  bool sticky = false;
 };
 
 // One node of the in-walk walk, with what the decoder stage needs.
@@ -190,6 +195,7 @@ class SlothEGrid : public Formosa::Gramambular2::ReadingGrid {
   // Deep copy (nodes included) for use on another thread; never shares node
   // state with this grid.
   std::unique_ptr<SlothEGrid> snapshot() const;
+
   // Snapshots alive right now (all threads); tests check the backlog.
   static int64_t LiveSnapshots();
 
