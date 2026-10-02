@@ -461,14 +461,179 @@ class SlothECarriedContextTests: XCTestCase {
         let text = try String(contentsOfFile: log, encoding: .utf8)
         let rows = text.split(separator: "\n").filter { $0.hasPrefix("C\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
         XCTAssertEqual(rows.count, 5, "\(rows)")
-        XCTAssertTrue(rows.allSatisfy { $0.count == 6 && $0[5] == "com.example.editor" })
+        XCTAssertTrue(rows.allSatisfy { $0.count == 7 && $0[5] == "com.example.editor" && $0[6] == "0" }, "v3.2e: a pass field after the client, 0 here")
         XCTAssertEqual(rows[0][2...4], ["0", "none", "na"])
         XCTAssertEqual(rows[1][2...4], ["0", "none", "ok"])
         XCTAssertEqual(rows[2][2...4], ["2", "none", "ok"])
         XCTAssertEqual(rows[3][2...4], ["0", "activate", "na"])
         XCTAssertEqual(rows[4][2...4], ["0", "none", "slow"])
         XCTAssertTrue(text.contains("# C = a new buffer started"))
+        XCTAssertTrue(text.contains("# C line, v3.2g:"))
         XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII }, "log must hold no typed text")
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    // MARK: v3.2e F2: keys the handler leaves to the app in the Empty state
+
+    /// Types 你好 and commits, with the client's caret at 10 first; returns the handler (carried 2, expected caret 12).
+    func handlerWithNiHaoCommitted(_ client: FakeClient, runtime: SlothERuntime? = nil) -> KeyHandler {
+        let h = makeHandler(runtime: runtime)
+        client.location = 10
+        commitNiHao(h, client: client)
+        XCTAssertEqual(h.slothECarriedLength, 2)
+        XCTAssertEqual(h.slothEExpectedLocationForTesting, 12)
+        return h
+    }
+
+    func testASpaceLeftToTheAppIsCarriedAndMovesTheExpectedCaret() {
+        let client = FakeClient()
+        let h = handlerWithNiHaoCommitted(client)
+        press(h, " ", keyCode: 49, client: client)  // not handled in the Empty state: the app inserts it
+        XCTAssertEqual(h.slothECarriedLength, 3)
+        XCTAssertEqual(h.slothECarriedTextForTesting, "你好 ")
+        XCTAssertEqual(h.slothEExpectedLocationForTesting, 13)
+        XCTAssertEqual(h.slothEPassThroughCount, 1)
+        client.location += 1  // what the app did
+        press(h, "u", client: client)  // the next buffer: the caret is where the handler expects it
+        XCTAssertEqual(h.slothECarriedLength, 3, "no 'moved' reset")
+        XCTAssertNil(h.slothELastResetReason)
+        XCTAssertEqual(h.slothEPassThroughCount, 0, "the C line took the count")
+    }
+
+    func testAKeypadDigitInTheEmptyStateIsCarriedToo() {
+        let client = FakeClient()
+        let h = handlerWithNiHaoCommitted(client)
+        for digit in ["1", "2"] {
+            press(h, digit, keyCode: 83, charCode: digit.utf16.first!, flags: [.numericPad], client: client)
+            client.location += 1
+        }
+        XCTAssertEqual(h.slothECarriedTextForTesting, "你好12")
+        XCTAssertEqual(h.slothEExpectedLocationForTesting, 14)
+        XCTAssertEqual(h.slothEPassThroughCount, 2)
+        press(h, "u", client: client)
+        XCTAssertEqual(h.slothECarriedLength, 4)
+        XCTAssertNil(h.slothELastResetReason, "the caret check passes: the digits were accounted for")
+        XCTAssertEqual(client.calls, 2, "asked once for the first buffer, once now; never for the keypad")
+    }
+
+    func testAKeyIsNotCarriedWhenTheSelectionCannotConfirmIt() {  // v3.2f
+        // (a) the client never answers selectedRange
+        let client = FakeClient()
+        client.location = NSNotFound
+        let h = makeHandler()
+        commitNiHao(h, client: client)
+        XCTAssertEqual(h.slothECarriedLength, 2)
+        XCTAssertEqual(h.slothEExpectedLocationForTesting, NSNotFound)
+        press(h, " ", keyCode: 49, client: client)
+        XCTAssertEqual(h.slothECarriedTextForTesting, "你好", "not appended")
+        XCTAssertEqual(h.slothEExpectedLocationForTesting, NSNotFound, "caret not moved")
+        XCTAssertEqual(h.slothEPassThroughCount, 1, "but counted")
+        // the context has a gap now: a Backspace drops all of it (v3.2g), it never pops a char the app still has
+        press(h, "\u{8}", client: client)
+        XCTAssertEqual(h.slothECarriedTextForTesting, "")
+        XCTAssertEqual(h.slothELastResetReason, "unverified_backspace")
+        // (b) the selection worked, then the client turned slow: now off for the process, so not confirmable
+        KeyHandler.slothEResetSelectionOffClientsForTesting()  // (a) turned this client id off
+        let slow = FakeClient()
+        let h2 = handlerWithNiHaoCommitted(slow)
+        slow.delay = 0.03
+        press(h2, "u", client: slow)  // slow: the client is turned off
+        h2.clear()
+        press(h2, " ", keyCode: 49, client: slow)
+        XCTAssertEqual(h2.slothECarriedTextForTesting, "你好")
+    }
+
+    func testWithoutTheFixTheCaretWouldMismatch() {
+        // the same flow when the app inserted a key the handler never saw (the v3.2d bug): 'moved'
+        let client = FakeClient()
+        let h = handlerWithNiHaoCommitted(client)
+        client.location += 1  // the app inserted something on its own (no key reached the handler)
+        press(h, "u", client: client)
+        XCTAssertEqual(h.slothECarriedLength, 0)
+        XCTAssertEqual(h.slothELastResetReason, "moved")
+    }
+
+    func testModifiedAndNonASCIIKeysAreNotCarried() {
+        // Cmd / Control / Option + key reset the context (an existing rule) and are not appended
+        for flags: NSEvent.ModifierFlags in [.command, .control, .option] {
+            let client = FakeClient()
+            let h = handlerWithNiHaoCommitted(client)
+            press(h, "a", keyCode: 0, charCode: 97, flags: flags, client: client)
+            XCTAssertEqual(h.slothECarriedLength, 0, "\(flags)")
+            XCTAssertEqual(h.slothEPassThroughCount, 0, "\(flags)")
+        }
+        // a non-ASCII char, an arrow, Esc, Tab and Backspace are not "a printable key left to the app"
+        let client = FakeClient()
+        let h = handlerWithNiHaoCommitted(client)
+        for (text, char) in [("é", UInt16(0xE9)), ("你", UInt16(0x4F60)), ("\u{7f}", UInt16(0x7f)), ("\u{F702}", UInt16(0xF702))] {
+            press(h, text, keyCode: 0, charCode: char, client: client)
+            XCTAssertEqual(h.slothEPassThroughCount, 0, text)
+        }
+        XCTAssertEqual(h.slothECarriedTextForTesting.hasPrefix("你好"), true)
+        XCTAssertFalse(h.slothECarriedTextForTesting.contains("é"))
+        // a key the handler takes (a Zhuyin key starts a buffer) is not a pass-through either
+        let h2 = handlerWithNiHaoCommitted(FakeClient())
+        press(h2, "u", client: client)
+        XCTAssertEqual(h2.slothEPassThroughCount, 0)
+    }
+
+    func testPassThroughKeysAreCountedOnTheCLineWithoutText() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: log)
+        let client = FakeClient()
+        let h = handlerWithNiHaoCommitted(client, runtime: runtime)
+        press(h, " ", keyCode: 49, client: client); client.location += 1
+        press(h, "9", keyCode: 83, charCode: 57, flags: [.numericPad], client: client); client.location += 1
+        press(h, "u", client: client)  // C line: 4 carried, pass 2
+        h.clear()
+        press(h, "u", client: client)  // C line: pass 0 again
+        runtime.flushLog()
+        let text = try String(contentsOfFile: log, encoding: .utf8)
+        let rows = text.split(separator: "\n").filter { $0.hasPrefix("C\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        XCTAssertEqual(rows.count, 3, "\(rows)")  // the first buffer of commitNiHao, then the two above
+        XCTAssertEqual(rows[1][2...4], ["4", "none", "ok"])
+        XCTAssertEqual(rows[1][6], "2")
+        XCTAssertEqual(rows[2][6], "0")
+        XCTAssertTrue(text.split(separator: "\n").filter { !$0.hasPrefix("#") }.allSatisfy { $0.unicodeScalars.allSatisfy { $0.isASCII } }, "a count, never the keys")
+        try? FileManager.default.removeItem(atPath: dir)
+    }
+
+    func testTheCLineNoteIsAppendedOnceToALogOfAnOlderVersion() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let log = (dir as NSString).appendingPathComponent("latency.log")
+        func occurrences(_ needle: String, _ text: String) -> Int { text.components(separatedBy: needle).count - 1 }
+        func openAndWrite() throws -> String {
+            let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: log)
+            runtime.noteBufferStart(withContextLength: 0, reset: "none", selection: "na", client: "x", passThrough: 3)
+            runtime.flushLog()
+            return try String(contentsOfFile: log, encoding: .utf8)
+        }
+        // a v3.2c / v3.2d log: has the G / Y / M docs, not the v3.2e note -> only the note is added, once
+        try "# McBopomofoLM latency log v4 (old)\n# G = the typing-pause decoder gate ran\n# M = the input mode changed (v3.2c)\n".write(toFile: log, atomically: true, encoding: .utf8)
+        var text = try openAndWrite()
+        XCTAssertEqual(occurrences("# C line, v3.2g:", text), 1)
+        XCTAssertEqual(occurrences("# G = the typing-pause decoder gate", text), 1, "the older docs are not repeated")
+        text = try openAndWrite()
+        XCTAssertEqual(occurrences("# C line, v3.2g:", text), 1, "once")
+        // a log opened by v3.2e or v3.2f: has an older C-line note -> the v3.2g note is added once
+        for older in ["# C line, v3.2e: pass = old text\n", "# C line, v3.2f: pass = older text\n"] {
+            try "# McBopomofoLM latency log v4 (old)\n# G = the typing-pause decoder gate ran\n# M = the input mode changed (v3.2c)\n\(older)".write(toFile: log, atomically: true, encoding: .utf8)
+            text = try openAndWrite()
+            XCTAssertEqual(occurrences("# C line, v3.2g:", text), 1, older)
+            XCTAssertEqual(occurrences("# G = the typing-pause decoder gate", text), 1, older)
+            XCTAssertTrue(text.contains("unverified_backspace"))
+            text = try openAndWrite()
+            XCTAssertEqual(occurrences("# C line, v3.2g:", text), 1, "once")
+        }
+        // a v3.1 log: no G / M docs -> the whole new-line block, which ends with the note
+        try "# McBopomofoLM latency log v4 (old)\n".write(toFile: log, atomically: true, encoding: .utf8)
+        text = try openAndWrite()
+        XCTAssertEqual(occurrences("# C line, v3.2g:", text), 1)
+        XCTAssertEqual(occurrences("# M = the input mode changed", text), 1)
+        let c = text.split(separator: "\n").filter { $0.hasPrefix("C\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        XCTAssertEqual(c.last?[6], "3")
         try? FileManager.default.removeItem(atPath: dir)
     }
 }

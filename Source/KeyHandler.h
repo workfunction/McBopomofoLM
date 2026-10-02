@@ -131,6 +131,11 @@ extern InputMode InputModePlainBopomofo;
 /// Tests: carried chars, and the most recent reset that cleared a non-empty context.
 @property (assign, nonatomic, readonly) NSUInteger slothECarriedLength;
 @property (nonatomic, readonly, nullable) NSString *slothELastResetReason;
+/// Tests: the carried text, the caret position the next buffer is expected at (NSNotFound = unknown), and the
+/// printable keys left to the app in the Empty state since the last C line (v3.2e F2).
+@property (nonatomic, readonly) NSString *slothECarriedTextForTesting;
+@property (assign, nonatomic, readonly) NSInteger slothEExpectedLocationForTesting;
+@property (assign, nonatomic, readonly) NSUInteger slothEPassThroughCount;
 /// Seconds on a monotonic clock (tests inject their own).
 @property (copy, nonatomic) NSTimeInterval (^slothEClock)(void);
 /// v3.1b correction window pick (the controller, for InputStateChoosingTypoCorrection):

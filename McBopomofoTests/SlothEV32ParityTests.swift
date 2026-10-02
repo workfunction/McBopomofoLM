@@ -45,6 +45,12 @@ final class SlothEV32ParityTests: XCTestCase {
             savedDefaults[key] = UserDefaults.standard.object(forKey: key)
             UserDefaults.standard.set(false, forKey: key)
         }
+        // v3.2e: the Shift switch also gates the keypad literals (F1) and English direct output (F3); the golden is
+        // the v3.1.2 behaviour, so it is pinned off here explicitly, next to the other preferences (the loop above
+        // restores the raw key in tearDown). F2 (the caret model for keys left to the app) is not gated and is not
+        // reached by this typing: no key is left to the app.
+        Preferences.slothEShiftToggleEnabled = false
+        XCTAssertFalse(Preferences.slothEShiftToggleEnabled)
         LanguageModelManager.loadDataModels()
     }
 

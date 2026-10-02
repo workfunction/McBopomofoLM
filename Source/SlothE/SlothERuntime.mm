@@ -38,7 +38,7 @@ static NSString *const kLatencyLogHeader =
     @"#   decoder.n16 ... n96 = a next-token function for the correction window (v3.1b, on the first illegal reading)\n"
     @"# P = prewarm: first key of a new buffer after the models idled > 1 s; one dummy call on each model:\n"
     @"#   P time idle_ms enc_ms dec_ms\n"
-    @"# C = a new buffer started (v3.1a carried context; no text): C time ctx_len reset sr client\n"
+    @"# C = a new buffer started (v3.1a carried context; no text): C time ctx_len reset sr client pass\n"
     @"#   ctx_len = chars carried from earlier commits; reset = what cleared them since the previous buffer\n"
     @"#   (none / activate / deactivate / commit_composition / key / idle / moved / no_selection);\n"
     @"#   sr = client selection vs where our last insert left it (ok / mismatch / na; slow = the client took\n"
@@ -63,9 +63,16 @@ static NSString *const kLatencyLogHeader =
     @"# M = the input mode changed (v3.2c; a single Shift tap toggles Chinese / English); no text: M time mode source\n"
     @"#   mode = zh / en (the mode now); source = tap / tap_reading (the tap also turned a Zhuyin reading in progress into\n"
     @"#   letters) / reset (English mode was on and the input method was activated / deactivated / changed its input mode,\n"
-    @"#   or the Shift-toggle switch was turned off)\n";
+    @"#   or the Shift-toggle switch was turned off)\n"
+    @"# C line, v3.2g: it has one more field after client (added in v3.2e): pass = the number of printable keys (Space,\n"
+    @"#   keypad characters) the input method left to the app in the Empty state since the previous C line. They are\n"
+    @"#   counted always, but carried into ctx_len only when the client's selection can confirm the insertion (v3.2f; a\n"
+    @"#   key the app ignored then shows as sr=mismatch / reset=moved). A count only: no key, no text. Older C lines\n"
+    @"#   have no pass. v3.2g: reset also has unverified_backspace = Backspace with an empty buffer while the context\n"
+    @"#   had gaps (a key or line break the app inserted that the context does not hold): the whole context is dropped.\n";
 static NSString *const kLatencyLogGMarker = @"# G = the typing-pause decoder gate";  // the v3.2 line docs start here ...
-static NSString *const kLatencyLogNewestDoc = @"# M = the input mode changed";      // ... and this one is the newest
+static NSString *const kLatencyLogMDoc = @"# M = the input mode changed";           // ... this one ends v3.2c's ...
+static NSString *const kLatencyLogNewestDoc = @"# C line, v3.2g:";                  // ... and this one (v3.2g; v3.2e / v3.2f wrote older texts) is the newest
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 
@@ -1098,7 +1105,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     return all;
 }
 
-- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(NSString *)client
+- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(NSString *)client passThrough:(NSUInteger)passThrough
 {
     if (_logPath == nil) {
         return;
@@ -1111,7 +1118,7 @@ static const size_t kMaxEndToEndSamples = 4096;
             [app appendFormat:@"%C", c];
         }
     }
-    [self _appendTimestampedLine:@"C" tail:[NSString stringWithFormat:@"\t%lu\t%@\t%@\t%@\n", (unsigned long)contextLength, reset, selection, app.length ? app : @"-"]];
+    [self _appendTimestampedLine:@"C" tail:[NSString stringWithFormat:@"\t%lu\t%@\t%@\t%@\t%lu\n", (unsigned long)contextLength, reset, selection, app.length ? app : @"-", (unsigned long)passThrough]];
 }
 
 - (void)_appendTimestampedLine:(NSString *)kind tail:(NSString *)tail
@@ -1191,12 +1198,18 @@ static const size_t kMaxEndToEndSamples = 4096;
     if (attrs == nil && ![fm createFileAtPath:_logPath contents:[kLatencyLogHeader dataUsingEncoding:NSUTF8StringEncoding] attributes:nil]) {
         return NO;
     }
-    // a log made before v3.2 has no doc for the new line types: append it once
+    // a log made before v3.2 has no doc for the new line types: append it once (the G ... doc block); a log
+    // made by v3.2c / v3.2d has them but not the v3.2e C-line note: append only that note, once
     BOOL needsV32Doc = NO;
+    BOOL needsV32eDoc = NO;
     if (attrs != nil) {
         // (the log is at most 4 MB and this runs once per process start)
         NSData *all = [NSData dataWithContentsOfFile:_logPath options:NSDataReadingMappedIfSafe error:nil];
-        needsV32Doc = all == nil || [all rangeOfData:[kLatencyLogNewestDoc dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, all.length)].location == NSNotFound;
+        auto has = ^BOOL(NSString *needle) {
+            return all != nil && [all rangeOfData:[needle dataUsingEncoding:NSUTF8StringEncoding] options:0 range:NSMakeRange(0, all.length)].location != NSNotFound;
+        };
+        needsV32Doc = !has(kLatencyLogMDoc);
+        needsV32eDoc = !needsV32Doc && !has(kLatencyLogNewestDoc);
     }
     _logHandle = [NSFileHandle fileHandleForWritingAtPath:_logPath];
     if (_logHandle == nil) {
@@ -1206,9 +1219,12 @@ static const size_t kMaxEndToEndSamples = 4096;
     if (needsV32Doc) {
         NSRange g = [kLatencyLogHeader rangeOfString:kLatencyLogGMarker];
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:g.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
+    } else if (needsV32eDoc) {
+        NSRange e = [kLatencyLogHeader rangeOfString:kLatencyLogNewestDoc];
+        [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:e.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2c (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2g (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

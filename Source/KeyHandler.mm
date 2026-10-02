@@ -146,6 +146,8 @@ struct SlothELegalJob {
     NSString *_slothPendingReset;        // reset since the last new buffer (C line); nil = none
     NSString *_slothLastReset;           // the most recent reset (tests)
     NSString *_slothSelection;           // ok / mismatch / na, for the next new buffer's C line
+    NSUInteger _slothPassThrough;        // v3.2e: printable keys left to the app in the Empty state since the last C line
+    BOOL _slothContextHasGaps;           // v3.2g: the app inserted chars the context does not hold (unconfirmed keys, line breaks)
 
     // v3.1b correction window
     std::shared_ptr<SlothETypoJob> _slothTypoJob;       // the latest illegal reading's scores
@@ -486,6 +488,13 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     return input.isCapsLockOn;
 }
 
+// v3.2e F1: the characters of the numeric keypad that become literals in the composing buffer:
+// the digits and the operators + - * / . =.
+static BOOL SlothEIsKeypadLiteral(UniChar c)
+{
+    return (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '*' || c == '/' || c == '.' || c == '=';
+}
+
 // McBopomofoLM: times every key event (handler ms, SlothE-T forward/rerank ms,
 // buffer length) for latency.log; the actual handling is unchanged.
 - (BOOL)handleInput:(KeyHandlerInput *)input state:(InputState *)inState stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
@@ -517,6 +526,9 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
     _slothInKeystroke = YES;
     BOOL handled = [self _handleInputUntimed:input state:state stateCallback:stateCallback errorCallback:errorCallback];
     _slothInKeystroke = NO;
+    if (!handled && bufferWasEmpty && ([inState isKindOfClass:[InputStateEmpty class]] || [inState isKindOfClass:[InputStateEmptyIgnoringPreviousState class]])) {
+        [self _slothENotePassedThroughKey:input];  // v3.2e F2
+    }
     // v3.1b.1: the illegal reading changed (a slot overwritten, composed, cleared): its scores are obsolete
     if (_slothTypoJob != nullptr && (_bpmfReadingBuffer->isEmpty() || _bpmfReadingBuffer->syllable().composedString() != _slothTypoJob->typed)) {
         [self _slothECancelTypoJob:YES];
@@ -527,9 +539,10 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
         if ([self _activeSlothEEngine] != nullptr) {
             [runtime prewarmIfIdle];
         }
-        [runtime noteBufferStartWithContextLength:_slothCarried.size() reset:(_slothPendingReset != nil ? _slothPendingReset : @"none") selection:_slothSelection client:_slothEClientID];
+        [runtime noteBufferStartWithContextLength:_slothCarried.size() reset:(_slothPendingReset != nil ? _slothPendingReset : @"none") selection:_slothSelection client:_slothEClientID passThrough:_slothPassThrough];
         _slothPendingReset = nil;
         _slothSelection = @"na";
+        _slothPassThrough = 0;
     }
     double handlerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     if (handled) {
@@ -627,6 +640,20 @@ static BOOL SlothECapsLockCommitsDirectly(KeyHandlerInput *input)
 
     if (input.isNumericPad && !Preferences.selectCandidateWithNumericKeypad) {
         if (!input.isLeft && !input.isRight && !input.isDown && !input.isUp && charCode != 32 && isprint(charCode)) {
+            // v3.2e F1: with a plain composing buffer (no window, no marking), a keypad digit or operator is a
+            // literal node in it (reading "_lit_x", as in English mode, in both modes) instead of a commit of
+            // the buffer. An unfinished Zhuyin reading is kept: beep, insert nothing, commit nothing (like the
+            // upstream "`" key). The v3.2c switch off = the upstream branch below.
+            if ([self _slothEShiftFeatureActive] && [state isMemberOfClass:[InputStateInputting class]] && SlothEIsKeypadLiteral(charCode)) {
+                if (!_bpmfReadingBuffer->isEmpty()) {
+                    errorCallback();
+                    return YES;
+                }
+                if ([self _slothEInsertLiteral:charCode]) {
+                    stateCallback([self buildInputtingState]);
+                    return YES;
+                }
+            }
             [self clear];
             InputStateEmpty *emptyState = [[InputStateEmpty alloc] init];
             stateCallback(emptyState);
@@ -3067,6 +3094,7 @@ static const NSInteger kSlothESelectionMaxLocation = 1 << 30;  // larger = bogus
         _slothLastReset = reason;
     }
     _slothCarried.clear();
+    _slothContextHasGaps = NO;  // any reset: the context starts again, whole
     _slothExpectedLocation = NSNotFound;
     [self _slothEDropProvisionalBase];
     [self _slothECancelTypoJob:YES];
@@ -3142,13 +3170,19 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
 
 // A key with an empty buffer (Empty state): navigation, Tab, Esc and any
 // Command / Control / Option combination clear the carried context;
-// Backspace drops its last char; Return keeps it (the client inserts a line
-// break: one UTF-16 unit); every other key leaves it alone.
+// Backspace drops its last char (v3.2g: all of the context when it has gaps, see
+// _slothContextHasGaps); Return keeps it (the client inserts a line break: one
+// UTF-16 unit, which the context does not hold: a gap); every other key leaves it alone.
 - (void)_slothECarriedContextKey:(KeyHandlerInput *)input
 {
     UniChar charCode = input.charCode;
     if (input.isCommandHold || input.isControlHold || input.isOptionHold) {
         [self slothEResetCarriedContext:@"key"];
+    } else if (charCode == 8 && _slothContextHasGaps) {
+        // v3.2g: the context holds gaps (chars the app inserted that it does not have, in an order we do not
+        // track), so we cannot tell which char this Backspace deletes: popping the last carried char could drop
+        // a char the app still has. Drop the whole context instead (empty is always correct).
+        [self slothEResetCarriedContext:@"unverified_backspace"];
     } else if (charCode == 8) {
         NSString *popped = @(_slothCarried.popLast().c_str());
         NSInteger units = static_cast<NSInteger>(popped.length);
@@ -3159,9 +3193,53 @@ static NSMutableSet<NSString *> *SlothESelectionOffClients(void)
         if (_slothExpectedLocation != NSNotFound) {
             _slothExpectedLocation += 1;
         }
+        _slothContextHasGaps = YES;  // v3.2g: the line break is in the app's text, not in the context
     } else if (charCode == 27 || input.isTab || input.isLeft || input.isRight || input.isUp || input.isDown || input.isHome || input.isEnd || input.isPageUp || input.isPageDown) {
         [self slothEResetCarriedContext:@"key"];
     }
+}
+
+// v3.2e F2 (a caret-model fix, not gated by any switch): a printable key the handler did not take in the
+// Empty state (Space, a keypad character) goes to the app, which inserts it. It belongs to the carried
+// context and moves the expected caret by one, or the next buffer would see "moved" and drop the context.
+// Only one char of 0x20-0x7e without Command / Control / Option. Counted for the C line (a count, no text).
+// v3.2f: the key is carried ONLY when its insertion can be checked later, i.e. the client answers
+// selectedRange (it is not turned off and we know where the caret should be): if the app did not insert the
+// key (a control that ignores Space), the next buffer's selection check does not match and drops the context
+// ("moved"), so no phantom char survives. For a client whose selection cannot be checked the char is NOT
+// carried and the expected caret is NOT moved; the context keeps what it had (the v3.2d behaviour; dropping
+// it would lose the context at every Space for such clients), but it now has a gap: _slothContextHasGaps
+// (v3.2g) makes a later Backspace in the Empty state drop the whole context, because with gaps in unknown
+// places we cannot tell which char the app deletes. Any reset clears the flag.
+- (void)_slothENotePassedThroughKey:(KeyHandlerInput *)input
+{
+    UniChar c = input.charCode;
+    if (input.isCommandHold || input.isControlHold || input.isOptionHold || c < 0x20 || c > 0x7e || input.inputText.length != 1) {
+        return;
+    }
+    ++_slothPassThrough;
+    if (_slothExpectedLocation == NSNotFound || [self slothESelectionOffForClient]) {
+        _slothContextHasGaps = YES;
+        return;
+    }
+    _slothCarried.commit(McBopomofoSlothE::TextChars(input.inputText.UTF8String), _slothEClock());
+    _slothExpectedLocation += 1;
+    [self _slothEDropProvisionalBase];
+}
+
+- (NSString *)slothECarriedTextForTesting
+{
+    return @(_slothCarried.decoderText().c_str());
+}
+
+- (NSInteger)slothEExpectedLocationForTesting
+{
+    return _slothExpectedLocation;
+}
+
+- (NSUInteger)slothEPassThroughCount
+{
+    return _slothPassThrough;
 }
 
 - (BOOL)_slothEDecoderActive
@@ -3860,7 +3938,9 @@ static NSUInteger SlothECandidatePageSize(void)
 // event has (Caps Lock does not commit it): letters, digits, half-width punctuation, Space and
 // Shift + Space as a space. In Chinese mode, Shift + letter (Letter Behavior "output upper-case directly")
 // goes into the buffer too instead of committing it (M6). Command / Control / Option combinations and the
-// numeric keypad are left to the code below, as before. Space with nothing in the buffer is the app's.
+// numeric keypad are left to the code below (keypad characters with a buffer: F1 in the numpad branch).
+// Space with nothing in the buffer is the app's. v3.2e F3: with nothing in the buffer, English mode sends
+// a printable character out directly (no buffer); with a buffer it is a literal node as before.
 - (BOOL)_slothEHandleLiteralInput:(KeyHandlerInput *)input state:(InputState *)state stateCallback:(void (^)(InputState *))stateCallback errorCallback:(void (^)(void))errorCallback
 {
     if (![self _slothEShiftFeatureActive] || input.isControlHold || input.isCommandHold || input.isOptionHold || input.isNumericPad) {
@@ -3876,6 +3956,19 @@ static NSUInteger SlothECandidatePageSize(void)
     }
     if (c == 0x20 && _grid->length() == 0 && _bpmfReadingBuffer->isEmpty()) {
         return NO;
+    }
+    if (_slothEnglishMode && _grid->length() == 0 && _bpmfReadingBuffer->isEmpty() && c >= 0x21 && input.inputText.length == 1 &&
+        ![state isKindOfClass:[InputStateNotEmpty class]]) {
+        // v3.2e F3: English mode with nothing in the buffer: the character goes out at once, with the case the
+        // event has (as the Caps Lock path does, but without lower-casing), no composing buffer. The IME inserts
+        // it itself (the controller's commit), so it is carried and the expected caret moves like any commit.
+        [self clear];
+        InputStateEmpty *emptyState = [[InputStateEmpty alloc] init];
+        stateCallback(emptyState);
+        InputStateCommitting *committingState = [[InputStateCommitting alloc] initWithPoppedText:input.inputText];
+        stateCallback(committingState);
+        stateCallback(emptyState);
+        return YES;
     }
     if (!_languageModel->hasUnigrams(c == 0x20 ? std::string(" ") : std::string("_lit_") + std::string(1, static_cast<char>(c)))) {
         return NO;  // (nothing to insert: leave a pending reading alone)

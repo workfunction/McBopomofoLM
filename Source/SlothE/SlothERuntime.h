@@ -176,9 +176,12 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// "stale", "failed". endToEndMs < 0: not measured.
 /// v3.1a: one C line per new buffer (no text): carried chars, the reset since
 /// the previous buffer (none / activate / deactivate / commit_composition /
-/// key / idle / moved / no_selection), the selection check (ok / mismatch /
-/// na / slow) and the client's bundle identifier.
-- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(nullable NSString *)client;
+/// key / idle / moved / no_selection / unverified_backspace), the selection check (ok / mismatch /
+/// na / slow) and the client's bundle identifier. v3.2e: passThrough = how many
+/// printable keys the input method left to the app in the Empty state since the
+/// previous C line (a count, never the keys; v3.2f: counted always, carried into
+/// the context only when the client's selection can confirm the app inserted them).
+- (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(nullable NSString *)client passThrough:(NSUInteger)passThrough;
 /// v3.1b: one X line per correction window closed (no text): entries shown,
 /// chosen rank (1-based) or "esc", ms from the illegal reading to its scores
 /// ("" if not ready), source (dn = decoder next-token + encoder, t1 = a T1 rule).
