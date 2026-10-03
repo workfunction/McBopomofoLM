@@ -62,8 +62,9 @@ static NSString *const kLatencyLogHeader =
     @"#   trigger = pause (150 ms idle, syllable at the cursor) / arrow (cursor moved) / open (computed for the next window)\n"
     @"# M = the input mode changed (v3.2c; a single Shift tap toggles Chinese / English); no text: M time mode source\n"
     @"#   mode = zh / en (the mode now); source = tap / tap_reading (the tap also turned a Zhuyin reading in progress into\n"
-    @"#   letters) / reset (English mode was on and the input method was activated / deactivated / changed its input mode,\n"
-    @"#   or the Shift-toggle switch was turned off)\n"
+    @"#   letters) / reset (English mode was on and the input method changed its input mode, or the Shift-toggle switch\n"
+    @"#   was turned off, or (v3.2i) a client was activated while another window's last Shift tap had left Chinese mode;\n"
+    @"#   since v3.2i English mode is global for the process and activate / deactivate alone no longer reset it)\n"
     @"# C line, v3.2g: it has one more field after client (added in v3.2e): pass = the number of printable keys (Space,\n"
     @"#   keypad characters) the input method left to the app in the Empty state since the previous C line. They are\n"
     @"#   counted always, but carried into ctx_len only when the client's selection can confirm the insertion (v3.2f; a\n"
@@ -1224,7 +1225,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:e.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2g (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2j (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

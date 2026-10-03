@@ -3903,7 +3903,8 @@ static NSUInteger SlothECandidatePageSize(void)
 
 #pragma mark - SlothE English mode (v3.2c)
 
-// The controller turns the mode off when the field, the input method or the input mode changes.
+// v3.2i: the mode is process-wide (the controller keeps it and hands it to each client's handler when that client
+// is activated); the controller turns it off when the input mode changes or the Shift-toggle switch is turned off.
 - (void)setSlothEEnglishMode:(BOOL)value
 {
     if (_slothEnglishMode && !value) {

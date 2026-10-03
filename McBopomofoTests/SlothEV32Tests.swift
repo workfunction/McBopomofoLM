@@ -40,10 +40,12 @@ class SlothEV32TestCase: XCTestCase {
         Preferences.chooseCandidateUsingSpace = true
         Preferences.keepReadingUponCompositionError = true
         Preferences.slothEPauseGateEnabled = true
+        McBopomofoInputMethodController.slothEGlobalEnglishMode = false  // v3.2i: process-wide, so reset per test
         LanguageModelManager.loadDataModels()
     }
 
     override func tearDownWithError() throws {
+        McBopomofoInputMethodController.slothEGlobalEnglishMode = false
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
         Preferences.associatedPhrasesEnabled = saved["assoc"] as! Bool
@@ -1248,6 +1250,149 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         XCTAssertTrue(s.flags([], after: 0.05))
         XCTAssertFalse(s.english)
         XCTAssertTrue(s.announcements.isEmpty)
+    }
+
+    // MARK: v3.2i: English mode is global for the process
+
+    private func tap(_ s: Setup) {
+        _ = s.flags([.shift])
+        _ = s.flags([], after: 0.1)
+    }
+
+    func testEnglishModeSurvivesDeactivateAndActivateOnTheSameClient() throws {
+        let s = try setup()
+        tap(s)
+        XCTAssertTrue(s.english)
+        s.controller.deactivateServer(s.client)
+        XCTAssertTrue(s.english, "deactivate keeps the mode")
+        s.controller.activateServer(s.client)
+        XCTAssertTrue(s.english, "activate keeps the mode")
+        XCTAssertTrue(s.controller.state is InputState.Empty)
+        // a later tap still toggles it back, and Chinese mode survives the switch too
+        tap(s)
+        XCTAssertFalse(s.english)
+        s.controller.deactivateServer(s.client)
+        s.controller.activateServer(s.client)
+        XCTAssertFalse(s.english)
+    }
+
+    func testEnglishModeSurvivesSwitchingToADifferentClient() throws {
+        let s = try setup()
+        tap(s)
+        XCTAssertTrue(s.english)
+        s.controller.deactivateServer(s.client)
+        let other = FakeIMKClient()
+        s.controller.activateServer(other)
+        XCTAssertTrue(s.english, "another window or app: still English mode")
+        XCTAssertTrue(s.controller.state is InputState.Empty)
+    }
+
+    func testEnglishModeIsSharedByTheControllersOfDifferentClients() throws {
+        // IMK makes a controller per client: the mode is process-wide, not per controller.
+        let a = try setup()
+        let b = try setup()
+        XCTAssertFalse(b.english)
+        tap(a)
+        XCTAssertTrue(a.english)
+        XCTAssertFalse(b.english, "a controller that is not activated is not touched")
+        a.controller.deactivateServer(a.client)
+        b.controller.activateServer(b.client)
+        XCTAssertTrue(b.english, "the controller of the next client takes the mode over")
+        tap(b)  // back to Chinese in the second window
+        XCTAssertFalse(b.english)
+        b.controller.deactivateServer(b.client)
+        a.controller.activateServer(a.client)
+        XCTAssertFalse(a.english, "and the first window follows")
+    }
+
+    func testTheComposingBufferIsStillCommittedOnDeactivateButTheModeStays() throws {
+        let s = try setup()
+        s.key("s"); s.key("u"); s.key("3")  // 你
+        tap(s)
+        XCTAssertTrue(s.english)
+        s.key("h")
+        XCTAssertEqual(s.buffer, "你h")
+        s.controller.deactivateServer(s.client)
+        XCTAssertEqual(s.client.committed, ["你h"], "the buffer is committed as before")
+        XCTAssertTrue(s.controller.state is InputState.Empty, "the buffer is gone (committed), the state is Empty")
+        XCTAssertTrue(s.english, "the mode is still English while no client is active")
+        s.controller.activateServer(s.client)
+        XCTAssertEqual(s.buffer, "")
+        XCTAssertTrue(s.english)
+    }
+
+    func testAnotherInputModeEndsEnglishModeEverywhere() throws {
+        let a = try setup()
+        let b = try setup()
+        tap(a)
+        XCTAssertTrue(a.english)
+        // setValue with the same input mode (what every activation does) leaves it alone
+        a.controller.setValue(InputMode.bopomofo.rawValue, forTag: 0, client: a.client)
+        XCTAssertTrue(a.english)
+        // Bopomofo -> Plain Bopomofo
+        a.controller.setValue(InputMode.plainBopomofo.rawValue, forTag: 0, client: a.client)
+        XCTAssertFalse(a.english)
+        // back to Bopomofo: still Chinese, also for another controller activated now
+        a.controller.setValue(InputMode.bopomofo.rawValue, forTag: 0, client: a.client)
+        XCTAssertFalse(a.english)
+        a.controller.deactivateServer(a.client)
+        b.controller.activateServer(b.client)
+        XCTAssertFalse(b.english, "the reset reached the process-wide mode")
+    }
+
+    func testTurningTheSwitchOffEndsEnglishModeEverywhere() throws {
+        let a = try setup()
+        let b = try setup()
+        tap(a)
+        XCTAssertTrue(a.english)
+        a.controller.toggleSlothEShiftToggle(nil)  // the menu item: the switch is now off
+        XCTAssertFalse(Preferences.slothEShiftToggleEnabled)
+        XCTAssertFalse(a.english)
+        a.controller.deactivateServer(a.client)
+        b.controller.activateServer(b.client)
+        XCTAssertFalse(b.english)
+        // switched on again: it does not come back by itself
+        b.controller.toggleSlothEShiftToggle(nil)
+        XCTAssertTrue(Preferences.slothEShiftToggleEnabled)
+        XCTAssertFalse(b.english)
+        b.controller.deactivateServer(b.client)
+        a.controller.activateServer(a.client)
+        XCTAssertFalse(a.english)
+        // a switch turned off outside the menu (defaults write) before an activation
+        tap(a)
+        XCTAssertTrue(a.english)
+        Preferences.slothEShiftToggleEnabled = false
+        a.controller.deactivateServer(a.client)
+        b.controller.activateServer(b.client)
+        Preferences.slothEShiftToggleEnabled = true
+        XCTAssertFalse(b.english)
+        a.controller.activateServer(a.client)
+        XCTAssertFalse(a.english, "it was dropped when the activation saw the switch off")
+    }
+
+    // v3.2j: off and on again outside the menu (defaults write) while the same client stays active
+    func testASwitchTurnedOffAndOnOutsideTheMenuWhileTheClientStaysActiveDoesNotBringEnglishBack() throws {
+        let s = try setup()
+        tap(s)
+        XCTAssertTrue(s.english)
+        Preferences.slothEShiftToggleEnabled = false  // no menu, no notification
+        s.key("s")  // one event sees the switch off: ㄋ, stock behaviour
+        XCTAssertFalse(s.english)
+        XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode, "the process-wide flag is gone too")
+        Preferences.slothEShiftToggleEnabled = true
+        XCTAssertFalse(s.english, "turning the switch on does not resurrect English mode")
+        s.key("u"); s.key("3")  // Chinese mode: ㄋㄧˇ = 你, not literals
+        XCTAssertEqual(s.buffer, "你")
+        // and not through a later activation either, on this client or another one
+        s.controller.deactivateServer(s.client)
+        s.controller.activateServer(s.client)
+        XCTAssertFalse(s.english)
+        s.controller.activateServer(FakeIMKClient())
+        XCTAssertFalse(s.english)
+        XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode)
+        // a Shift tap works again as usual
+        tap(s)
+        XCTAssertTrue(s.english)
     }
 }
 

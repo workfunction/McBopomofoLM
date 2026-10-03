@@ -171,7 +171,10 @@ extern InputMode InputModePlainBopomofo;
 - (void)slothEInstallLegalEntryForTestingWithReading:(NSString *)reading value:(NSString *)value;
 /// v3.2c English mode (Shift tap): letters keep their case and go into the composing buffer with digits,
 /// space and half-width punctuation as literal nodes (readings "_lit_x", McBopomofoLM); Return commits.
-/// The controller resets it on activate / deactivate / a mode change.
+/// v3.2i: the mode is global for the process. The controller keeps it (McBopomofoInputMethodController.
+/// slothEGlobalEnglishMode, one KeyHandler per client), hands it to the handler of the client that is activated,
+/// and resets it when the input mode changes or the Shift-toggle switch is turned off. Activate / deactivate
+/// no longer reset it (v3.2c did).
 @property (assign, nonatomic) BOOL slothEEnglishMode;
 /// The controller, when a single Shift tap completed in `state`: toggles the mode. Only in the Empty and plain
 /// composing states, Bopomofo mode, with the switch on. A Zhuyin reading in progress is turned into its

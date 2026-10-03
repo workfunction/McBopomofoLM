@@ -62,6 +62,14 @@ class McBopomofoInputMethodController: IMKInputController {
     // Share the stored issues, so a set of issues is shown as notification only once.
     static var latestUserFileIssues: [String] = []
 
+    /// McBopomofoLM v3.2i: English mode is global for the process. IMK makes one controller (and one
+    /// KeyHandler) per client, so the mode a Shift tap set is kept here and every controller takes it
+    /// over when it is activated; switching to another window or app no longer puts the user back in
+    /// Chinese mode. Only a Shift tap changes it, apart from the resets that mean "another mode": the
+    /// input mode changes (Bopomofo <-> Plain Bopomofo) and the Shift-toggle switch is turned off (in
+    /// the menu, or outside it: v3.2j, the first event or activation that sees it off).
+    static var slothEGlobalEnglishMode = false
+
     // MARK: - IMKInputController methods
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
@@ -217,8 +225,11 @@ class McBopomofoInputMethodController: IMKInputController {
 
         keyHandler.clear()
         keyHandler.syncWithPreferences()
-        // McBopomofoLM v3.2c: English mode belongs to the field that set it.
-        keyHandler.slothEEnglishMode = false
+        // McBopomofoLM v3.2i: English mode is global for the process (v3.2c reset it per field).
+        if !Preferences.slothEShiftToggleEnabled {
+            Self.slothEGlobalEnglishMode = false  // the switch was turned off outside the menu
+        }
+        keyHandler.slothEEnglishMode = Self.slothEGlobalEnglishMode
         shiftTapDetector.reset()
         // McBopomofoLM v3.1a: a client/field change drops the carried context.
         keyHandler.slothEResetCarriedContext("activate")
@@ -232,7 +243,7 @@ class McBopomofoInputMethodController: IMKInputController {
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
         keyHandler.clear()
-        keyHandler.slothEEnglishMode = false
+        // McBopomofoLM v3.2i: the composing buffer is committed or cleared as before; the English mode stays.
         shiftTapDetector.reset()
         self.handle(state: .Deactivated(), client: client)
         keyHandler.slothEResetCarriedContext("deactivate")
@@ -248,7 +259,8 @@ class McBopomofoInputMethodController: IMKInputController {
                 withKeyboardNamed: Preferences.basisKeyboardLayout)
             keyHandler.clear()
             keyHandler.inputMode = newInputMode
-            keyHandler.slothEEnglishMode = false
+            keyHandler.slothEEnglishMode = false  // McBopomofoLM v3.2i: another input mode ends English mode everywhere
+            Self.slothEGlobalEnglishMode = false
             shiftTapDetector.reset()
             self.handle(state: .Empty(), client: client)
         }
@@ -280,6 +292,14 @@ class McBopomofoInputMethodController: IMKInputController {
             return false
         }
 
+        // McBopomofoLM v3.2j: the switch can be turned off outside the menu (defaults write), which tells
+        // nobody. The first event that sees it off ends English mode for good, in this handler and in the
+        // process-wide flag, so turning the switch on again cannot bring English mode back.
+        if (Self.slothEGlobalEnglishMode || keyHandler.slothEEnglishMode) && !Preferences.slothEShiftToggleEnabled {
+            Self.slothEGlobalEnglishMode = false
+            keyHandler.slothEEnglishMode = false
+        }
+
         if event.type == .keyDown {
             shiftTapDetector.keyDown()  // McBopomofoLM v3.2c: a key between Shift down and up is not a tap
         }
@@ -292,6 +312,7 @@ class McBopomofoInputMethodController: IMKInputController {
                     keyHandler.slothEToggleEnglishMode(
                         from: state, stateCallback: { newState in self.handle(state: newState, client: client) })
                 {
+                    Self.slothEGlobalEnglishMode = keyHandler.slothEEnglishMode  // McBopomofoLM v3.2i
                     announceModeChange(
                         keyHandler.slothEEnglishMode
                             ? NSLocalizedString("English Mode", comment: "")
@@ -428,6 +449,10 @@ class McBopomofoInputMethodController: IMKInputController {
     @objc func toggleSlothEShiftToggle(_ sender: Any?) {
         _ = Preferences.toggleSlothEShiftToggleEnabled()
         shiftTapDetector.reset()
+        if !Preferences.slothEShiftToggleEnabled {  // McBopomofoLM v3.2i: switched off = English mode ends everywhere
+            Self.slothEGlobalEnglishMode = false
+            keyHandler.slothEEnglishMode = false
+        }
     }
 
     @objc func togglePhraseReplacement(_ sender: Any?) {
