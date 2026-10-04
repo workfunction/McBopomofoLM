@@ -68,13 +68,29 @@ class McBopomofoInputMethodController: IMKInputController {
     /// Chinese mode. Only a Shift tap changes it, apart from the resets that mean "another mode": the
     /// input mode changes (Bopomofo <-> Plain Bopomofo) and the Shift-toggle switch is turned off (in
     /// the menu, or outside it: v3.2j, the first event or activation that sees it off).
-    static var slothEGlobalEnglishMode = false
+    ///
+    /// v3.3d: every change goes to the menu-bar indicator (a brown "A" while English mode is on and
+    /// the input method is active), whoever writes it.
+    static var slothEGlobalEnglishMode = false {
+        didSet { EnglishModeIndicator.shared.englishMode = slothEGlobalEnglishMode }
+    }
 
     // MARK: - IMKInputController methods
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         keyHandler.delegate = self
+    }
+
+    deinit {
+        // McBopomofoLM v3.3d: a controller that goes away while active must not keep the "A" on screen.
+        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(self))
+    }
+
+    /// A menu title with a state suffix: a full-width suffix ("（準備中）") follows the title directly, a
+    /// Latin one ("(preparing)") after a space.
+    static func menuTitle(_ title: String, suffix: String) -> String {
+        suffix.hasPrefix("（") ? title + suffix : title + " " + suffix
     }
 
     override func menu() -> NSMenu! {
@@ -98,44 +114,60 @@ class McBopomofoInputMethodController: IMKInputController {
 
         let inputMode = keyHandler.inputMode
 
-        // McBopomofoLM: SlothE-T candidate reranking toggle.
+        // McBopomofoLM v3.3b: three plain-named options for everybody (the master AI switch, the Shift
+        // tap, the correction entry); the developer switches live in an "Advanced" submenu.
         if inputMode == .bopomofo {
-            var title = NSLocalizedString("SlothE-T Candidate Reranking", comment: "")
+            var title = NSLocalizedString("AI Candidate Selection", comment: "")
             let runtime = SlothERuntime.shared
             if Preferences.slothERerankEnabled && runtime.loadFailed {
-                title += " " + NSLocalizedString("(model failed to load)", comment: "")
+                title = Self.menuTitle(title, suffix: NSLocalizedString("(model failed to load)", comment: ""))
             } else if Preferences.slothERerankEnabled && !runtime.loaded {
-                title += " " + NSLocalizedString("(loading)", comment: "")
+                title = Self.menuTitle(title, suffix: NSLocalizedString("(loading)", comment: ""))
             }
             let slothEItem = menu.addItem(
                 withTitle: title, action: #selector(toggleSlothERerank(_:)), keyEquivalent: "")
             slothEItem.state = Preferences.slothERerankEnabled.state
-            let demoteItem = menu.addItem(
-                withTitle: NSLocalizedString("SlothE-T: List Current Word Last", comment: ""),
-                action: #selector(toggleSlothEDemoteShownCandidate(_:)), keyEquivalent: "")
-            demoteItem.state = Preferences.slothEDemoteShownCandidate.state
-            var decoderTitle = NSLocalizedString("SlothE Decoder Corrections", comment: "")
+            let shiftToggleItem = menu.addItem(
+                withTitle: NSLocalizedString("Tap Shift to Switch Chinese/English", comment: ""),
+                action: #selector(toggleSlothEShiftToggle(_:)), keyEquivalent: "")
+            shiftToggleItem.state = Preferences.slothEShiftToggleEnabled.state
+            let typoEntryItem = menu.addItem(
+                withTitle: NSLocalizedString("Offer Syllable Corrections in the Candidate Window", comment: ""),
+                action: #selector(toggleSlothETypoEntry(_:)), keyEquivalent: "")
+            typoEntryItem.state = Preferences.slothETypoEntryEnabled.state
+
+            let advancedItem = NSMenuItem(
+                title: NSLocalizedString("Advanced", comment: ""), action: nil, keyEquivalent: "")
+            let advancedMenu = NSMenu(title: advancedItem.title)
+            var decoderTitle = NSLocalizedString("Decoder Sentence Review", comment: "")
             if Preferences.slothERerankEnabled && Preferences.slothEDecoderEnabled && runtime.loaded
                 && !runtime.decoderLoaded
             {
-                decoderTitle += " " + NSLocalizedString(
-                    runtime.decoderLoadFailed ? "(model failed to load)" : "(loading)", comment: "")
+                decoderTitle = Self.menuTitle(
+                    decoderTitle,
+                    suffix: NSLocalizedString(
+                        runtime.decoderLoadFailed ? "(model failed to load)" : "(loading)", comment: ""))
             }
-            let decoderItem = menu.addItem(
+            let decoderItem = advancedMenu.addItem(
                 withTitle: decoderTitle, action: #selector(toggleSlothEDecoder(_:)), keyEquivalent: "")
             decoderItem.state = Preferences.slothEDecoderEnabled.state
-            let pauseGateItem = menu.addItem(
-                withTitle: NSLocalizedString("SlothE Sentence Check After a Pause", comment: ""),
+            let pauseGateItem = advancedMenu.addItem(
+                withTitle: NSLocalizedString("Sentence Check After a Pause", comment: ""),
                 action: #selector(toggleSlothEPauseGate(_:)), keyEquivalent: "")
             pauseGateItem.state = Preferences.slothEPauseGateEnabled.state
-            let typoEntryItem = menu.addItem(
-                withTitle: NSLocalizedString("SlothE Wrong-Syllable Suggestion", comment: ""),
-                action: #selector(toggleSlothETypoEntry(_:)), keyEquivalent: "")
-            typoEntryItem.state = Preferences.slothETypoEntryEnabled.state
-            let shiftToggleItem = menu.addItem(
-                withTitle: NSLocalizedString("SlothE Shift Toggles Chinese/English", comment: ""),
-                action: #selector(toggleSlothEShiftToggle(_:)), keyEquivalent: "")
-            shiftToggleItem.state = Preferences.slothEShiftToggleEnabled.state
+            let demoteItem = advancedMenu.addItem(
+                withTitle: NSLocalizedString("List Current Word Last in the Candidate Window", comment: ""),
+                action: #selector(toggleSlothEDemoteShownCandidate(_:)), keyEquivalent: "")
+            demoteItem.state = Preferences.slothEDemoteShownCandidate.state
+            advancedMenu.addItem(NSMenuItem.separator())
+            let diagnosticLogItem = advancedMenu.addItem(
+                withTitle: NSLocalizedString("Write Diagnostic Log", comment: ""),
+                action: #selector(toggleSlothEDiagnosticLog(_:)), keyEquivalent: "")
+            diagnosticLogItem.state = Preferences.slothEDiagnosticLogEnabled.state
+            // a submenu's items are not given a target by the input method framework
+            for item in advancedMenu.items where item.action != nil { item.target = self }
+            advancedItem.submenu = advancedMenu
+            menu.addItem(advancedItem)
         }
 
         // Only Bopomofo mode supports Bopomofo Font Annotation. If support is
@@ -230,6 +262,7 @@ class McBopomofoInputMethodController: IMKInputController {
             Self.slothEGlobalEnglishMode = false  // the switch was turned off outside the menu
         }
         keyHandler.slothEEnglishMode = Self.slothEGlobalEnglishMode
+        EnglishModeIndicator.shared.clientActivated(ObjectIdentifier(self))  // McBopomofoLM v3.3d
         shiftTapDetector.reset()
         // McBopomofoLM v3.1a: a client/field change drops the carried context.
         keyHandler.slothEResetCarriedContext("activate")
@@ -242,6 +275,7 @@ class McBopomofoInputMethodController: IMKInputController {
 
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
+        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(self))  // McBopomofoLM v3.3d
         keyHandler.clear()
         // McBopomofoLM v3.2i: the composing buffer is committed or cleared as before; the English mode stays.
         shiftTapDetector.reset()
@@ -317,6 +351,9 @@ class McBopomofoInputMethodController: IMKInputController {
                         keyHandler.slothEEnglishMode
                             ? NSLocalizedString("English Mode", comment: "")
                             : NSLocalizedString("Chinese Mode", comment: ""))
+                    if keyHandler.slothEEnglishMode {
+                        FirstUseNotices.shared.noteEnglishModeEntered()  // v3.3c: explained once, the first time
+                    }
                     return true
                 }
             } else {
@@ -426,8 +463,12 @@ class McBopomofoInputMethodController: IMKInputController {
 
     @objc func toggleSlothERerank(_ sender: Any?) {
         if Preferences.toggleSlothERerankEnabled() {
-            SlothERuntime.shared.startLoading()
+            Preferences.slothEStartLoading()
         }
+    }
+
+    @objc func toggleSlothEDiagnosticLog(_ sender: Any?) {
+        _ = Preferences.toggleSlothEDiagnosticLogEnabled()
     }
 
     @objc func toggleSlothEDemoteShownCandidate(_ sender: Any?) {

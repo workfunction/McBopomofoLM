@@ -162,6 +162,39 @@ final class PreferencesViewModel: NSObject, ObservableObject {
         }
     }
 
+    // McBopomofoLM v3.3b: the three options for everybody (also in the input menu) and the diagnostic log.
+    var slothERerankEnabled: Bool {
+        get { Preferences.slothERerankEnabled }
+        set {
+            objectWillChange.send()
+            Preferences.changeSlothERerankEnabled(newValue)
+        }
+    }
+
+    var slothEShiftToggleEnabled: Bool {
+        get { Preferences.slothEShiftToggleEnabled }
+        set {
+            objectWillChange.send()
+            Preferences.changeSlothEShiftToggleEnabled(newValue)
+        }
+    }
+
+    var slothETypoEntryEnabled: Bool {
+        get { Preferences.slothETypoEntryEnabled }
+        set {
+            objectWillChange.send()
+            Preferences.changeSlothETypoEntryEnabled(newValue)
+        }
+    }
+
+    var slothEDiagnosticLogEnabled: Bool {
+        get { Preferences.slothEDiagnosticLogEnabled }
+        set {
+            objectWillChange.send()
+            Preferences.changeSlothEDiagnosticLogEnabled(newValue)
+        }
+    }
+
     var beepUponInputError: Bool {
         get { Preferences.beepUponInputError }
         set {

@@ -1,8 +1,8 @@
 /* No comment provided by engineer. */
-"About McBopomofo…" = "關於小麥注音…";
+"About McBopomofo…" = "關於小麥注音 LM…";
 
 /* No comment provided by engineer. */
-"McBopomofo Preferences" = "小麥注音偏好設定";
+"McBopomofo Preferences" = "小麥注音 LM 偏好設定";
 
 /* No comment provided by engineer. */
 "Check for Updates…" = "檢查是否有新版…";
@@ -135,9 +135,9 @@
 
 "Show Issues in User Files ⚠️" = "列出自訂詞庫中的問題 ⚠️";
 
-"Issues were found in the following user phrase files:" = "以下是用戶自訂詞庫檔案中發現的問題：";
+"Issues were found in the following user phrase files:" = "以下是使用者自訂詞庫檔案中發現的問題：";
 
-"Check McBopomofo menu for user file issues" = "自訂詞庫有誤，請從小麥注音選單點選「列出自訂詞庫中的問題」";
+"Check McBopomofo menu for user file issues" = "自訂詞庫有誤，請從小麥注音 LM 選單點選「列出自訂詞庫中的問題」";
 
 "User phrase file" = "使用者自訂詞彙檔";
 
@@ -259,14 +259,21 @@
 
 "Quick Text Transform" = "日韓多語拼音轉換";
 
-/* McBopomofoLM (SlothE-T side-by-side test build) */
-"SlothE-T Candidate Reranking" = "SlothE-T 模型選字";
+/* McBopomofoLM */
+"AI Candidate Selection" = "AI 選字";
 "(model failed to load)" = "（模型載入失敗）";
-"(loading)" = "（載入中）";
-"SlothE-T: List Current Word Last" = "SlothE-T：候選窗把目前的字排最後";
-"SlothE Decoder Corrections" = "SlothE 解碼器複查";
-"SlothE Sentence Check After a Pause" = "SlothE 停頓時整句複查";
-"SlothE Wrong-Syllable Suggestion" = "SlothE 錯音修正選項";
-"SlothE Shift Toggles Chinese/English" = "SlothE 單點 Shift 切換中英";
+"(loading)" = "（準備中）";
+"Tap Shift to Switch Chinese/English" = "單點 Shift 切換中英文";
+"Offer Syllable Corrections in the Candidate Window" = "選字窗提供錯音修正";
+"Decoder Sentence Review" = "解碼器複查";
+"Sentence Check After a Pause" = "停頓時整句複查";
+"List Current Word Last in the Candidate Window" = "選字窗把目前的字排最後";
+"Write Diagnostic Log" = "寫入診斷記錄";
+"McBopomofo LM:" = "小麥注音 LM：";
+"Diagnostics:" = "診斷：";
+"The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type." = "記錄只包含每個按鍵的耗時、組字區的長度和你正在輸入的 App 的 bundle ID，不會記錄你輸入的文字。";
+"AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile." = "AI 模型準備中，約需 3 分鐘，期間使用一般選字";
+"AI model is ready" = "AI 模型已就緒";
+"Tap Shift to switch between Chinese and English" = "單點 Shift 可切換中英文";
 "English Mode" = "英文模式";
 "Chinese Mode" = "中文模式";

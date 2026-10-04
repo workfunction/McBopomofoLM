@@ -224,6 +224,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
         // background; until it is loaded the input method behaves like stock.
         if Preferences.slothERerankEnabled && !SlothERuntime.runningUnderXCTest {
             SlothERuntime.shared.startLoading()
+            // v3.3c: "AI model preparing" / "ready" notices, once, driven by the runtime's loaded state.
+            FirstUseNotices.shared.beginWatching()
         }
     }
 

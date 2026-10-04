@@ -18,6 +18,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Posted (main thread) when the SlothE-T or decoder switch is toggled; every
 /// key handler drops model-derived state and re-walks at once.
 FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotification NS_SWIFT_NAME(slothEPreferencesDidChange);
+/// v3.3b: posted when the "write diagnostic log" preference changes. Application runtimes (see
+/// `initForApplicationWithResourcePath:logPath:`) follow it: they open the log or close it at once.
+FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification NS_SWIFT_NAME(slothEDiagnosticLogPreferenceDidChange);
 
 @interface SlothERuntime : NSObject
 
@@ -29,6 +32,17 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 @property (class, readonly, nonatomic) NSString *defaultLatencyLogPath;
 
 - (instancetype)initWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath NS_DESIGNATED_INITIALIZER;
+/// v3.3b: the runtime of the application. The log is written only while the user's "write diagnostic
+/// log" preference (`SlothEDiagnosticLogEnabled`, default OFF) is on: with it off nothing is written and
+/// no directory or file is created. It follows the preference at run time (the notification above).
+- (instancetype)initForApplicationWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath;
+/// The stored preference (NO when none is stored).
+@property (class, readonly, nonatomic) BOOL diagnosticLogPreference;
+/// v3.3b: YES while lines are written (needs a log path). Runtimes made with `initWithResourcePath:`
+/// start ON when they have a path (tests); the application's starts as the preference says. Turning it
+/// ON opens the log (creates the directory and file, header and build marker) at once; turning it OFF
+/// drops everything still queued and closes the file. Never creates anything while OFF.
+@property (assign, atomic) BOOL diagnosticLogEnabled;
 - (instancetype)init NS_UNAVAILABLE;
 /// Tests: a runtime with its own queues, counters and log that uses the
 /// already-loaded models of `other` (one ANE load per test process).

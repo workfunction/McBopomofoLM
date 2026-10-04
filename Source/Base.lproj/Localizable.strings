@@ -1,8 +1,8 @@
 /* No comment provided by engineer. */
-"About McBopomofo…" = "About McBopomofo…";
+"About McBopomofo…" = "About McBopomofo LM…";
 
 /* No comment provided by engineer. */
-"McBopomofo Preferences" = "McBopomofo Preferences";
+"McBopomofo Preferences" = "McBopomofo LM Preferences";
 
 /* No comment provided by engineer. */
 "Check for Updates…" = "Check for Updates…";
@@ -259,14 +259,21 @@
 
 "Quick Text Transform" = "Quick Text Transform";
 
-/* McBopomofoLM (SlothE-T side-by-side test build) */
-"SlothE-T Candidate Reranking" = "SlothE-T Model";
+/* McBopomofoLM */
+"AI Candidate Selection" = "AI Candidate Selection";
 "(model failed to load)" = "(model failed to load)";
-"(loading)" = "(loading)";
-"SlothE-T: List Current Word Last" = "SlothE-T: List Current Word Last";
-"SlothE Decoder Corrections" = "SlothE Decoder Corrections";
-"SlothE Sentence Check After a Pause" = "SlothE Sentence Check After a Pause";
-"SlothE Wrong-Syllable Suggestion" = "SlothE Wrong-Syllable Suggestion";
-"SlothE Shift Toggles Chinese/English" = "SlothE Shift Toggles Chinese/English";
+"(loading)" = "(preparing)";
+"Tap Shift to Switch Chinese/English" = "Tap Shift to Switch Chinese/English";
+"Offer Syllable Corrections in the Candidate Window" = "Offer Syllable Corrections in the Candidate Window";
+"Decoder Sentence Review" = "Decoder Sentence Review";
+"Sentence Check After a Pause" = "Sentence Check After a Pause";
+"List Current Word Last in the Candidate Window" = "List Current Word Last in the Candidate Window";
+"Write Diagnostic Log" = "Write Diagnostic Log";
+"McBopomofo LM:" = "McBopomofo LM:";
+"Diagnostics:" = "Diagnostics:";
+"The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type." = "The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type.";
+"AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile." = "AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile.";
+"AI model is ready" = "AI model is ready";
+"Tap Shift to switch between Chinese and English" = "Tap Shift to switch between Chinese and English";
 "English Mode" = "English Mode";
 "Chinese Mode" = "Chinese Mode";

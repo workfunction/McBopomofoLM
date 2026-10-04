@@ -76,6 +76,8 @@ static NSString *const kLatencyLogMDoc = @"# M = the input mode changed";       
 static NSString *const kLatencyLogNewestDoc = @"# C line, v3.2g:";                  // ... and this one (v3.2g; v3.2e / v3.2f wrote older texts) is the newest
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
+NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification = @"SlothEDiagnosticLogPreferenceDidChange";
+static NSString *const kDiagnosticLogDefaultsKey = @"SlothEDiagnosticLogEnabled";  // Preferences.swift: kSlothEDiagnosticLogEnabledKey
 
 static const unsigned long long kMaxLatencyLogBytes = 4ull * 1024ull * 1024ull;
 static const size_t kMaxEndToEndSamples = 4096;
@@ -112,6 +114,8 @@ static const size_t kMaxEndToEndSamples = 4096;
     dispatch_queue_t _loadQueue;
     dispatch_queue_t _logQueue;
     NSFileHandle *_logHandle;              // log queue only
+    std::atomic<bool> _logEnabled;         // v3.3b: lines are written (and the file is opened) only while YES
+    id _diagnosticLogObserver;
     NSISO8601DateFormatter *_logFormatter; // log queue only
 
     dispatch_queue_t _computeQueue;
@@ -190,9 +194,58 @@ static const size_t kMaxEndToEndSamples = 4096;
     dispatch_once(&onceToken, ^{
         NSString *resources = [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"SlothE"];
         NSString *log = [SlothERuntime runningUnderXCTest] ? nil : [SlothERuntime defaultLatencyLogPath];
-        shared = [[SlothERuntime alloc] initWithResourcePath:resources logPath:log];
+        shared = [[SlothERuntime alloc] initForApplicationWithResourcePath:resources logPath:log];
     });
     return shared;
+}
+
++ (BOOL)diagnosticLogPreference
+{
+    return [NSUserDefaults.standardUserDefaults boolForKey:kDiagnosticLogDefaultsKey];
+}
+
+- (instancetype)initForApplicationWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath
+{
+    self = [self initWithResourcePath:resourcePath logPath:logPath];
+    if (self) {
+        _logEnabled.store(logPath != nil && [SlothERuntime diagnosticLogPreference]);
+        __weak SlothERuntime *weakSelf = self;
+        _diagnosticLogObserver = [NSNotificationCenter.defaultCenter addObserverForName:SlothEDiagnosticLogPreferenceDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
+            weakSelf.diagnosticLogEnabled = [SlothERuntime diagnosticLogPreference];
+        }];
+    }
+    return self;
+}
+
+- (BOOL)diagnosticLogEnabled
+{
+    return _logPath != nil && _logEnabled.load(std::memory_order_acquire);
+}
+
+- (void)setDiagnosticLogEnabled:(BOOL)enabled
+{
+    if (_logPath == nil) {
+        return;
+    }
+    BOOL was = _logEnabled.exchange(enabled, std::memory_order_acq_rel);
+    if (was == enabled) {
+        return;
+    }
+    dispatch_async(_logQueue, ^{
+        if (enabled) {
+            if (self->_logHandle == nil && self->_logEnabled.load()) {
+                [self _openLog];
+            }
+        } else if (self->_logHandle != nil && !self->_logEnabled.load()) {
+            [self->_logHandle closeAndReturnError:nil];
+            self->_logHandle = nil;
+        }
+    });
+}
+
+- (BOOL)_logging
+{
+    return _logPath != nil && _logEnabled.load(std::memory_order_acquire);
 }
 
 - (instancetype)initWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath
@@ -201,6 +254,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     if (self) {
         _resourcePath = [resourcePath copy];
         _logPath = [logPath copy];
+        _logEnabled.store(logPath != nil);
         _loadedFlag.store(false);
         _loadingFlag.store(false);
         _failedFlag.store(false);
@@ -261,6 +315,9 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)dealloc
 {
+    if (_diagnosticLogObserver != nil) {
+        [NSNotificationCenter.defaultCenter removeObserver:_diagnosticLogObserver];
+    }
     [_logHandle closeAndReturnError:nil];
 }
 
@@ -973,7 +1030,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)endKeystrokeWithBufferLength:(NSUInteger)bufferLength handlerMilliseconds:(double)milliseconds state:(NSString *)state
 {
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     NSString *inWalk = _ksInWalkRan ? [NSString stringWithFormat:@"%.3f", _ksInWalkMs] : @"";
@@ -1013,7 +1070,7 @@ static const size_t kMaxEndToEndSamples = 4096;
             [_e2e removeObjectAtIndex:0];
         }
     }
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     NSString *dec = [decoder isEqualToString:@"off"] ? @"" : [NSString stringWithFormat:@"%.3f", decoderMilliseconds];
@@ -1032,7 +1089,7 @@ static const size_t kMaxEndToEndSamples = 4096;
             ++_pauseGateChangedCount;
         }
     }
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     NSString *total = totalMilliseconds >= 0 ? [NSString stringWithFormat:@"%.3f", totalMilliseconds] : @"";
@@ -1049,7 +1106,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     } else if ([event isEqualToString:@"not_ready"]) {
         ++_legalEntryNotReadyCount;
     }
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     NSString *slotText = slot > 0 ? [NSString stringWithFormat:@"%ld", (long)slot] : @"";
@@ -1062,7 +1119,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     if ([mode isEqualToString:@"en"]) {
         ++_englishModeCount;
     }
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     [self _appendTimestampedLine:@"M" tail:[NSString stringWithFormat:@"\t%@\t%@\n", mode, source]];
@@ -1070,7 +1127,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source
 {
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     NSString *ready = readyMilliseconds >= 0 ? [NSString stringWithFormat:@"%.3f", readyMilliseconds] : @"";
@@ -1108,7 +1165,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)noteBufferStartWithContextLength:(NSUInteger)contextLength reset:(NSString *)reset selection:(NSString *)selection client:(NSString *)client passThrough:(NSUInteger)passThrough
 {
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     // bundle identifiers are ASCII; anything else is dropped so the log never holds text
@@ -1141,7 +1198,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)_appendLogLine:(NSString *)line
 {
-    if (_logPath == nil) {
+    if (![self _logging]) {
         return;
     }
     dispatch_async(_logQueue, ^{
@@ -1161,6 +1218,9 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)_writeLogLine:(NSString *)line
 {
+    if (!_logEnabled.load(std::memory_order_acquire)) {  // v3.3b: switched off after the line was queued
+        return;
+    }
     if (_logHandle == nil && ![self _openLog]) {
         return;
     }
@@ -1225,7 +1285,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:e.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.2j (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.3b (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process; diagnostic log written only while switched on) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

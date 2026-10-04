@@ -68,6 +68,8 @@ private let kSlothEPauseGateEnabledKey = "SlothEPauseGateEnabled"
 private let kSlothETypoEntryEnabledKey = "SlothETypoEntryEnabled"
 /// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English without committing the buffer (default on).
 private let kSlothEShiftToggleEnabledKey = "SlothEShiftToggleEnabled"
+/// McBopomofoLM v3.3b: write the diagnostic log (latency.log). Default OFF; also read by name in SlothERuntime.mm.
+private let kSlothEDiagnosticLogEnabledKey = "SlothEDiagnosticLogEnabled"
 
 private let kDefaultCandidateListTextSize: CGFloat = 16
 private let kMinCandidateListTextSize: CGFloat = 12
@@ -253,6 +255,7 @@ class Preferences: NSObject {
             kSlothEPauseGateEnabledKey,
             kSlothETypoEntryEnabledKey,
             kSlothEShiftToggleEnabledKey,
+            kSlothEDiagnosticLogEnabledKey,
         ]
     }
 
@@ -489,6 +492,20 @@ extension Preferences {
         return slothERerankEnabled
     }
 
+    /// McBopomofoLM v3.3b: what turning the master switch on does besides storing it (the menu and the
+    /// preferences window both call this): start loading the models. Tests replace it (no model load).
+    static var slothEStartLoading: () -> Void = {
+        SlothERuntime.shared.startLoading()
+        DispatchQueue.main.async { FirstUseNotices.shared.beginWatching() }  // v3.3c: the one-time notices
+    }
+
+    /// McBopomofoLM v3.3b: set the master switch (preferences window; the menu toggles).
+    @objc static func changeSlothERerankEnabled(_ on: Bool) {
+        guard on != slothERerankEnabled else { return }
+        _ = toggleSlothERerankEnabled()
+        if on { slothEStartLoading() }
+    }
+
     /// McBopomofoLM: when the SlothE-T candidate window opens on a word, list
     /// that word (and its orthographic variants) after the other candidates of
     /// the same span. Has no effect while slothERerankEnabled is off.
@@ -556,6 +573,34 @@ extension Preferences {
         slothEShiftToggleEnabled = !slothEShiftToggleEnabled
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothEShiftToggleEnabled
+    }
+
+    /// McBopomofoLM v3.3b: write the diagnostic log (~/Library/Application Support/McBopomofoLM/latency.log:
+    /// per-key timings, buffer lengths and the client's bundle identifier, never typed text). Default OFF:
+    /// then nothing is written and no directory or file is created. The runtime follows the switch at run
+    /// time: turning it on opens the log, turning it off closes it (the notification below).
+    @UserDefault(key: kSlothEDiagnosticLogEnabledKey, defaultValue: false)
+    @objc static var slothEDiagnosticLogEnabled: Bool
+
+    @objc static func changeSlothEDiagnosticLogEnabled(_ on: Bool) {
+        slothEDiagnosticLogEnabled = on
+        NotificationCenter.default.post(name: .slothEDiagnosticLogPreferenceDidChange, object: nil)
+    }
+
+    @objc static func toggleSlothEDiagnosticLogEnabled() -> Bool {
+        changeSlothEDiagnosticLogEnabled(!slothEDiagnosticLogEnabled)
+        return slothEDiagnosticLogEnabled
+    }
+
+    /// McBopomofoLM v3.3b: the preferences window's setters (the menu uses the toggles above).
+    @objc static func changeSlothEShiftToggleEnabled(_ on: Bool) {
+        guard on != slothEShiftToggleEnabled else { return }
+        _ = toggleSlothEShiftToggleEnabled()
+    }
+
+    @objc static func changeSlothETypoEntryEnabled(_ on: Bool) {
+        guard on != slothETypoEntryEnabled else { return }
+        _ = toggleSlothETypoEntryEnabled()
     }
 }
 

@@ -120,6 +120,11 @@
 		32267D4053DB250CF3718B5F /* SlothEV32Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */; };
 		E2846FA9377304CF95BED0C0 /* SlothEV32ParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */; };
 		00A5F3A8A9C947CFA480A073 /* V33ReleaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */; };
+		0353026CBF7B683EB9F00D42 /* V33OptionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 967A467D1C931E6F7B13AAA3 /* V33OptionsTests.swift */; };
+		123DD51B16A0DF512F3EEA58 /* FirstUseNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68012A8B5F3E546B4D9A651 /* FirstUseNotices.swift */; };
+		7EF035FF42FF58BD8EBF0517 /* V33FirstUseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A63687C7CAC3A4BF7B908AB /* V33FirstUseTests.swift */; };
+		5F5B1FF418117FC837DB18EC /* EnglishModeIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 466E34F1EADFAB1C8AA8FF26 /* EnglishModeIndicator.swift */; };
+		4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -305,6 +310,11 @@
 		6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEV32Tests.swift; sourceTree = "<group>"; };
 		B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlothEV32ParityTests.swift; sourceTree = "<group>"; };
 		0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33ReleaseTests.swift; sourceTree = "<group>"; };
+		967A467D1C931E6F7B13AAA3 /* V33OptionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33OptionsTests.swift; sourceTree = "<group>"; };
+		C68012A8B5F3E546B4D9A651 /* FirstUseNotices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstUseNotices.swift; sourceTree = "<group>"; };
+		7A63687C7CAC3A4BF7B908AB /* V33FirstUseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33FirstUseTests.swift; sourceTree = "<group>"; };
+		466E34F1EADFAB1C8AA8FF26 /* EnglishModeIndicator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EnglishModeIndicator.swift; sourceTree = "<group>"; };
+		5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33EnglishIndicatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -390,6 +400,8 @@
 				D4314F0C2ED369090071DD71 /* NumberInputHelper.swift */,
 				1548A6BC49BDC0A6A628B2C8 /* InstallProgress.swift */,
 				6C0863A2E778B79596E2E048 /* ShiftTapDetector.swift */,
+				466E34F1EADFAB1C8AA8FF26 /* EnglishModeIndicator.swift */,
+				C68012A8B5F3E546B4D9A651 /* FirstUseNotices.swift */,
 				D427F76B278CA1BA004A2160 /* AppDelegate.swift */,
 				D44FB74427915555003C80A6 /* Preferences.swift */,
 				D47F7DCF278C0897002F9DD7 /* NonModalAlertWindowController.swift */,
@@ -581,6 +593,9 @@
 				08DABA4E7E0DCE9C28A1D8E8 /* SlothEDecoderTests.mm */,
 				7425A0A957EC52C90B8F84D4 /* SlothEPipelineTests.swift */,
 				6F616C6B6110C30F45E5219E /* SlothEV32Tests.swift */,
+				5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */,
+				7A63687C7CAC3A4BF7B908AB /* V33FirstUseTests.swift */,
+				967A467D1C931E6F7B13AAA3 /* V33OptionsTests.swift */,
 				0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */,
 				B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */,
 				657C968F3D0EC799A7A703FB /* SlothEFixtures */,
@@ -814,6 +829,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5F5B1FF418117FC837DB18EC /* EnglishModeIndicator.swift in Sources */,
+				123DD51B16A0DF512F3EEA58 /* FirstUseNotices.swift in Sources */,
 				6EFE9284706E9B473DB24AC9 /* SlothEEngine.cpp in Sources */,
 				00C8AF6043D2B00BE070BD9A /* SlothERuntime.mm in Sources */,
 				A6D49FA9891FD3E9E5283BBE /* SlothEWalk.cpp in Sources */,
@@ -872,6 +889,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */,
+				7EF035FF42FF58BD8EBF0517 /* V33FirstUseTests.swift in Sources */,
+				0353026CBF7B683EB9F00D42 /* V33OptionsTests.swift in Sources */,
 				00A5F3A8A9C947CFA480A073 /* V33ReleaseTests.swift in Sources */,
 				DE95874FD92EB29E60F9307B /* SlothETests.mm in Sources */,
 				495A03BA328A4668A4BE393C /* SlothEKeyHandlerTests.swift in Sources */,

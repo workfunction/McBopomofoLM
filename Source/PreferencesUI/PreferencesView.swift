@@ -403,6 +403,27 @@ private struct BasicPreferencesView: View {
 
     var body: some View {
         FormBody {
+            PreferenceRow(localized("McBopomofo LM:")) {
+                Toggle(
+                    localized("AI Candidate Selection"),
+                    isOn: $preferences.slothERerankEnabled)
+            }
+
+            PreferenceRow {
+                Toggle(
+                    localized("Tap Shift to Switch Chinese/English"),
+                    isOn: $preferences.slothEShiftToggleEnabled)
+            }
+
+            PreferenceRow {
+                Toggle(
+                    localized("Offer Syllable Corrections in the Candidate Window"),
+                    isOn: $preferences.slothETypoEntryEnabled)
+            }
+
+            Divider()
+                .padding(.vertical, 5)
+
             PreferenceRow(localized("Bopomofo Keyboard Layout:")) {
                 Picker("", selection: $preferences.keyboardLayout) {
                     ForEach(KeyboardLayout.allCasesForPreferences, id: \.rawValue) { layout in
@@ -665,6 +686,24 @@ private struct AdvancedPreferencesView: View {
                 Toggle(
                     localized("Show toggle in input menu"),
                     isOn: $preferences.showBopomofoFontAnnotationSupportItemInInputMenu)
+            }
+
+            PreferenceRow(localized("Diagnostics:")) {
+                Toggle(
+                    localized("Write Diagnostic Log"),
+                    isOn: $preferences.slothEDiagnosticLogEnabled)
+            }
+
+            PreferenceRow {
+                Text(
+                    localized(
+                        "The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 232, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
