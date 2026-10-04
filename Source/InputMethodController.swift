@@ -488,10 +488,12 @@ class McBopomofoInputMethodController: IMKInputController {
     }
 
     @objc func toggleSlothEShiftToggle(_ sender: Any?) {
+        // McBopomofoLM v3.2i / v3.3h: switched off = English mode ends everywhere; the process-wide mode is
+        // reset by Preferences.toggleSlothEShiftToggleEnabled (shared with the preferences window), every key
+        // handler's own flag by the notification it posts.
         _ = Preferences.toggleSlothEShiftToggleEnabled()
         shiftTapDetector.reset()
-        if !Preferences.slothEShiftToggleEnabled {  // McBopomofoLM v3.2i: switched off = English mode ends everywhere
-            Self.slothEGlobalEnglishMode = false
+        if !Preferences.slothEShiftToggleEnabled {
             keyHandler.slothEEnglishMode = false
         }
     }

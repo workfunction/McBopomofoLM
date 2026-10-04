@@ -569,8 +569,14 @@ extension Preferences {
     @UserDefault(key: kSlothEShiftToggleEnabledKey, defaultValue: true)
     @objc static var slothEShiftToggleEnabled: Bool
 
+    /// The one place the Shift-toggle switch changes, for the menu and the preferences window alike:
+    /// turned off, English mode ends everywhere at once (the process-wide mode, and with it the menu-bar
+    /// "A"; v3.3h, before the notification so every key handler's own reset follows it).
     @objc static func toggleSlothEShiftToggleEnabled() -> Bool {
         slothEShiftToggleEnabled = !slothEShiftToggleEnabled
+        if !slothEShiftToggleEnabled {
+            McBopomofoInputMethodController.slothEGlobalEnglishMode = false
+        }
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothEShiftToggleEnabled
     }

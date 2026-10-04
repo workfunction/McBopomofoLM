@@ -191,6 +191,41 @@ final class V33PreferencesWindowTests: V33OptionsTestCase {
         XCTAssertFalse(Preferences.slothEDiagnosticLogEnabled)
     }
 
+    func testTurningTheShiftSwitchOffInTheWindowEndsEnglishModeAtOnce() {
+        MainActor.assumeIsolated { checkShiftSwitchFromTheWindow() }
+    }
+
+    @MainActor
+    private func checkShiftSwitchFromTheWindow() {
+        let item = FakeStatusItem()
+        let savedIndicator = EnglishModeIndicator.shared
+        EnglishModeIndicator.shared = EnglishModeIndicator(item: item, hideDelay: 0)
+        defer {
+            EnglishModeIndicator.shared = savedIndicator
+            McBopomofoInputMethodController.slothEGlobalEnglishMode = false
+        }
+        let model = PreferencesViewModel()
+        Preferences.slothEShiftToggleEnabled = true
+        // English mode is on and a client is active: the A is up.
+        EnglishModeIndicator.shared.clientActivated(ObjectIdentifier(model))
+        McBopomofoInputMethodController.slothEGlobalEnglishMode = true
+        XCTAssertTrue(item.isShown)
+        let controller = McBopomofoInputMethodController(server: nil, delegate: nil, client: nil)!
+        controller.keyHandler.slothEEnglishMode = true
+
+        model.slothEShiftToggleEnabled = false  // the preferences window, no controller involved
+        XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode, "the process-wide mode ends at once")
+        XCTAssertFalse(item.isShown, "and so does the A")
+        XCTAssertFalse(controller.keyHandler.slothEEnglishMode, "every key handler's own flag, by the notification")
+        // Turned on again before any key event: no English mode comes back by itself, in any later activation.
+        model.slothEShiftToggleEnabled = true
+        XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode)
+        controller.activateServer(NSObject())
+        XCTAssertFalse(controller.keyHandler.slothEEnglishMode)
+        controller.deactivateServer(NSObject())
+        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(model))
+    }
+
     func testTheNewSettingsPostTheNotificationsTheRuntimesListenTo() {
         var general = 0
         var diagnostic = 0
@@ -217,7 +252,7 @@ final class V33WordingTests: V33OptionsTestCase {
         "Offer Syllable Corrections in the Candidate Window", "Advanced", "Decoder Sentence Review",
         "Sentence Check After a Pause", "List Current Word Last in the Candidate Window", "Write Diagnostic Log",
         "McBopomofo LM:", "Diagnostics:", "(loading)", "(model failed to load)",
-        "The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type.",
+        "The log records timestamps, per-key timings, buffer lengths and counts, the bundle identifier of the app you type in, Chinese/English switches, which correction entry you picked, why the carried context was reset, and model loading and Neural Engine placement results. It never records the text you type.",
         "About McBopomofo…", "McBopomofo Preferences",
     ]
 
@@ -401,9 +436,144 @@ final class V33DiagnosticLogTests: V33OptionsTestCase {
         XCTAssertEqual((try? FileManager.default.attributesOfItem(atPath: logPath)[.size] as? Int) ?? -2, size)
     }
 
+    // MARK: v3.3h: the switch is serialized with the writes (Sol r34 HIGH / MEDIUM)
+
+    func testOffWaitsForWritesAndNothingIsCreatedAfterItReturns() throws {
+        // Many threads keep writing while the switch goes OFF. When OFF returns the file is closed; the
+        // directory is then removed and must never come back, however much is still being written.
+        for round in 0..<40 {
+            let runtime = SlothERuntime(resourcePath: "/nonexistent", logPath: logPath)  // ON, with a path
+            let group = DispatchGroup()
+            let running = ManagedAtomicFlag()
+            for _ in 0..<4 {
+                group.enter()
+                DispatchQueue.global().async {
+                    while !running.isSet {
+                        runtime.noteInputModeChange("en", source: "tap")
+                        runtime.noteBufferStart(withContextLength: 1, reset: "none", selection: "ok", client: "com.example.app", passThrough: 0)
+                    }
+                    group.leave()
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.003)
+            runtime.diagnosticLogEnabled = false  // waits for the transition on the log queue
+            try? FileManager.default.removeItem(at: root)
+            running.set()
+            group.wait()
+            runtime.flushLog()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "round \(round): something was created after OFF returned")
+        }
+    }
+
+    func testOffWaitsForAWriteThatIsAlreadyRunning() throws {
+        let runtime = SlothERuntime(resourcePath: "/nonexistent", logPath: logPath)
+        noteSomething(runtime)  // the file exists, ON
+        XCTAssertTrue(FileManager.default.fileExists(atPath: logPath))
+        // Hold the log queue with a job that has started: OFF has to wait for it.
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        runtime.logQueueForTesting.async {
+            started.signal()
+            release.wait()
+        }
+        started.wait()
+        var finished = false
+        let off = expectation(description: "OFF returned")
+        DispatchQueue.global().async {
+            runtime.diagnosticLogEnabled = false
+            finished = true
+            off.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertFalse(finished, "OFF returned while a job was still running on the log queue")
+        release.signal()
+        wait(for: [off], timeout: 5)
+        XCTAssertTrue(finished)
+        XCTAssertFalse(runtime.diagnosticLogEnabled)
+    }
+
+    func testARecordMadeJustBeforeASwitchOffAndOnIsNeverWritten() throws {
+        // The race of the review: a record passes its guard (ON), the switch goes OFF and ON again before the
+        // record is queued. It belongs to the earlier logging session and must not appear in the new one.
+        let runtime = SlothERuntime(resourcePath: "/nonexistent", logPath: logPath)
+        runtime.diagnosticLogEnabled = false
+        runtime.diagnosticLogEnabled = true  // a fresh session: file with header
+        runtime.flushLog()
+        var fired = 0
+        runtime.logEnqueueRaceHookForTesting = {
+            fired += 1
+            if fired == 1 {
+                runtime.diagnosticLogEnabled = false
+                runtime.diagnosticLogEnabled = true
+            }
+        }
+        runtime.noteInputModeChange("en", source: "stale_record")
+        runtime.logEnqueueRaceHookForTesting = nil
+        runtime.flushLog()
+        XCTAssertEqual(fired, 1)
+        XCTAssertFalse(logText().contains("stale_record"), "a record of the old session was written after the switch")
+        // A record made after the switch is written as usual.
+        runtime.noteInputModeChange("en", source: "fresh_record")
+        runtime.flushLog()
+        XCTAssertTrue(logText().contains("fresh_record"))
+    }
+
+    func testARecordMadeWhileOffNeverAppearsAfterTheNextOn() throws {
+        let runtime = SlothERuntime(resourcePath: "/nonexistent", logPath: logPath)
+        runtime.diagnosticLogEnabled = false
+        runtime.noteInputModeChange("en", source: "while_off")
+        runtime.noteBufferStart(withContextLength: 1, reset: "none", selection: "ok", client: "com.example.while_off", passThrough: 0)
+        runtime.noteLegalEntryEvent("offered", slot: 1, candidates: 2, readyMilliseconds: 1, trigger: "while_off")
+        // An R record (a lazily loaded decoder function finishing) comes from the load queue, with no key handler
+        // in between: also dropped while OFF; the function's placement shows up once, in the summary at ON.
+        runtime.noteLazyLoadFailure(forTesting: 32, reason: "probe_slow", anePercent: 90)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "nothing created while OFF")
+        runtime.diagnosticLogEnabled = true
+        runtime.flushLog()
+        let text = logText()
+        XCTAssertFalse(text.contains("while_off"))
+        let r = text.split(separator: "\n").filter { $0.hasPrefix("R\t") && $0.contains("decoder.t32") }
+        XCTAssertEqual(r.count, 1, "the live record was dropped, the summary has it once: \(text)")
+        XCTAssertTrue(text.contains("# model placement, loaded before the log was switched on"))
+    }
+
+    func testTurningTheLogOnWritesThePlacementOfModelsThatAlreadyLoaded() throws {
+        // No models loaded: nothing to write, and no empty comment line either.
+        let bare = SlothERuntime(resourcePath: "/nonexistent", logPath: logPath)
+        bare.diagnosticLogEnabled = false
+        bare.diagnosticLogEnabled = true
+        bare.flushLog()
+        XCTAssertFalse(logText().contains("model placement"))
+        XCTAssertEqual(bare.modelPlacementRecordsForTesting(), [])
+        try? FileManager.default.removeItem(at: root)
+
+        // Models loaded while the log was OFF (the shared loaded runtime): ON writes encoder and decoder R lines.
+        let runtime = SlothERuntime(sharingModelsOf: SlothERuntime.sharedLoadedRuntimeForTesting, logPath: logPath)
+        runtime.diagnosticLogEnabled = false
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path), "OFF creates nothing")
+        runtime.diagnosticLogEnabled = true
+        runtime.flushLog()
+        let text = logText()
+        XCTAssertTrue(text.contains("# model placement, loaded before the log was switched on"), text)
+        let rows = text.split(separator: "\n").filter { $0.hasPrefix("R\t") }.map { $0.split(separator: "\t", omittingEmptySubsequences: false).map(String.init) }
+        XCTAssertTrue(rows.contains { $0.count > 3 && $0[2] == "encoder" && $0[3] == "ane" }, "\(rows)")
+        XCTAssertTrue(rows.contains { $0.count > 3 && $0[2] == "decoder" && $0[3] == "ane" }, "\(rows)")
+        XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII }, "the log holds ASCII only")
+        // The same records the test hook reports.
+        XCTAssertEqual(runtime.modelPlacementRecordsForTesting().count, 2)
+    }
+
     func testTheRealLogPathIsNotTouchedByTheTests() {
         // Under XCTest the shared runtime has no log path at all.
         XCTAssertNil(SlothERuntime.shared.logPath)
         XCTAssertTrue(SlothERuntime.defaultLatencyLogPath.hasSuffix("/McBopomofoLM/latency.log"))
     }
+}
+
+/// A flag a few threads poll (the test has no need for anything stronger).
+final class ManagedAtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }

@@ -43,6 +43,13 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 /// ON opens the log (creates the directory and file, header and build marker) at once; turning it OFF
 /// drops everything still queued and closes the file. Never creates anything while OFF.
 @property (assign, atomic) BOOL diagnosticLogEnabled;
+/// v3.3h tests: the R records the runtime would write now for the models that already finished loading.
+- (NSArray<NSString *> *)modelPlacementRecordsForTesting;
+/// v3.3h tests: the serial queue the log is written on (to hold it, to prove the switch waits for it).
+@property (readonly, nonatomic) dispatch_queue_t logQueueForTesting;
+/// v3.3h tests: called between a record's guard and its enqueue, to make the "switched off right then" race
+/// happen on purpose.
+@property (copy, atomic, nullable) dispatch_block_t logEnqueueRaceHookForTesting;
 - (instancetype)init NS_UNAVAILABLE;
 /// Tests: a runtime with its own queues, counters and log that uses the
 /// already-loaded models of `other` (one ANE load per test process).

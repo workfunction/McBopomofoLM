@@ -78,6 +78,7 @@ static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification = @"SlothEDiagnosticLogPreferenceDidChange";
 static NSString *const kDiagnosticLogDefaultsKey = @"SlothEDiagnosticLogEnabled";  // Preferences.swift: kSlothEDiagnosticLogEnabledKey
+static const char *const kLogQueueSpecificKey = "org.openvanilla.McBopomofoLM.slothe.log.queue";
 
 static const unsigned long long kMaxLatencyLogBytes = 4ull * 1024ull * 1024ull;
 static const size_t kMaxEndToEndSamples = 4096;
@@ -114,7 +115,11 @@ static const size_t kMaxEndToEndSamples = 4096;
     dispatch_queue_t _loadQueue;
     dispatch_queue_t _logQueue;
     NSFileHandle *_logHandle;              // log queue only
-    std::atomic<bool> _logEnabled;         // v3.3b: lines are written (and the file is opened) only while YES
+    // v3.3h: bit 0 = the log is ON; the upper bits count the OFF / ON transitions (a logging-session id).
+    // A transition runs ON the log queue, so it is ordered with every write; a record carries the state it
+    // was made under and is written only while the state still equals it (one switch of the log, in either
+    // direction, drops everything made before it that has not been written yet).
+    std::atomic<uint64_t> _logState;
     id _diagnosticLogObserver;
     NSISO8601DateFormatter *_logFormatter; // log queue only
 
@@ -174,6 +179,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 @synthesize legalEntryChosenCount = _legalEntryChosenCount;
 @synthesize legalEntryNotReadyCount = _legalEntryNotReadyCount;
 @synthesize englishModeCount = _englishModeCount;
+@synthesize logEnqueueRaceHookForTesting = _logEnqueueRaceHookForTesting;
 
 + (BOOL)runningUnderXCTest
 {
@@ -208,7 +214,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 {
     self = [self initWithResourcePath:resourcePath logPath:logPath];
     if (self) {
-        _logEnabled.store(logPath != nil && [SlothERuntime diagnosticLogPreference]);
+        _logState.store(logPath != nil && [SlothERuntime diagnosticLogPreference] ? 1 : 0);
         __weak SlothERuntime *weakSelf = self;
         _diagnosticLogObserver = [NSNotificationCenter.defaultCenter addObserverForName:SlothEDiagnosticLogPreferenceDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
             weakSelf.diagnosticLogEnabled = [SlothERuntime diagnosticLogPreference];
@@ -219,33 +225,45 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (BOOL)diagnosticLogEnabled
 {
-    return _logPath != nil && _logEnabled.load(std::memory_order_acquire);
+    return _logPath != nil && (_logState.load(std::memory_order_acquire) & 1) != 0;
 }
 
+/// v3.3h: the transition runs on the log queue and the caller waits for it. So: a write that is already
+/// running finishes first; then the state changes and (OFF) the file is closed before this returns;
+/// every write that was queued earlier, or that passed its guard just before, finds another state and
+/// does nothing. After `diagnosticLogEnabled = NO` returns, no directory, file or line is made until
+/// the switch is turned on again. Turning it ON opens the log at once and writes the model placement
+/// that is already known (the models usually finished loading while the log was OFF).
 - (void)setDiagnosticLogEnabled:(BOOL)enabled
 {
     if (_logPath == nil) {
         return;
     }
-    BOOL was = _logEnabled.exchange(enabled, std::memory_order_acq_rel);
-    if (was == enabled) {
-        return;
-    }
-    dispatch_async(_logQueue, ^{
+    void (^transition)(void) = ^{
+        uint64_t state = self->_logState.load(std::memory_order_acquire);
+        if (((state & 1) != 0) == (enabled != NO)) {
+            return;
+        }
+        self->_logState.store((((state >> 1) + 1) << 1) | (enabled ? 1 : 0), std::memory_order_release);
         if (enabled) {
-            if (self->_logHandle == nil && self->_logEnabled.load()) {
-                [self _openLog];
+            if ([self _openLog]) {
+                [self _writeModelPlacementSummaryOnLogQueue];
             }
-        } else if (self->_logHandle != nil && !self->_logEnabled.load()) {
+        } else if (self->_logHandle != nil) {
             [self->_logHandle closeAndReturnError:nil];
             self->_logHandle = nil;
         }
-    });
+    };
+    if (dispatch_get_specific(kLogQueueSpecificKey) != NULL) {
+        transition();
+    } else {
+        dispatch_sync(_logQueue, transition);
+    }
 }
 
 - (BOOL)_logging
 {
-    return _logPath != nil && _logEnabled.load(std::memory_order_acquire);
+    return _logPath != nil && (_logState.load(std::memory_order_acquire) & 1) != 0;
 }
 
 - (instancetype)initWithResourcePath:(NSString *)resourcePath logPath:(nullable NSString *)logPath
@@ -254,7 +272,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     if (self) {
         _resourcePath = [resourcePath copy];
         _logPath = [logPath copy];
-        _logEnabled.store(logPath != nil);
+        _logState.store(logPath != nil ? 1 : 0);
         _loadedFlag.store(false);
         _loadingFlag.store(false);
         _failedFlag.store(false);
@@ -263,6 +281,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         _e2e = [NSMutableArray array];
         _loadQueue = dispatch_queue_create("org.openvanilla.McBopomofoLM.slothe.load", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
         _logQueue = dispatch_queue_create("org.openvanilla.McBopomofoLM.slothe.log", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+        dispatch_queue_set_specific(_logQueue, kLogQueueSpecificKey, (void *)kLogQueueSpecificKey, NULL);
         _computeQueue = dispatch_queue_create("org.openvanilla.McBopomofoLM.slothe.compute", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
         _commitWaitMilliseconds = 30;
         _prewarmIdleSeconds = 1.0;
@@ -644,7 +663,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     }
 }
 
-- (void)_logRuntime:(NSString *)model info:(const McBopomofoSlothE::CoreMLLoadInfo &)info reason:(NSString *)reason
+- (NSString *)_runtimeRecordTail:(NSString *)model info:(const McBopomofoSlothE::CoreMLLoadInfo &)info reason:(NSString *)reason
 {
     NSString *pct = info.aneCostPercent >= 0 ? [NSString stringWithFormat:@"%.1f", info.aneCostPercent] : @"";
     NSString *probe = info.probeMs >= 0 ? [NSString stringWithFormat:@"%.2f", info.probeMs] : @"";
@@ -653,8 +672,62 @@ static const size_t kMaxEndToEndSamples = 4096;
     for (const auto &[fn, p] : info.functionANEPercent) {
         [fns addObject:[NSString stringWithFormat:@"%s:%.1f", fn.c_str(), p]];
     }
-    NSString *tail = [NSString stringWithFormat:@"\t%@\t%@\t%@\t%.0f\t%@\t%@\t%@\t%@\n", model, [reason isEqualToString:@"ok"] ? @"ane" : @"none", reason, info.loadMs, pct, probe, plan, [fns componentsJoinedByString:@","]];
-    [self _appendTimestampedLine:@"R" tail:tail];
+    return [NSString stringWithFormat:@"\t%@\t%@\t%@\t%.0f\t%@\t%@\t%@\t%@\n", model, [reason isEqualToString:@"ok"] ? @"ane" : @"none", reason, info.loadMs, pct, probe, plan, [fns componentsJoinedByString:@","]];
+}
+
+- (void)_logRuntime:(NSString *)model info:(const McBopomofoSlothE::CoreMLLoadInfo &)info reason:(NSString *)reason
+{
+    [self _appendTimestampedLine:@"R" tail:[self _runtimeRecordTail:model info:info reason:reason]];
+}
+
+/// Log queue only: the R records of the models that finished loading before the log was switched on, in
+/// the order the load made them (encoder, decoder, the lazily loaded decoder functions), under a comment
+/// line that says why they are late.
+- (void)_writeModelPlacementSummaryOnLogQueue
+{
+    NSMutableArray<NSString *> *records = [NSMutableArray array];
+    if (_loadedFlag.load(std::memory_order_acquire) || _failedFlag.load(std::memory_order_acquire)) {
+        [records addObject:[self _runtimeRecordTail:@"encoder" info:_encInfo reason:(_loadReason != nil ? _loadReason : @"unknown")]];
+        if (_decoderLoadedFlag.load(std::memory_order_acquire) || _decoderFailedFlag.load(std::memory_order_acquire)) {
+            [records addObject:[self _runtimeRecordTail:@"decoder" info:_decInfo reason:(_decoderLoadReason != nil ? _decoderLoadReason : @"unknown")]];
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(_lazyMutex);
+        for (const auto &[length, info] : _lazyInfo) {
+            [records addObject:[self _runtimeRecordTail:[NSString stringWithFormat:@"decoder.t%zu", length] info:info reason:@(info.reason.c_str())]];
+        }
+    }
+    if (records.count == 0) {
+        return;
+    }
+    NSDate *now = [NSDate date];
+    NSString *timestamp = [self _timestamp:now];
+    [_logHandle writeData:[[NSString stringWithFormat:@"# model placement, loaded before the log was switched on (%@)\n", timestamp] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
+    for (NSString *tail in records) {
+        [_logHandle writeData:[[NSString stringWithFormat:@"R\t%@%@", timestamp, tail] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
+    }
+}
+
+- (dispatch_queue_t)logQueueForTesting
+{
+    return _logQueue;
+}
+
+- (NSArray<NSString *> *)modelPlacementRecordsForTesting
+{
+    __block NSArray<NSString *> *out = nil;
+    dispatch_sync(_logQueue, ^{
+        NSMutableArray<NSString *> *records = [NSMutableArray array];
+        if (self->_loadedFlag.load() || self->_failedFlag.load()) {
+            [records addObject:[self _runtimeRecordTail:@"encoder" info:self->_encInfo reason:(self->_loadReason != nil ? self->_loadReason : @"unknown")]];
+            if (self->_decoderLoadedFlag.load() || self->_decoderFailedFlag.load()) {
+                [records addObject:[self _runtimeRecordTail:@"decoder" info:self->_decInfo reason:(self->_decoderLoadReason != nil ? self->_decoderLoadReason : @"unknown")]];
+            }
+        }
+        out = records;
+    });
+    return out;
 }
 
 // Encoder first (its result alone already drives the in-walk), then the
@@ -1181,8 +1254,19 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)_appendTimestampedLine:(NSString *)kind tail:(NSString *)tail
 {
+    uint64_t token = _logState.load(std::memory_order_acquire);  // v3.3h: guards every record, R and P included
+    if (_logPath == nil || (token & 1) == 0) {
+        return;
+    }
     NSDate *now = [NSDate date];
+    dispatch_block_t hook = _logEnqueueRaceHookForTesting;
+    if (hook != nil) {
+        hook();
+    }
     dispatch_async(_logQueue, ^{
+        if (self->_logState.load(std::memory_order_acquire) != token) {
+            return;
+        }
         [self _writeLogLine:[NSString stringWithFormat:@"%@\t%@%@", kind, [self _timestamp:now], tail]];
     });
 }
@@ -1198,10 +1282,18 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)_appendLogLine:(NSString *)line
 {
-    if (![self _logging]) {
+    uint64_t token = _logState.load(std::memory_order_acquire);
+    if (_logPath == nil || (token & 1) == 0) {
         return;
     }
+    dispatch_block_t hook = _logEnqueueRaceHookForTesting;
+    if (hook != nil) {
+        hook();
+    }
     dispatch_async(_logQueue, ^{
+        if (self->_logState.load(std::memory_order_acquire) != token) {
+            return;
+        }
         [self _writeLogLine:line];
     });
 }
@@ -1218,9 +1310,7 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)_writeLogLine:(NSString *)line
 {
-    if (!_logEnabled.load(std::memory_order_acquire)) {  // v3.3b: switched off after the line was queued
-        return;
-    }
+    // log queue only, and only for a record whose token still matches (checked by the caller)
     if (_logHandle == nil && ![self _openLog]) {
         return;
     }
@@ -1285,7 +1375,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:e.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
-    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.3b (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process; diagnostic log written only while switched on) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
+    NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.3h (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process; diagnostic log written only while switched on; log switch serialized with writes) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];
     [_logHandle writeData:[marker dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     return YES;
 }

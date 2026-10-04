@@ -697,7 +697,7 @@ private struct AdvancedPreferencesView: View {
             PreferenceRow {
                 Text(
                     localized(
-                        "The log records only per-key timings, buffer lengths and the bundle identifier of the app you type in. It never records the text you type."
+                        "The log records timestamps, per-key timings, buffer lengths and counts, the bundle identifier of the app you type in, Chinese/English switches, which correction entry you picked, why the carried context was reset, and model loading and Neural Engine placement results. It never records the text you type."
                     )
                 )
                 .font(.caption)

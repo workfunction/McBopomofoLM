@@ -30,8 +30,10 @@ class FirstUseTestCase: XCTestCase {
     }
 
     static let loadingState = FirstUseNotices.ModelState(enabled: true, loaded: false, loading: true, failed: false)
-    static let encoderOnlyState = FirstUseNotices.ModelState(enabled: true, loaded: true, loading: true, failed: false)
-    static let doneState = FirstUseNotices.ModelState(enabled: true, loaded: true, loading: false, failed: false)
+    static let encoderOnlyState = FirstUseNotices.ModelState(enabled: true, loaded: true, loading: true, failed: false, decoderLoaded: false, decoderFailed: false)
+    static let doneState = FirstUseNotices.ModelState(enabled: true, loaded: true, loading: false, failed: false, decoderLoaded: true, decoderFailed: false)
+    /// The encoder loaded, the decoder did not (v3.3h): partial availability, not "ready".
+    static let decoderFailedState = FirstUseNotices.ModelState(enabled: true, loaded: true, loading: false, failed: false, decoderLoaded: false, decoderFailed: true)
 }
 
 final class V33ModelNoticeTests: FirstUseTestCase {
@@ -99,6 +101,41 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         XCTAssertTrue(defaults.bool(forKey: "FirstUseModelReadyNoticeShown"))
     }
 
+    func testAnEncoderOnlyResultIsNotReadyItHasItsOwnNoticeAndTheReadyFlagStaysFree() {
+        var notices = makeNotices()
+        _ = notices.evaluate(Self.loadingState, now: t0)
+        XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(20)), [FirstUseNotices.preparingMessage])
+        // The encoder loaded, the decoder could not (Sol r34): never "AI 模型已就緒".
+        XCTAssertEqual(notices.evaluate(Self.decoderFailedState, now: t0.addingTimeInterval(200)), [FirstUseNotices.partialMessage])
+        XCTAssertNotEqual(FirstUseNotices.partialMessage, FirstUseNotices.readyMessage)
+        XCTAssertFalse(notices.readyShown, "the ready flag is not consumed")
+        XCTAssertTrue(notices.partialShown)
+        XCTAssertEqual(notices.evaluate(Self.decoderFailedState, now: t0.addingTimeInterval(210)), [], "once")
+        XCTAssertTrue(notices.isDone(Self.decoderFailedState))
+        XCTAssertEqual(shown, [FirstUseNotices.preparingMessage, FirstUseNotices.partialMessage])
+        // A later start where both models load (a system update fixed it): the owed "ready" still comes.
+        notices = makeNotices()
+        XCTAssertEqual(notices.evaluate(Self.doneState, now: t0.addingTimeInterval(500)), [FirstUseNotices.readyMessage])
+        XCTAssertEqual(defaults.bool(forKey: "FirstUseModelPartialNoticeShown"), true)
+    }
+
+    func testTheEncoderAloneNeverCountsAsReadyWhileTheDecoderIsStillLoading() {
+        let notices = makeNotices()
+        _ = notices.evaluate(Self.loadingState, now: t0)
+        _ = notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(20))
+        // loaded, still loading (the decoder is compiling): nothing, and still watching
+        XCTAssertEqual(notices.evaluate(Self.encoderOnlyState, now: t0.addingTimeInterval(90)), [])
+        XCTAssertFalse(notices.isDone(Self.encoderOnlyState))
+        XCTAssertFalse(notices.readyShown)
+    }
+
+    func testAPartialResultForSomeoneNeverToldPreparingShowsNothingAndEndsTheWatch() {
+        let notices = makeNotices()
+        XCTAssertEqual(notices.evaluate(Self.decoderFailedState, now: t0), [])
+        XCTAssertTrue(notices.isDone(Self.decoderFailedState))
+        XCTAssertEqual(shown, [])
+    }
+
     func testTheWatchIsDrivenByTheRuntimeStateAndStopsWhenDone() {
         let notices = makeNotices(delay: 0.15)
         var state = Self.loadingState
@@ -133,11 +170,13 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         let zh = try table("zh-Hant")
         XCTAssertEqual(zh["AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile."], "AI 模型準備中，約需 3 分鐘，期間使用一般選字")
         XCTAssertEqual(zh["AI model is ready"], "AI 模型已就緒")
+        XCTAssertEqual(zh["AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone."], "AI 模型只有一部分可用：這台 Mac 無法執行解碼器，目前只用編碼器選字")
         XCTAssertEqual(zh["Tap Shift to switch between Chinese and English"], "單點 Shift 可切換中英文")
         for localization in ["Base", "en"] {
             let en = try table(localization)
             XCTAssertNotNil(en["AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile."])
             XCTAssertEqual(en["AI model is ready"], "AI model is ready")
+            XCTAssertNotNil(en["AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone."])
             XCTAssertNotNil(en["Tap Shift to switch between Chinese and English"])
         }
     }

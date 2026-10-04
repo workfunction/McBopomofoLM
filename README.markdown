@@ -47,7 +47,7 @@ xattr -dr com.apple.quarantine
 
 - 這個輸入法**完全離線**：更新檢查等所有連網的功能，都在編譯時就移除了，不會傳送你輸入的任何東西。
 - 為了讓選字更準，輸入法會在記憶體裡記住最近送出的幾個字和注音（「上屏後帶前文」）。這些只存在記憶體，不寫入任何檔案；換 app、換輸入框、移動游標或閒置 2 分鐘就清掉。
-- 「寫入診斷記錄」（輸入選單 → 進階，也在偏好設定的「進階」分頁）**預設關閉**。關閉時完全不寫檔案，也不會建立資料夾。打開之後，會在 `~/Library/Application Support/McBopomofoLM/latency.log` 記錄每個按鍵的耗時、組字區的長度，以及你正在輸入的 app 的 bundle ID（例如 `com.apple.Notes`），**絕不記錄你輸入的文字**。這份記錄只在你的電腦上，沒有任何程式會傳出去；回報問題時，你可以自己決定要不要附上。
+- 「寫入診斷記錄」（輸入選單 → 進階，也在偏好設定的「進階」分頁）**預設關閉**。關閉時完全不寫檔案，也不會建立資料夾。打開之後，會在 `~/Library/Application Support/McBopomofoLM/latency.log` 記錄：時間、每個按鍵的耗時、組字區的長度與各項計數、你正在輸入的 app 的 bundle ID（例如 `com.apple.Notes`）、中英文切換、你選了選字窗的第幾個修正項、前文被清掉的原因，以及模型載入與 Neural Engine 配置的結果。**絕不記錄你輸入的文字。** 這份記錄只在你的電腦上，沒有任何程式會傳出去；回報問題時，你可以自己決定要不要附上。每次打開時，會先寫入目前的模型載入結果；關掉會立刻停止寫入並關閉檔案，已寫好的內容不會被刪除（要刪就自己刪掉 `latency.log`）。
 
 ### 更新與移除
 
@@ -111,7 +111,7 @@ cd /tmp/mcbpmf   # 裡面就是 McBopomofoLM.app
 
 裝好之後不要搬動或改名 app，因為 macOS 的 Neural Engine 編譯快取綁定 app 路徑。
 
-**確認模型跑在 ANE 上**：打開 `latency.log`（要先在輸入選單 → 進階 → 寫入診斷記錄打開，預設不寫），`R` 開頭的行會寫 `encoder ane ok`、`decoder ane ok`，後面是 ANE 執行的運算比例。
+**確認模型跑在 ANE 上**：先在輸入選單 → 進階 → 寫入診斷記錄打開（預設不寫；打開時會立刻把目前的模型載入結果寫進去），再看 `~/Library/Application Support/McBopomofoLM/latency.log`，`R` 開頭的行會寫 `encoder ane ok`、`decoder ane ok`，後面是 ANE 執行的運算比例。
 
 **用終端機移除**：先在「系統設定 → 鍵盤 → 輸入方式」移除「注音 LM」，然後：
 ```bash

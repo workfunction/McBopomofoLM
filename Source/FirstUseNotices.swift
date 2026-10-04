@@ -2,7 +2,8 @@
 //
 //  - While the AI models are compiling for the Neural Engine (the first start after an install that
 //    skipped the installer, or after a system update): "AI 模型準備中，約需 3 分鐘，期間使用一般選字";
-//    when they are ready: "AI 模型已就緒".
+//    when BOTH are ready (encoder and decoder): "AI 模型已就緒"; when the decoder cannot be used and
+//    only the encoder is: a different notice (v3.3h), and the "ready" one stays unused.
 //  - The first time English mode is entered: "單點 Shift 可切換中英文".
 //
 // Each notice is shown once: its flag lives in UserDefaults. The two model notices are driven by the
@@ -17,6 +18,7 @@ final class FirstUseNotices {
     enum Key {
         static let preparingShown = "FirstUseModelPreparingNoticeShown"
         static let readyShown = "FirstUseModelReadyNoticeShown"
+        static let partialShown = "FirstUseModelPartialNoticeShown"
         static let englishToggleShown = "FirstUseEnglishToggleNoticeShown"
     }
 
@@ -30,12 +32,16 @@ final class FirstUseNotices {
         var loading: Bool
         /// The encoder cannot be used (`SlothERuntime.loadFailed`).
         var failed: Bool
+        /// The decoder loaded (`SlothERuntime.decoderLoaded`) / cannot be used (`decoderLoadFailed`).
+        var decoderLoaded: Bool = true
+        var decoderFailed: Bool = false
 
         @MainActor
         static func current(of runtime: SlothERuntime = .shared) -> ModelState {
             ModelState(
                 enabled: Preferences.slothERerankEnabled, loaded: runtime.loaded,
-                loading: runtime.loading, failed: runtime.loadFailed)
+                loading: runtime.loading, failed: runtime.loadFailed,
+                decoderLoaded: runtime.decoderLoaded, decoderFailed: runtime.decoderLoadFailed)
         }
     }
 
@@ -74,6 +80,9 @@ final class FirstUseNotices {
         NSLocalizedString("AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile.", comment: "")
     }
     static var readyMessage: String { NSLocalizedString("AI model is ready", comment: "") }
+    static var partialMessage: String {
+        NSLocalizedString("AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone.", comment: "")
+    }
     static var englishToggleMessage: String {
         NSLocalizedString("Tap Shift to switch between Chinese and English", comment: "")
     }
@@ -82,14 +91,17 @@ final class FirstUseNotices {
 
     var preparingShown: Bool { defaults.bool(forKey: Key.preparingShown) }
     var readyShown: Bool { defaults.bool(forKey: Key.readyShown) }
+    var partialShown: Bool { defaults.bool(forKey: Key.partialShown) }
     var englishToggleShown: Bool { defaults.bool(forKey: Key.englishToggleShown) }
 
     // MARK: the model notices
 
     /// One decision step from the runtime's state at `now`. Returns what it showed (usually nothing).
-    ///  - AI switch off, or the encoder failed: nothing, and the wait starts over.
-    ///  - Loaded and no load pending: "ready", but only for a person who was told "preparing" and has
-    ///    not been told "ready" yet.
+    ///  - AI switch off, or the encoder failed: nothing, and the wait restarts.
+    ///  - Both models loaded and no load pending: "ready", but only for a person who was told "preparing"
+    ///    and has not been told "ready" yet.
+    ///  - Encoder loaded, decoder failed, no load pending: the "partly available" notice (same condition,
+    ///    once); the "ready" flag is left alone, so a later start with both models still says "ready".
     ///  - Otherwise (a load is pending): after `preparingDelay` "preparing", once.
     @discardableResult
     func evaluate(_ state: ModelState, now: Date = Date()) -> [String] {
@@ -99,10 +111,18 @@ final class FirstUseNotices {
         }
         if state.loaded && !state.loading {
             loadingSince = nil
-            if preparingShown && !readyShown {
-                defaults.set(true, forKey: Key.readyShown)
-                notify(Self.readyMessage)
-                return [Self.readyMessage]
+            if state.decoderLoaded {
+                if preparingShown && !readyShown {
+                    defaults.set(true, forKey: Key.readyShown)
+                    notify(Self.readyMessage)
+                    return [Self.readyMessage]
+                }
+            } else if state.decoderFailed {
+                if preparingShown && !partialShown {
+                    defaults.set(true, forKey: Key.partialShown)
+                    notify(Self.partialMessage)
+                    return [Self.partialMessage]
+                }
             }
             return []
         }
@@ -116,11 +136,16 @@ final class FirstUseNotices {
         return []
     }
 
-    /// True while there is nothing left to watch for in this process: the notices are shown, or the
-    /// switch is off / the encoder failed / the models are loaded and the "ready" flag is set or was never due.
+    /// True while there is nothing left to watch for in this process: the switch is off / the encoder
+    /// failed, or the load is over and the notice that is due was shown (or never was due).
     func isDone(_ state: ModelState) -> Bool {
         guard state.enabled, !state.failed else { return true }
-        if state.loaded && !state.loading { return !preparingShown || readyShown }
+        if state.loaded && !state.loading {
+            guard preparingShown else { return true }
+            if state.decoderLoaded { return readyShown }
+            if state.decoderFailed { return partialShown }
+            return true  // not expected once loading is over; never poll forever
+        }
         return false
     }
 
