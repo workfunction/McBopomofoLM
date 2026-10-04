@@ -1,44 +1,113 @@
-/* No comment provided by engineer. */
+/* Window title suffix: version and build number */
 "%@ (for version %@, r%@)" = "%1$@ (for version %2$@, r%3$@)";
 
-/* No comment provided by engineer. */
+/* Buttons and the line under the license */
 "Agree and Upgrade" = "Agree and Upgrade";
-
-/* No comment provided by engineer. */
+"Agree and Reinstall" = "Agree and Reinstall";
+"By upgrading the software I agree to the terms above." = "By upgrading the software I agree to the terms above.";
+"By reinstalling the software I agree to the terms above." = "By reinstalling the software I agree to the terms above.";
 "Cancel" = "Cancel";
-
-/* No comment provided by engineer. */
-"Cannot activate the input method." = "Cannot activate the input method.";
-
-/* No comment provided by engineer. */
-"Cannot copy the file to the destination." = "Cannot copy the file to the destination.";
-
-/* No comment provided by engineer. */
-"Install Failed" = "Install Failed";
-
-/* No comment provided by engineer. */
-"Installation Successful" = "Installation Successful";
-
-/* No comment provided by engineer. */
 "OK" = "OK";
-
-/* No comment provided by engineer. */
+"Quit" = "Quit";
+"Replace" = "Replace";
+"Remove" = "Remove";
+"Keep" = "Keep";
+"Move to Trash" = "Move to Trash";
 "Close Installer" = "Close Installer";
-
-/* No comment provided by engineer. */
-"McBopomofo is ready to use." = "McBopomofo is ready to use.";
-
-"Stopping the old version. This may take up to one minute…" = "Stopping the old version. This may take up to one minute…";
-"Attention" = "Attention";
-"McBopomofo is upgraded, but please log out or reboot for the new version to be fully functional." = "McBopomofo is upgraded, but please log out or reboot for the new version to be fully functional.";
-
-"Fatal Error" = "Fatal Error";
+"Finish" = "Finish";
 "Abort" = "Abort";
-"No installable packagess found." = "No installable packagess found.";
-"Cannot register input source %@ at %@." = "Cannot register input source %@ at %@.";
-"Cannot find input source %@ after registration." = "Cannot find input source %@ after registration.";
-"Cannot remove the existing version at %@, error: %@" = "Cannot remove the existing version at %@, error: %@";
 
-"Warning" = "Warning";
-"Input method may not be fully enabled. Please enable it through System Preferences > Keyboard > Input Sources." = "Input method may not be fully enabled. Please enable it through System Preferences > Keyboard > Input Sources.";
-"Continue" = "Continue";
+/* Macs the input method cannot run on */
+"This Mac cannot run McBopomofo LM" = "This Mac cannot run McBopomofo LM";
+"McBopomofo LM needs a Mac with Apple silicon (M1 or later). Intel Macs are not supported." = "McBopomofo LM needs a Mac with Apple silicon (M1 or later). Intel Macs are not supported.";
+"McBopomofo LM needs macOS %d or later. This Mac runs macOS %@. Please update macOS first, then open the installer again." = "McBopomofo LM needs macOS %1$d or later. This Mac runs macOS %2$@. Please update macOS first, then open the installer again.";
+
+/* A newer version is installed */
+"A newer version is already installed" = "A newer version is already installed";
+"The installed McBopomofo LM is r%@, newer than the r%@ in this installer. Replace it with the older version?" = "The installed McBopomofo LM is r%1$@, newer than the r%2$@ in this installer. Replace it with the older version?";
+
+/* Progress */
+"Installing McBopomofo LM…" = "Installing McBopomofo LM…";
+"Upgrading McBopomofo LM…" = "Upgrading McBopomofo LM…";
+"Step %1$d of %2$d: %3$@" = "Step %1$d of %2$d: %3$@";
+"Switching to the ABC keyboard…" = "Switching to the ABC keyboard…";
+"Moving the old version to the Trash…" = "Moving the old version to the Trash…";
+"Stopping the old version…" = "Stopping the old version…";
+"Waiting for the old version to stop…" = "Waiting for the old version to stop…";
+"Unpacking McBopomofo LM…" = "Unpacking McBopomofo LM…";
+"Copying to ~/Library/Input Methods…" = "Copying to ~/Library/Input Methods…";
+"Removing the download mark…" = "Removing the download mark…";
+"Checking the installed files…" = "Checking the installed files…";
+"Registering the input method and preparing its models…" = "Registering the input method and preparing its models…";
+"Turning on the Bopomofo input mode…" = "Turning on the Bopomofo input mode…";
+"Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open." = "Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open.";
+"Stopping the old version. This may take up to one minute…" = "Stopping the old version. This may take up to one minute…";
+"Please wait" = "Please wait";
+"The installer is still working. Quitting now could leave McBopomofo LM half installed. Please wait until it finishes." = "The installer is still working. Quitting now could leave McBopomofo LM half installed. Please wait until it finishes.";
+
+/* Results */
+"Installation Successful" = "Installation Successful";
+"McBopomofo is ready to use." = "McBopomofo LM is ready to use.";
+"If McBopomofo LM is not in the input menu, log out and log in again, or add it in System Settings > Keyboard > Input Sources." = "If McBopomofo LM is not in the input menu, log out and log in again, or add it in System Settings > Keyboard > Input Sources.";
+"Attention" = "Attention";
+"McBopomofo is upgraded, but please log out or reboot for the new version to be fully functional." = "McBopomofo LM is upgraded, but please log out or restart for the new version to be fully functional.";
+"Input method may not be fully enabled. Please enable it through System Preferences > Keyboard > Input Sources." = "Input method may not be fully enabled. Please enable \"McBopomofo LM\" in System Settings > Keyboard > Input Sources.";
+
+/* Failures */
+"Install Failed" = "Install Failed";
+"Fatal Error" = "Fatal Error";
+"No installable packagess found." = "No installable packagess found.";
+"Cannot activate the input method." = "Cannot activate the input method.";
+"Cannot copy the file to the destination." = "Cannot copy the file to the destination.";
+"Cannot remove the existing version at %@, error: %@" = "Cannot remove the existing version at %1$@, error: %2$@";
+"Cannot unpack McBopomofo LM from the installer. Please download the installer again." = "Cannot unpack McBopomofo LM from the installer. Please download the installer again.";
+"The input method inside this installer does not match the installer's version. Please download the installer again." = "The input method inside this installer does not match the installer's version. Please download the installer again.";
+"The download mark could not be removed from the installed files, so the input method would not start." = "The download mark could not be removed from the installed files, so the input method would not start.";
+"McBopomofo LM was copied, but could not be registered as an input method." = "McBopomofo LM was copied, but could not be registered as an input method.";
+
+/* Removal */
+"Remove McBopomofo LM?" = "Remove McBopomofo LM?";
+"This turns off the input method and moves McBopomofo LM from the Input Methods folder to the Trash. Your user phrases and settings stay where they are unless you choose otherwise in the next question." = "This turns off the input method and moves McBopomofo LM from the Input Methods folder to the Trash. Your user phrases and settings stay where they are unless you choose otherwise in the next question.";
+"Removing McBopomofo LM…" = "Removing McBopomofo LM…";
+"Turning off the input method…" = "Turning off the input method…";
+"Stopping McBopomofo LM…" = "Stopping McBopomofo LM…";
+"Moving McBopomofo LM to the Trash…" = "Moving McBopomofo LM to the Trash…";
+"Your user data" = "Your user data";
+"Input sources turned off: %d" = "Input sources turned off: %d";
+"Also delete your user data?" = "Also delete your user data?";
+"Your user phrases and settings are in %@. Keep them if you may install McBopomofo LM again." = "Your user phrases and settings are in %@. Keep them if you may install McBopomofo LM again.";
+"McBopomofo LM Removed" = "McBopomofo LM Removed";
+"McBopomofo LM has been moved to the Trash. If it still shows up in the input menu, please log out or restart your Mac." = "McBopomofo LM has been moved to the Trash. If it still shows up in the input menu, please log out or restart your Mac.";
+"Your user phrases and settings were kept in %@." = "Your user phrases and settings were kept in %@.";
+"Remove Failed" = "Remove Failed";
+"Cannot move %@ to the Trash, error: %@" = "Cannot move %1$@ to the Trash, error: %2$@";
+
+/* v3.3e fixes: partial failures, warnings, removal without the app, localized details */
+"%d item(s) still carry the mark, for example: %@" = "%1$d item(s) still carry the mark, for example: %2$@";
+"Another McBopomofo LM mode is still turned on. Turn it off in System Settings > Keyboard > Input Sources if you do not want it." = "Another McBopomofo LM mode is still turned on. Turn it off in System Settings > Keyboard > Input Sources if you do not want it.";
+"Both models run on the Neural Engine." = "Both models run on the Neural Engine.";
+"Decoder model ready (%d s)." = "Decoder model ready (%d s).";
+"Encoder model ready (%d s)." = "Encoder model ready (%d s).";
+"Exit status: %d" = "Exit status: %d";
+"Folder: %@" = "Folder: %@";
+"Installed, with a warning" = "Installed, with a warning";
+"McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac." = "McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac.";
+"McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed." = "McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed.";
+"Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts." = "Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts.";
+"Preparing the decoder model…" = "Preparing the decoder model…";
+"Preparing the encoder model…" = "Preparing the encoder model…";
+"Setting the old version aside…" = "Setting the old version aside…";
+"Some input sources of McBopomofo LM could not be turned off. Turn them off in System Settings > Keyboard > Input Sources, then open the installer again. Nothing else was changed." = "Some input sources of McBopomofo LM could not be turned off. Turn them off in System Settings > Keyboard > Input Sources, then open the installer again. Nothing else was changed.";
+"The McBopomofo LM app is gone, but the input method is still registered or running. This turns it off. Your user phrases and settings stay where they are unless you choose otherwise in the next question." = "The McBopomofo LM app is gone, but the input method is still registered or running. This turns it off. Your user phrases and settings stay where they are unless you choose otherwise in the next question.";
+"The compile cache of the models was cleared; they are prepared from scratch." = "The compile cache of the models was cleared; they are prepared from scratch.";
+"The input method inside this installer contains a link that points outside of it, so nothing was installed. Please download the installer again." = "The input method inside this installer contains a link that points outside of it, so nothing was installed. Please download the installer again.";
+"The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again." = "The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again.";
+"The installed files could not be checked completely, so the installer cannot tell whether the input method would start." = "The installed files could not be checked completely, so the installer cannot tell whether the input method would start.";
+"The installed version could not be moved aside, so nothing was changed." = "The installed version could not be moved aside, so nothing was changed.";
+"The models are ready (%d s)." = "The models are ready (%d s).";
+"The previous version could not be put back automatically. You can find it here and move it back to ~/Library/Input Methods:" = "The previous version could not be put back automatically. You can find it here and move it back to ~/Library/Input Methods:";
+"The previous version was put back." = "The previous version was put back.";
+"This installer is incomplete" = "This installer is incomplete";
+"Version found: %@, expected: %@" = "Version found: %1$@, expected: %2$@";
+"Version found: r%@, expected: r%@" = "Version found: r%1$@, expected: r%2$@";
+"Warning: not every model can run on the Neural Engine." = "Warning: not every model can run on the Neural Engine.";

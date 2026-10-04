@@ -15,19 +15,20 @@
 
 這個輸入法沒有 Apple 的開發者簽章（沒有付 Apple 的年費），所以第一次打開安裝程式時，macOS 會擋下來，要你到「系統設定」放行一次。照下面做就好，不需要用終端機。
 
-1. 到 [Releases](https://github.com/workfunction/McBopomofoLM/releases) 下載最新的 `McBopomofoLM-v3.3.0.zip`。到「下載項目」雙擊它解壓縮，會得到「安裝程式」。
-2. 雙擊「安裝程式」。macOS 會跳出「Apple 無法驗證…」之類的警告，按「完成」（**不要**按「移到垃圾桶」）。
-3. 打開「系統設定 → 隱私權與安全性」，往下捲到「安全性」。會看到一行「已阻擋「安裝程式」…」，按旁邊的「仍要打開」。
+1. 到 [Releases](https://github.com/workfunction/McBopomofoLM/releases) 下載最新的 `McBopomofoLM-Installer-3.3.0.zip`。到「下載項目」雙擊它解壓縮，會得到安裝程式「安裝小麥注音 LM」（檔案本身叫 `McBopomofoInstaller.app`）。
+2. 雙擊「安裝小麥注音 LM」。macOS 會跳出「Apple 無法驗證…」之類的警告，按「完成」（**不要**按「移到垃圾桶」）。
+3. 打開「系統設定 → 隱私權與安全性」，往下捲到「安全性」。會看到一行「已阻擋「安裝小麥注音 LM」…」，按旁邊的「仍要打開」。
    - 這個按鈕只會在你剛剛被擋下之後的一段時間（約一小時）內出現。找不到的話，回到步驟 2 再雙擊一次安裝程式，然後馬上回來看。
    - 按下去要輸入這台 Mac 的**管理員密碼**（或用 Touch ID）。如果你用的是標準（非管理員）帳號，請管理員幫你輸入密碼。
    - 之後 macOS 會再問一次，按「打開」。
-4. 安裝程式的視窗出現後，按「同意並安裝」。視窗裡的進度條會跑約 3 分鐘，這段時間電腦在為神經網路引擎（Neural Engine）編譯 AI 模型，**請不要關掉視窗**。看到「安裝成功」就完成了。
-5. 加入輸入法：打開「系統設定 → 鍵盤 → 文字輸入 → 輸入方式 → 編輯…」，按「＋」，選「繁體中文」，加入「注音 LM」（咖啡色的 ㄅ）。安裝程式已經替你啟用它，如果在選單列右上角的輸入選單裡已經看到「注音 LM」，這一步可以跳過。
+4. 安裝程式的視窗（「小麥注音 LM 輸入法安裝程式」）出現後，先看一下使用授權，再按「同意安裝」。視窗裡會一行一行顯示進度（「第 N 步（共 M 步）」），其中「準備模型」約 3 分鐘，電腦在為神經網路引擎（Neural Engine）編譯 AI 模型，**請不要關掉視窗**。看到「安裝成功」就完成了，按「關閉安裝程式」，不按的話視窗會在一分鐘內自動關閉。
+   - 如果這台 Mac 以前裝過舊版，按鈕會寫「同意並升級」（同一版則是「同意並重新安裝」）。目前正在使用「注音 LM」的話，安裝程式會先幫你切換到 ABC，再把舊版換掉。
+5. 安裝程式會替你開啟「注音 LM」（咖啡色的 ㄅ），在選單列右上角的輸入選單裡就看得到。如果沒有，請先登出再登入；還是沒有的話，打開「系統設定 → 鍵盤 → 文字輸入 → 輸入方式 → 編輯…」，按「＋」，選「繁體中文」，加入「注音 LM」。（安裝程式只開啟這一個輸入模式，不會開啟「傳統注音 LM」；想用的話可以自己在同一個地方加入。）
 6. 用你平常的方式（例如 Control + 空白鍵，或鍵盤上的地球儀鍵）切換到「注音 LM」，開始打字。
 
 裝好之後不要搬動或改名這個輸入法，因為 macOS 的 AI 模型快取綁定它的位置。
 
-**如果找不到「仍要打開」（備案）**：打開「終端機」，輸入下面這行（最後有一個空白），再把「安裝程式」從 Finder 拖進終端機視窗，按 Return；之後再雙擊安裝程式就不會被擋了：
+**如果找不到「仍要打開」（備案）**：打開「終端機」，輸入下面這行（最後有一個空白），再把解壓縮出來的「安裝小麥注音 LM」從 Finder 拖進終端機視窗，按 Return；之後再雙擊安裝程式就不會被擋了：
 
 ```bash
 xattr -dr com.apple.quarantine 
@@ -50,8 +51,8 @@ xattr -dr com.apple.quarantine
 
 ### 更新與移除
 
-- **更新**：下載新版，再打開新版的安裝程式。它會先關掉舊版再安裝，目前正在使用「注音 LM」的話，會先幫你切換到 ABC。
-- **移除**：打開安裝程式，按「移除」。它會停用輸入法、把輸入法丟進垃圾桶，並詢問要不要一併刪除設定和使用者詞庫（`~/Library/Application Support/McBopomofoLM`，預設保留）。
+- **更新**：下載新版，再打開新版的安裝程式（第一次打開一樣要放行一次）。它會先關掉舊版再安裝，目前正在使用「注音 LM」的話，會先幫你切換到 ABC。
+- **移除**：打開安裝程式，按視窗右上角的「移除」（電腦裡有裝才會出現），再按一次「移除」確認。它會關閉輸入法、把「小麥注音 LM」丟進垃圾桶，並詢問要不要一併刪除使用者資料（設定和使用者詞庫，在 `~/Library/Application Support/McBopomofoLM`）：「保留」是預設，要刪才選「移到垃圾桶」。
 
 ## 做了什麼
 
@@ -82,10 +83,10 @@ xattr -dr com.apple.quarantine
 
 ### 用終端機安裝（不用安裝程式）
 
-發佈的 zip 裡只有安裝程式。要從終端機安裝，可以把安裝程式內嵌的 IME 取出（模型已經包在裡面），或是自己編譯（見下面「自行編譯」）：
+發佈的 zip 裡只有圖形安裝程式（`McBopomofoLM-Installer-3.3.0.zip`，裡面是 `McBopomofoInstaller.app`）。要從終端機安裝，可以把安裝程式內嵌的 IME 取出（模型已經包在裡面），或是自己編譯（見下面「自行編譯」）：
 
 ```bash
-mkdir -p /tmp/mcbpmf && unzip -q -d /tmp/mcbpmf "安裝程式.app/Contents/Resources/NotarizedArchives/"*.zip
+mkdir -p /tmp/mcbpmf && unzip -q -d /tmp/mcbpmf McBopomofoInstaller.app/Contents/Resources/NotarizedArchives/McBopomofoLM-r2600.zip
 cd /tmp/mcbpmf   # 裡面就是 McBopomofoLM.app
 ```
 
@@ -124,10 +125,12 @@ defaults delete org.openvanilla.inputmethod.McBopomofoLM
 
 - 每版的發佈說明在 `release/<版本>/NOTES.md`，裡面有 IME 本體（`McBopomofoLM.app/Contents/MacOS/McBopomofoLM`）和 zip 的 SHA-256。下載後可以核對：
   ```bash
-  shasum -a 256 McBopomofoLM-v3.3.0.zip
+  shasum -a 256 McBopomofoLM-Installer-3.3.0.zip
   ```
-- 安裝程式把 IME 的 zip 放在自己的 `Contents/Resources/NotarizedArchives/`，zip 裡是 ad-hoc 簽署的 `McBopomofoLM.app`。用 `codesign --verify --deep --strict McBopomofoLM.app` 驗證簽章結構。
+- 安裝程式（universal：arm64 + x86_64，Intel 的 Mac 只會看到說明）把 IME 的 zip 放在自己的 `Contents/Resources/NotarizedArchives/McBopomofoLM-r<build>.zip`，zip 裡是 ad-hoc 簽署的 `McBopomofoLM.app`。用 `codesign --verify --deep --strict McBopomofoLM.app` 驗證簽章結構。
 - 發佈內容不含任何 Apple 公證；這是 v3.3 的設計（見 `PLAN.md` §22）。
+- 打包安裝程式：`scripts/build-installer.sh <McBopomofoLM.app> <輸出資料夾>`。它檢查 IME 與安裝程式的版本號相同、把 IME 壓成上面那個 zip 放進安裝程式、建置 Release（arm64 + x86_64）並輸出 `McBopomofoLM-Installer-<版本>.zip`。
+- 安裝程式的邏輯在 `Source/Installer/InstallerKit`（`swift test` 可跑單元測試），`McBopomofoInstaller --dry-run <資料夾>` 只做「解壓縮、拷貝、移除隔離標記」並檢查結果，不會安裝、登記或啟用任何東西。
 
 ### Core ML 模型
 

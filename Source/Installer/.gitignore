@@ -1,0 +1,4 @@
+# scripts/build-installer.sh puts McBopomofoLM-r<N>.zip here for the build; never commit it.
+# The folder itself stays (the Xcode project references it), through its placeholder.
+NotarizedArchives/*
+!NotarizedArchives/.gitkeep

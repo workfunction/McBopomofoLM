@@ -31,7 +31,7 @@
 		6ACA41FB15FC1D9000935EF6 /* License.rtf in Resources */ = {isa = PBXBuildFile; fileRef = 6ACA41EC15FC1D9000935EF6 /* License.rtf */; };
 		6ACA41FC15FC1D9000935EF6 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 6ACA41EE15FC1D9000935EF6 /* Localizable.strings */; };
 		6ACA41FD15FC1D9000935EF6 /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 6ACA41F015FC1D9000935EF6 /* MainMenu.xib */; };
-		6ACA420215FC1E5200935EF6 /* McBopomofo.app in Resources */ = {isa = PBXBuildFile; fileRef = 6A0D4EA215FC0D2D00ABF4B3 /* McBopomofo.app */; };
+		C3079E959BC749B7F7C58ACD /* NotarizedArchives in Resources */ = {isa = PBXBuildFile; fileRef = E4FB7CC0D9D7E2C99AC85678 /* NotarizedArchives */; };
 		6ACC3D442793701600F1B140 /* ParselessPhraseDB.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6ACC3D402793701600F1B140 /* ParselessPhraseDB.cpp */; };
 		6ACC3D452793701600F1B140 /* ParselessLM.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6ACC3D422793701600F1B140 /* ParselessLM.cpp */; };
 		6AD7CBC815FE555000691B5B /* data-plain-bpmf.txt in Resources */ = {isa = PBXBuildFile; fileRef = 6AD7CBC715FE555000691B5B /* data-plain-bpmf.txt */; };
@@ -100,6 +100,9 @@
 		D4EE675B2B399D0200F062DE /* dictionary_service.json in Resources */ = {isa = PBXBuildFile; fileRef = D4EE67592B39968900F062DE /* dictionary_service.json */; };
 		D4F0BBDF279AF1AF0071253C /* ArchiveUtil.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F0BBDE279AF1AF0071253C /* ArchiveUtil.swift */; };
 		D4F0BBE1279AF8B30071253C /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F0BBE0279AF8B30071253C /* AppDelegate.swift */; };
+		E7339EE6C0E641E973CD9D41 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B7D00271A7CD5A23496302B /* main.swift */; };
+		51E9E6174B5C58C3B2180E16 /* InputSourceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE3AE4419BA47E79C508BC9 /* InputSourceControl.swift */; };
+		05A5D91CB5DF07CF1D5E2E20 /* InstallerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 968CEC64A64D6CA7DD5F7988 /* InstallerKit */; };
 		D4F0BBE4279B08900071253C /* BundleTranslocate.m in Sources */ = {isa = PBXBuildFile; fileRef = D4F0BBE3279B08900071253C /* BundleTranslocate.m */; };
 		D4F0BBE7279B14C20071253C /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = D4F0BBE9279B14C20071253C /* Credits.rtf */; };
 		6EFE9284706E9B473DB24AC9 /* SlothEEngine.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D9F672A805405414466083FB /* SlothEEngine.cpp */; };
@@ -134,13 +137,6 @@
 			proxyType = 1;
 			remoteGlobalIDString = 6A38BC2115FC12FD00A8A51F;
 			remoteInfo = Data;
-		};
-		6ACA420015FC1DCC00935EF6 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 6A0D4E9415FC0CFA00ABF4B3 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 6A0D4EA115FC0D2D00ABF4B3;
-			remoteInfo = McBopomofo;
 		};
 		D485D3BA2796A8A000657FF3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -280,6 +276,10 @@
 		D4EE67592B39968900F062DE /* dictionary_service.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = dictionary_service.json; sourceTree = "<group>"; };
 		D4F0BBDE279AF1AF0071253C /* ArchiveUtil.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArchiveUtil.swift; sourceTree = "<group>"; };
 		D4F0BBE0279AF8B30071253C /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		5B7D00271A7CD5A23496302B /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		8AE3AE4419BA47E79C508BC9 /* InputSourceControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceControl.swift; sourceTree = "<group>"; };
+		E4FB7CC0D9D7E2C99AC85678 /* NotarizedArchives */ = {isa = PBXFileReference; lastKnownFileType = folder; path = NotarizedArchives; sourceTree = "<group>"; };
+		BA029E7E6822945979951461 /* InstallerKit */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = InstallerKit; path = Source/Installer/InstallerKit; sourceTree = "<group>"; };
 		D4F0BBE2279B08900071253C /* BundleTranslocate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BundleTranslocate.h; sourceTree = "<group>"; };
 		D4F0BBE3279B08900071253C /* BundleTranslocate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BundleTranslocate.m; sourceTree = "<group>"; };
 		D4F0BBE8279B14C20071253C /* Base */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; name = Base; path = Base.lproj/Credits.rtf; sourceTree = "<group>"; };
@@ -342,6 +342,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				D427F7B6279086F6004A2160 /* InputSourceHelper in Frameworks */,
+				05A5D91CB5DF07CF1D5E2E20 /* InstallerKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -524,6 +525,9 @@
 			children = (
 				D4F0BBE0279AF8B30071253C /* AppDelegate.swift */,
 				D4F0BBDE279AF1AF0071253C /* ArchiveUtil.swift */,
+				8AE3AE4419BA47E79C508BC9 /* InputSourceControl.swift */,
+				5B7D00271A7CD5A23496302B /* main.swift */,
+				E4FB7CC0D9D7E2C99AC85678 /* NotarizedArchives */,
 				6ACA41EA15FC1D9000935EF6 /* InfoPlist.strings */,
 				6ACA41EC15FC1D9000935EF6 /* License.rtf */,
 				6ACA41EE15FC1D9000935EF6 /* Localizable.strings */,
@@ -560,6 +564,7 @@
 				D427F7A727905E43004A2160 /* TooltipUI */,
 				D427F7AC27907B7E004A2160 /* NotifierUI */,
 				D427F7B2279086B5004A2160 /* InputSourceHelper */,
+				BA029E7E6822945979951461 /* InstallerKit */,
 				D427F7BF27908EAC004A2160 /* OpenCCBridge */,
 				D47D73C027A71FFA00255A50 /* FSEventStreamHelper */,
 				D4C9CAAF27AAC8EC0058DFEA /* NSStringUtils */,
@@ -689,11 +694,11 @@
 			buildRules = (
 			);
 			dependencies = (
-				6ACA420115FC1DCC00935EF6 /* PBXTargetDependency */,
 			);
 			name = McBopomofoInstaller;
 			packageProductDependencies = (
 				D427F7B5279086F6004A2160 /* InputSourceHelper */,
+				968CEC64A64D6CA7DD5F7988 /* InstallerKit */,
 			);
 			productName = McBopomofoInstaller;
 			productReference = 6ACA41CB15FC1D7500935EF6 /* McBopomofoInstaller.app */;
@@ -799,7 +804,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				6ACA420215FC1E5200935EF6 /* McBopomofo.app in Resources */,
+				C3079E959BC749B7F7C58ACD /* NotarizedArchives in Resources */,
 				6A2E40F9253A6AA000D1AE1D /* Images.xcassets in Resources */,
 				6ACA41FA15FC1D9000935EF6 /* InfoPlist.strings in Resources */,
 				6ACA41FB15FC1D9000935EF6 /* License.rtf in Resources */,
@@ -880,6 +885,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D4F0BBE1279AF8B30071253C /* AppDelegate.swift in Sources */,
+				E7339EE6C0E641E973CD9D41 /* main.swift in Sources */,
+				51E9E6174B5C58C3B2180E16 /* InputSourceControl.swift in Sources */,
 				D4F0BBE4279B08900071253C /* BundleTranslocate.m in Sources */,
 				D4F0BBDF279AF1AF0071253C /* ArchiveUtil.swift in Sources */,
 			);
@@ -920,11 +927,6 @@
 			isa = PBXTargetDependency;
 			target = 6A38BC2115FC12FD00A8A51F /* Data */;
 			targetProxy = 6A38BC2515FC131100A8A51F /* PBXContainerItemProxy */;
-		};
-		6ACA420115FC1DCC00935EF6 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 6A0D4EA115FC0D2D00ABF4B3 /* McBopomofo */;
-			targetProxy = 6ACA420015FC1DCC00935EF6 /* PBXContainerItemProxy */;
 		};
 		D485D3BB2796A8A000657FF3 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1638,6 +1640,10 @@
 		D427F7B5279086F6004A2160 /* InputSourceHelper */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = InputSourceHelper;
+		};
+		968CEC64A64D6CA7DD5F7988 /* InstallerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = InstallerKit;
 		};
 		D427F7C027908EFC004A2160 /* OpenCCBridge */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -23,7 +23,12 @@
 
 import Cocoa
 import Foundation
+import InstallerKit
 
+/// Finds the input method the installer carries: the zip under
+/// Resources/NotarizedArchives/$appName-r$bundleVersion.zip (the lookup rules live in
+/// InstallerKit's ArchiveLocator, where they are tested), or, for a developer build, the app
+/// bundle itself in Resources.
 struct ArchiveUtil {
     var appName: String
     var targetAppBundleName: String
@@ -33,108 +38,38 @@ struct ArchiveUtil {
         self.targetAppBundleName = targetAppBundleName
     }
 
-    // Returns YES if (1) a zip file under
-    // Resources/NotarizedArchives/$_appName-$bundleVersion.zip exists, and (2) if
-    // Resources/$_invalidAppBundleName does not exist.
-    func validateIfNotarizedArchiveExists() -> Bool {
-        guard let resourePath = Bundle.main.resourcePath,
-              let notarizedArchivesPath = notarizedArchivesPath,
-              let notarizedArchive = notarizedArchive,
-              let notarizedArchivesContent: [String] = try? FileManager.default.subpathsOfDirectory(atPath: notarizedArchivesPath)
-            else {
-            return false
+    func resolve() -> ArchiveLocator.Resolution? {
+        guard let resourcePath = Bundle.main.resourcePath,
+            let build = Bundle.main.infoDictionary?[kCFBundleVersionKey as String] as? String
+        else { return nil }
+        return ArchiveLocator.resolve(
+            resourcePath: resourcePath, appName: appName, bundleName: targetAppBundleName,
+            build: build)
+    }
+
+    /// What the install steps unpack, or nil when the installer is built wrongly.
+    func payloadSource() -> PayloadInstaller.Source? {
+        switch resolve() {
+        case .archive(let path): return .archive(path: path)
+        case .devBundle(let path): return .appBundle(path: path)
+        case .failure, .none: return nil
         }
+    }
 
-        let devModeAppBundlePath = (resourePath as NSString).appendingPathComponent(targetAppBundleName)
-        let count = notarizedArchivesContent.count
-        let notarizedArchiveExists = FileManager.default.fileExists(atPath: notarizedArchive)
-        let devModeAppBundleExists = FileManager.default.fileExists(atPath: devModeAppBundlePath)
-
-        if count > 0 {
-            if count != 1 || !notarizedArchiveExists || devModeAppBundleExists {
-                let alert = NSAlert()
-                alert.alertStyle = .informational
-                alert.messageText = "Internal Error"
-                alert.informativeText = "devMode installer, expected archive name: \(notarizedArchive), " +
-                    "archive exists: \(notarizedArchiveExists), devMode app bundle exists: \(devModeAppBundleExists)"
-                alert.addButton(withTitle: "Terminate")
-                alert.runModal()
-                NSApp.terminate(nil)
-            } else {
-                return true
-            }
-        }
-
-        if !devModeAppBundleExists {
-            let alert = NSAlert()
-            alert.alertStyle = .informational
-            alert.messageText = "Internal Error"
-            alert.informativeText = "Dev target bundle does not exist: \(devModeAppBundlePath)"
-            alert.addButton(withTitle: "Terminate")
-            alert.runModal()
-            NSApp.terminate(nil)
-        }
-
+    /// Alerts and quits when the installer carries no usable input method (a build mistake, not
+    /// something a user can fix but by downloading the installer again). Returns true when the
+    /// installer is sound.
+    func validateOrQuit() -> Bool {
+        guard let resolution = resolve() else { return false }
+        guard case .failure(let failure) = resolution else { return true }
+        NSLog("McBopomofoLM installer: no usable input method inside: %@", String(describing: failure))
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = NSLocalizedString("This installer is incomplete", comment: "")
+        alert.informativeText = NSLocalizedString("The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again.", comment: "")
+        alert.addButton(withTitle: NSLocalizedString("Quit", comment: ""))
+        alert.runModal()
+        NSApp.terminate(nil)
         return false
     }
-
-    func unzipNotarizedArchive() -> String? {
-        if !self.validateIfNotarizedArchiveExists() {
-            return nil
-        }
-        guard let notarizedArchive = notarizedArchive,
-            let resourcePath = Bundle.main.resourcePath else {
-            return nil
-        }
-        let tempFilePath = (NSTemporaryDirectory() as NSString).appendingPathComponent(UUID().uuidString)
-
-        // applefeedback://FB16686738 unzip -d behavior change breaks scripts
-        // and apps depending on its creating non-existent target directories;
-        // we now create the directory ourselves.
-        do {
-            try FileManager.default.createDirectory(atPath: tempFilePath, withIntermediateDirectories: true)
-        } catch {
-            NSLog("fatal: could not create directory \(tempFilePath)")
-            return nil
-        }
-
-        let arguments: [String] = [notarizedArchive, "-d", tempFilePath]
-        let unzipTask = Process()
-        unzipTask.launchPath = "/usr/bin/unzip"
-        unzipTask.currentDirectoryPath = resourcePath
-        unzipTask.arguments = arguments
-        unzipTask.launch()
-        unzipTask.waitUntilExit()
-
-        guard unzipTask.terminationStatus == 0 else {
-            NSLog("fatal: could not unzip \(notarizedArchive) to \(tempFilePath)")
-            return nil
-        }
-
-        let result = (tempFilePath as NSString).appendingPathComponent(targetAppBundleName)
-        guard FileManager.default.fileExists(atPath: result) else {
-            NSLog("fatal: \(result) does not exist")
-            return nil
-        }
-        return result
-    }
-
-    private var notarizedArchivesPath: String? {
-        guard let resourePath = Bundle.main.resourcePath else {
-            return nil
-        }
-        let notarizedArchivesPath = (resourePath as NSString).appendingPathComponent("NotarizedArchives")
-        return notarizedArchivesPath
-    }
-
-    private var notarizedArchive: String? {
-        guard let notarizedArchivesPath = notarizedArchivesPath,
-            let bundleVersion = Bundle.main.infoDictionary?[kCFBundleVersionKey as String] as? String else {
-            return nil
-        }
-        let notarizedArchiveBasename = "\(appName)-r\(bundleVersion).zip"
-        let notarizedArchive = (notarizedArchivesPath as NSString).appendingPathComponent(notarizedArchiveBasename)
-        return notarizedArchive
-    }
-
 }
