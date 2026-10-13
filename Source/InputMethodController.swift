@@ -115,10 +115,10 @@ class McBopomofoInputMethodController: IMKInputController {
         let inputMode = keyHandler.inputMode
 
         // McBopomofoLM v3.3b: three plain-named options for everybody (the master AI switch, the Shift
-        // tap, the correction entry); the developer switches live in an "Advanced" submenu.
+        // tap, the correction entry); the developer switches follow under an "Advanced" header (v3.3j).
         if inputMode == .bopomofo {
-            var title = NSLocalizedString("AI Candidate Selection", comment: "")
             let runtime = SlothERuntime.shared
+            var title = NSLocalizedString("AI Candidate Selection", comment: "")
             if Preferences.slothERerankEnabled && runtime.loadFailed {
                 title = Self.menuTitle(title, suffix: NSLocalizedString("(model failed to load)", comment: ""))
             } else if Preferences.slothERerankEnabled && !runtime.loaded {
@@ -135,39 +135,6 @@ class McBopomofoInputMethodController: IMKInputController {
                 withTitle: NSLocalizedString("Offer Syllable Corrections in the Candidate Window", comment: ""),
                 action: #selector(toggleSlothETypoEntry(_:)), keyEquivalent: "")
             typoEntryItem.state = Preferences.slothETypoEntryEnabled.state
-
-            let advancedItem = NSMenuItem(
-                title: NSLocalizedString("Advanced", comment: ""), action: nil, keyEquivalent: "")
-            let advancedMenu = NSMenu(title: advancedItem.title)
-            var decoderTitle = NSLocalizedString("Decoder Sentence Review", comment: "")
-            if Preferences.slothERerankEnabled && Preferences.slothEDecoderEnabled && runtime.loaded
-                && !runtime.decoderLoaded
-            {
-                decoderTitle = Self.menuTitle(
-                    decoderTitle,
-                    suffix: NSLocalizedString(
-                        runtime.decoderLoadFailed ? "(model failed to load)" : "(loading)", comment: ""))
-            }
-            let decoderItem = advancedMenu.addItem(
-                withTitle: decoderTitle, action: #selector(toggleSlothEDecoder(_:)), keyEquivalent: "")
-            decoderItem.state = Preferences.slothEDecoderEnabled.state
-            let pauseGateItem = advancedMenu.addItem(
-                withTitle: NSLocalizedString("Sentence Check After a Pause", comment: ""),
-                action: #selector(toggleSlothEPauseGate(_:)), keyEquivalent: "")
-            pauseGateItem.state = Preferences.slothEPauseGateEnabled.state
-            let demoteItem = advancedMenu.addItem(
-                withTitle: NSLocalizedString("List Current Word Last in the Candidate Window", comment: ""),
-                action: #selector(toggleSlothEDemoteShownCandidate(_:)), keyEquivalent: "")
-            demoteItem.state = Preferences.slothEDemoteShownCandidate.state
-            advancedMenu.addItem(NSMenuItem.separator())
-            let diagnosticLogItem = advancedMenu.addItem(
-                withTitle: NSLocalizedString("Write Diagnostic Log", comment: ""),
-                action: #selector(toggleSlothEDiagnosticLog(_:)), keyEquivalent: "")
-            diagnosticLogItem.state = Preferences.slothEDiagnosticLogEnabled.state
-            // a submenu's items are not given a target by the input method framework
-            for item in advancedMenu.items where item.action != nil { item.target = self }
-            advancedItem.submenu = advancedMenu
-            menu.addItem(advancedItem)
         }
 
         // Only Bopomofo mode supports Bopomofo Font Annotation. If support is
@@ -190,6 +157,42 @@ class McBopomofoInputMethodController: IMKInputController {
                 withTitle: NSLocalizedString("Use Phrase Replacement", comment: ""),
                 action: #selector(togglePhraseReplacement(_:)), keyEquivalent: "")
             phaseReplacementItem.state = Preferences.phraseReplacementEnabled.state
+        }
+
+        // McBopomofoLM v3.3j: the four developer switches are plain top-level items under a disabled
+        // header, like "User Phrases". They were in a submenu (v3.3b-v3.3i), and the input method
+        // framework does not relay the actions of a submenu's items: clicking "Write Diagnostic Log"
+        // did nothing. Every item here is made the way the top-level options above are (an action
+        // and no explicit target; the framework addresses the controller).
+        if inputMode == .bopomofo {
+            let runtime = SlothERuntime.shared
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(
+                withTitle: NSLocalizedString("Advanced", comment: ""), action: nil, keyEquivalent: "")
+            var decoderTitle = NSLocalizedString("Decoder Sentence Review", comment: "")
+            if Preferences.slothERerankEnabled && Preferences.slothEDecoderEnabled && runtime.loaded
+                && !runtime.decoderLoaded
+            {
+                decoderTitle = Self.menuTitle(
+                    decoderTitle,
+                    suffix: NSLocalizedString(
+                        runtime.decoderLoadFailed ? "(model failed to load)" : "(loading)", comment: ""))
+            }
+            let decoderItem = menu.addItem(
+                withTitle: decoderTitle, action: #selector(toggleSlothEDecoder(_:)), keyEquivalent: "")
+            decoderItem.state = Preferences.slothEDecoderEnabled.state
+            let pauseGateItem = menu.addItem(
+                withTitle: NSLocalizedString("Sentence Check After a Pause", comment: ""),
+                action: #selector(toggleSlothEPauseGate(_:)), keyEquivalent: "")
+            pauseGateItem.state = Preferences.slothEPauseGateEnabled.state
+            let demoteItem = menu.addItem(
+                withTitle: NSLocalizedString("List Current Word Last in the Candidate Window", comment: ""),
+                action: #selector(toggleSlothEDemoteShownCandidate(_:)), keyEquivalent: "")
+            demoteItem.state = Preferences.slothEDemoteShownCandidate.state
+            let diagnosticLogItem = menu.addItem(
+                withTitle: NSLocalizedString("Write Diagnostic Log", comment: ""),
+                action: #selector(toggleSlothEDiagnosticLog(_:)), keyEquivalent: "")
+            diagnosticLogItem.state = Preferences.slothEDiagnosticLogEnabled.state
         }
 
         menu.addItem(NSMenuItem.separator())

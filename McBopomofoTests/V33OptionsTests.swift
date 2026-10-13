@@ -60,35 +60,86 @@ class V33OptionsTestCase: XCTestCase {
 final class V33MenuTests: V33OptionsTestCase {
     private func title(_ key: String) -> String { NSLocalizedString(key, comment: "") }
 
-    func testThreeOptionsForEverybodyThenAnAdvancedSubmenu() throws {
+    /// v3.3j: the framework does not relay the actions of a submenu's items (clicking "Write
+    /// Diagnostic Log" in the v3.3.0 submenu did nothing and no preference was written), so the four
+    /// developer switches are top-level items under a disabled "Advanced" header.
+    func testThreeOptionsForEverybodyThenAnAdvancedSection() throws {
         let controller = try makeController()
         let menu = try XCTUnwrap(controller.menu())
         let top = menu.items.map { $0.title }
-        // The first four entries after the three upstream toggles: the plain options, then "Advanced".
+        // No submenu anywhere: an item inside one never reaches the controller.
+        XCTAssertTrue(menu.items.allSatisfy { $0.submenu == nil }, "a submenu is in the input menu")
+
+        // The plain options come first, after the three upstream toggles.
         let first = try XCTUnwrap(top.firstIndex { $0.hasPrefix(title("AI Candidate Selection")) })
         XCTAssertEqual(top[first + 1], title("Tap Shift to Switch Chinese/English"))
         XCTAssertEqual(top[first + 2], title("Offer Syllable Corrections in the Candidate Window"))
-        XCTAssertEqual(top[first + 3], title("Advanced"))
 
-        let advanced = try XCTUnwrap(menu.items[first + 3].submenu)
-        let actionTitles = advanced.items.filter { $0.action != nil }.map { $0.title }
+        // Then: a separator, the disabled "Advanced" header, the four switches, a separator and the
+        // "User Phrases" header (the same shape as that header).
+        XCTAssertEqual(top.filter { $0 == title("Advanced") }.count, 1)
+        let headerIndex = try XCTUnwrap(top.firstIndex(of: title("Advanced")))
+        XCTAssertGreaterThan(headerIndex, first + 2)
+        XCTAssertTrue(menu.items[headerIndex - 1].isSeparatorItem)
+        let fourTitles = [
+            title("Decoder Sentence Review"), title("Sentence Check After a Pause"),
+            title("List Current Word Last in the Candidate Window"), title("Write Diagnostic Log"),
+        ]
+        XCTAssertEqual(Array(top[(headerIndex + 1)...(headerIndex + 4)]), fourTitles)
+        XCTAssertTrue(menu.items[headerIndex + 5].isSeparatorItem)
+        XCTAssertEqual(top[headerIndex + 6], title("User Phrases"))
+
+        let header = menu.items[headerIndex]
+        let userPhrases = menu.items[headerIndex + 6]
+        for item in [header, userPhrases] {
+            XCTAssertNil(item.action, item.title)
+            XCTAssertNil(item.target, item.title)
+            XCTAssertNil(item.submenu, item.title)
+        }
+        menu.update()  // autoenabling: a title item without an action is disabled
+        XCTAssertFalse(header.isEnabled)
+        XCTAssertEqual(header.isEnabled, userPhrases.isEnabled)
+
+        // Each switch: the controller's action, and its target is the controller or (like the three
+        // plain options, which do work) none, so that the framework addresses the controller.
+        let four = Array(menu.items[(headerIndex + 1)...(headerIndex + 4)])
         XCTAssertEqual(
-            actionTitles,
+            four.map { $0.action },
             [
-                title("Decoder Sentence Review"), title("Sentence Check After a Pause"),
-                title("List Current Word Last in the Candidate Window"), title("Write Diagnostic Log"),
+                #selector(McBopomofoInputMethodController.toggleSlothEDecoder(_:)),
+                #selector(McBopomofoInputMethodController.toggleSlothEPauseGate(_:)),
+                #selector(McBopomofoInputMethodController.toggleSlothEDemoteShownCandidate(_:)),
+                #selector(McBopomofoInputMethodController.toggleSlothEDiagnosticLog(_:)),
             ])
-        // The three developer switches are not in the top level any more.
-        for gone in ["Decoder Sentence Review", "Sentence Check After a Pause", "List Current Word Last in the Candidate Window", "Write Diagnostic Log"] {
-            XCTAssertFalse(top.contains(title(gone)), "\(gone) is still in the top level")
+        let plainOption = menu.items[first]
+        for item in menu.items where item.action != nil {
+            XCTAssertTrue(controller.responds(to: item.action), "\(item.title): the controller does not respond to its action")
+            XCTAssertTrue(item.target == nil || item.target === controller, item.title)
         }
+        for item in four {
+            XCTAssertEqual(item.target == nil, plainOption.target == nil, "\(item.title) is built differently from the options that work")
+        }
+
+        // Sending each item's action to the controller, as the framework does, switches its
+        // preference (the diagnostic log being the one the user could not turn on).
+        let switches: [(NSMenuItem, () -> Bool)] = [
+            (four[0], { Preferences.slothEDecoderEnabled }),
+            (four[1], { Preferences.slothEPauseGateEnabled }),
+            (four[2], { Preferences.slothEDemoteShownCandidate }),
+            (four[3], { Preferences.slothEDiagnosticLogEnabled }),
+        ]
+        for (item, read) in switches {
+            let before = read()
+            _ = controller.perform(item.action, with: item)
+            XCTAssertNotEqual(read(), before, "\(item.title): the action did not change the preference")
+            _ = controller.perform(item.action, with: item)
+            XCTAssertEqual(read(), before, item.title)
+        }
+        XCTAssertNotNil(UserDefaults.standard.object(forKey: kDiagnosticKey), "the diagnostic switch was written to the defaults")
+
         // No upstream-style test names left anywhere in the menu.
-        for item in menu.items + advanced.items {
+        for item in menu.items {
             XCTAssertFalse(item.title.contains("SlothE"), item.title)
-        }
-        // A submenu's items get no target from the framework: ours name the controller.
-        for item in advanced.items where item.action != nil {
-            XCTAssertTrue(item.target === controller, item.title)
         }
     }
 
