@@ -78,6 +78,10 @@ static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification = @"SlothEDiagnosticLogPreferenceDidChange";
 static NSString *const kDiagnosticLogDefaultsKey = @"SlothEDiagnosticLogEnabled";  // Preferences.swift: kSlothEDiagnosticLogEnabledKey
+/// v3.4: hidden switches (no menu item, read at every decoder pass): "SlothEDecoderFullBuffer" = NO goes back to the
+/// v3.0-v3.3 per-key gate (candidate span only, lambda 2); "SlothEDecoderSuffixCapChars" = the right-text cap (24).
+static NSString *const kDecoderFullBufferDefaultsKey = @"SlothEDecoderFullBuffer";
+static NSString *const kDecoderSuffixCapDefaultsKey = @"SlothEDecoderSuffixCapChars";
 static const char *const kLogQueueSpecificKey = "org.openvanilla.McBopomofoLM.slothe.log.queue";
 
 static const unsigned long long kMaxLatencyLogBytes = 4ull * 1024ull * 1024ull;
@@ -397,10 +401,18 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (McBopomofoSlothE::DecoderParams)decoderParams
 {
+    // v3.4 (SlothE/eval-2026-10/): the decoder scores the whole buffer around the candidate, lambda 1, tau 0.5,
+    // top-3, the right text capped at 24 chars. Config A' of v3.0-v3.3 (lambda 2, candidate span only) is
+    // DecoderParams::V2(); v1 was lambda 3, tau 0.9.
     McBopomofoSlothE::DecoderParams params;
-    params.lambda = 2.0;  // config A' (walk2/frozen_final2.json); v1 was lambda 3, tau 0.9
-    params.tau = 0.5;
-    params.topK = 3;
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    if ([defaults objectForKey:kDecoderFullBufferDefaultsKey] != nil && ![defaults boolForKey:kDecoderFullBufferDefaultsKey]) {
+        params = McBopomofoSlothE::DecoderParams::V2();
+    }
+    id cap = [defaults objectForKey:kDecoderSuffixCapDefaultsKey];
+    if ([cap isKindOfClass:NSNumber.class] && [cap integerValue] >= 0) {
+        params.suffixCapChars = static_cast<size_t>([cap integerValue]);
+    }
     return params;
 }
 

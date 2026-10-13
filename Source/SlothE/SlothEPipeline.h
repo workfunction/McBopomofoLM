@@ -25,14 +25,15 @@
 
 namespace McBopomofoSlothE {
 
-// Decoder scores keyed by (left context, candidates). Thread-safe LRU.
+// Decoder scores keyed by (left context, scored strings): the candidates, or
+// since v3.4 the candidates with the buffer text right of the node. Thread-safe LRU.
 class DecoderScoreCache {
  public:
   bool lookup(const std::string& context, const std::vector<std::string>& values,
               std::vector<double>* scores);
   void store(const std::string& context, const std::vector<std::string>& values,
              const std::vector<double>& scores);
-  static constexpr size_t kCapacity = 256;
+  static constexpr size_t kCapacity = 1024;  // v3.4: 256 before; a full-buffer pass makes one entry per request
 
  private:
   static std::string Key(const std::string& context,
@@ -56,6 +57,8 @@ struct PipelineResult {
   double decoderMs = 0;
   int decoderCalls = 0;       // decoder scoring calls (cache misses)
   int decoderCached = 0;      // requests answered from the score cache
+  int decoderNoDecision = 0;  // requests the decoder could not score (function not loaded, too long)
+  int decoderFallbacks = 0;   // v3.4: requests scored on the candidate alone (candidate + right text over t96)
 };
 
 // One per key handler, shared with its background jobs.
@@ -87,6 +90,40 @@ struct PipelineConfig {
   std::string decoderContext;
 };
 
+// v3.4 full-buffer scoring (DecoderParams::fullBuffer): what the decoder is asked
+// for one request.
+//   context = decoderContext + the in-walk text left of the node, a pin already
+//             decided in this pass replacing the shown value (requests go left
+//             to right), cut to the decoder's last 64 chars
+//   texts   = candidate + the in-walk text right of the node, at most
+//             params.suffixCapChars chars, for each of the request's candidates
+//             (request.values stays the raw candidates: DecideDecoderPin and the
+//             variant guard compare against them, and a pin must be a unigram)
+// Over the decoder's limit (`fits` false) the context is trimmed from the left
+// with the candidate and right text kept whole; when even an empty context does
+// not fit, the request falls back to scoring the candidate alone (never skipped):
+// texts = request.values, context trimmed the same way, fallback = true.
+// nodes: the in-walk nodes of the request's walk; pinned[j] = the value decided
+// for node j so far ("" = none). fits may be empty (always fits).
+// cancelled (may be empty) is polled before every trimming step (each one tokenizes
+// the candidates again): once it returns true the trimming stops at once and the
+// result has cancelled = true (its context / texts are not to be scored).
+struct DecoderScoreInput {
+  std::string context;
+  std::vector<std::string> texts;
+  bool fallback = false;
+  bool cancelled = false;
+};
+using SequenceFits =
+    std::function<bool(const std::string& context, const std::vector<std::string>& texts)>;
+DecoderScoreInput BuildFullBufferInput(const std::string& decoderContext,
+                                       const std::vector<InWalkNode>& nodes,
+                                       const std::vector<std::string>& pinned,
+                                       const DecoderRequest& request,
+                                       const DecoderParams& params,
+                                       const SequenceFits& fits,
+                                       const std::function<bool()>& cancelled = nullptr);
+
 // Runs one job on the calling (compute) thread. onEncoder is called after the
 // encoder stage has been published (the caller may use it to schedule an
 // early refresh); returns the final result (also published).
@@ -106,6 +143,11 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
 // visited left to right, one decoder call each. A request whose longest
 // sequence does not fit the decoder's largest length function, or whose
 // function is not loaded yet, gets no decision (Decoder::score returns false).
+// Since v3.4 the per-key gate (RunPipeline, DecoderParams::fullBuffer) scores the
+// same way, with lambda 1, a capped right text and a fallback instead of "no
+// decision" over the length limit; this pass keeps its v3.2a rule (the caller
+// passes DecoderParams::V2(): lambda 2) and is off by default
+// (Preferences.slothEPauseGateEnabled).
 struct PauseGateResult {
   uint64_t generation = 0;
   bool skipped = false;       // stale before it started

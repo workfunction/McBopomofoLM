@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <thread>
 
 namespace McBopomofoSlothE {
@@ -128,37 +129,134 @@ PipelineResult RunPipeline(Engine* engine, Decoder* decoder,
   snapshot->rescoredWalk(*result.encoder, engine->vocabulary(), engine->variants(),
                          config.inWalk, nullptr, nullptr, &detail);
   std::vector<DecoderRequest> requests = BuildDecoderRequests(detail, config.decoder.topK);
-  for (DecoderRequest& request : requests) {
-    request.context = config.decoderContext + request.context;  // v3.1a
+  if (!config.decoder.fullBuffer) {
+    for (DecoderRequest& request : requests) {
+      request.context = config.decoderContext + request.context;  // v3.1a
+    }
   }
+  SequenceFits fits = [decoder](const std::string& context, const std::vector<std::string>& texts) {
+    size_t limit = decoder->largestLength();
+    for (const std::vector<int32_t>& seq : decoder->sequences(context, texts)) {
+      if (seq.size() > limit) {
+        return false;
+      }
+    }
+    return true;
+  };
+  std::vector<std::string> pinned(detail.size());  // v3.4: "" = no pin decided in this pass
+  // A newer key makes this job stale: it is dropped (not published, the slot keeps the encoder stage).
+  auto dropIfStale = [&](bool cancelled = false) {
+    if (!cancelled && !isStale()) {
+      return false;
+    }
+    result.stale = true;
+    result.decoderStage = DecoderStage::kStale;
+    result.decoderMs = MsSince(t0);
+    return true;
+  };
   for (const DecoderRequest& request : requests) {
-    if (isStale()) {
-      result.stale = true;
-      result.decoderStage = DecoderStage::kStale;
-      result.decoderMs = MsSince(t0);
-      return result;  // not published: the slot keeps the encoder stage
+    if (dropIfStale()) {
+      return result;
+    }
+    // v3.4: left text with this pass's pins, candidate + right text; v3.0-v3.3: the
+    // candidate with the pre-pin text on its left
+    DecoderScoreInput input;
+    if (config.decoder.fullBuffer) {
+      // the trimming tokenizes again at every step: it polls the generation too (v3.4e)
+      input = BuildFullBufferInput(config.decoderContext, detail, pinned, request, config.decoder, fits, isStale);
+      result.decoderFallbacks += input.fallback ? 1 : 0;
+    } else {
+      input.context = request.context;
+      input.texts = request.values;
+    }
+    if (dropIfStale(input.cancelled)) {
+      return result;  // right before the model call
     }
     std::vector<double> scores;
-    if (scoreCache->lookup(request.context, request.values, &scores)) {
+    if (scoreCache->lookup(input.context, input.texts, &scores)) {
       ++result.decoderCached;
     } else {
       DecoderCallStats stats;
-      if (!decoder->score(request.context, request.values, &scores, &stats)) {
+      if (!decoder->score(input.context, input.texts, &scores, &stats)) {
+        ++result.decoderNoDecision;
         continue;  // did not fit the context or failed: no decision for this node
       }
+      if (dropIfStale()) {
+        return result;  // a newer key arrived during the call: nothing of this job is stored or used
+      }
       ++result.decoderCalls;
-      scoreCache->store(request.context, request.values, scores);
+      scoreCache->store(input.context, input.texts, scores);
     }
     WalkPin pin;
     if (DecideDecoderPin(request, scores, config.decoder, engine->variants(), &pin)) {
+      pinned[request.node] = pin.value;
       result.pins.push_back(pin);
     }
+  }
+  if (dropIfStale()) {
+    return result;  // right before publishing
   }
   result.decoderMs = MsSince(t0);
   result.decoderStage = requests.empty() ? DecoderStage::kNone : DecoderStage::kScored;
   result.decoderDone = true;
   slot->publish(result);
   return result;
+}
+
+DecoderScoreInput BuildFullBufferInput(const std::string& decoderContext,
+                                       const std::vector<InWalkNode>& nodes,
+                                       const std::vector<std::string>& pinned,
+                                       const DecoderRequest& request,
+                                       const DecoderParams& params,
+                                       const SequenceFits& fits,
+                                       const std::function<bool()>& cancelled) {
+  auto textOf = [&](size_t j) -> const std::string& {
+    return j < pinned.size() && !pinned[j].empty() ? pinned[j] : nodes[j].shown;
+  };
+  std::string left = decoderContext;
+  for (size_t j = 0; j < request.node && j < nodes.size(); ++j) {
+    left += textOf(j);
+  }
+  std::string right;
+  // stop collecting once the cap is certainly reached (a char is at most 4 bytes)
+  size_t capBytes = params.suffixCapChars > SIZE_MAX / 4 ? SIZE_MAX : params.suffixCapChars * 4;
+  for (size_t j = request.node + 1; j < nodes.size() && right.size() < capBytes; ++j) {
+    right += textOf(j);
+  }
+  right = HeadChars(right, params.suffixCapChars);
+
+  auto fitsOk = [&fits](const std::string& context, const std::vector<std::string>& texts) {
+    return !fits || fits(context, texts);
+  };
+  DecoderScoreInput input;
+  auto trimToFit = [&fitsOk, &cancelled, &input](std::string context, const std::vector<std::string>& texts) {
+    while (!context.empty() && !fitsOk(context, texts)) {
+      if (cancelled && cancelled()) {
+        input.cancelled = true;  // a newer key: stop tokenizing
+        return context;
+      }
+      size_t first = 0;
+      NextCodePoint(context, &first);  // drop the oldest char
+      context.erase(0, first);
+    }
+    return context;
+  };
+
+  std::string context = TailChars(left, Decoder::kMaxContextChars);
+  for (const std::string& v : request.values) {
+    input.texts.push_back(v + right);
+  }
+  input.context = trimToFit(context, input.texts);
+  if (input.cancelled) {
+    return input;
+  }
+  if (!right.empty() && !fitsOk(input.context, input.texts)) {
+    // candidate + right text alone is over the limit: score the candidate only
+    input.fallback = true;
+    input.texts = request.values;
+    input.context = trimToFit(context, input.texts);
+  }
+  return input;
 }
 
 PauseGateResult RunPauseGate(Engine* engine, Decoder* decoder,

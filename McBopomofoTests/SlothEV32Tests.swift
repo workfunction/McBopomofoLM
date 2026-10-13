@@ -15,6 +15,12 @@ class SlothEV32TestCase: XCTestCase {
 
     var switchKeys: [String] { [] }
 
+    /// v3.4: these suites describe the v3.1.2 / v3.2 per-key gate (the candidate span only, lambda 2); the hidden
+    /// defaults key pins it. A suite of the v3.4 whole-buffer gate overrides this with false.
+    var legacyDecoderGate: Bool { true }
+    static let fullBufferKey = "SlothEDecoderFullBuffer"
+    var savedFullBuffer: Any?
+
     override func setUpWithError() throws {
         saved = [
             "layout": Preferences.keyboardLayout,
@@ -40,11 +46,22 @@ class SlothEV32TestCase: XCTestCase {
         Preferences.chooseCandidateUsingSpace = true
         Preferences.keepReadingUponCompositionError = true
         Preferences.slothEPauseGateEnabled = true
+        savedFullBuffer = UserDefaults.standard.object(forKey: Self.fullBufferKey)
+        if legacyDecoderGate {
+            UserDefaults.standard.set(false, forKey: Self.fullBufferKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.fullBufferKey)
+        }
         McBopomofoInputMethodController.slothEGlobalEnglishMode = false  // v3.2i: process-wide, so reset per test
         LanguageModelManager.loadDataModels()
     }
 
     override func tearDownWithError() throws {
+        if let old = savedFullBuffer {
+            UserDefaults.standard.set(old, forKey: Self.fullBufferKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.fullBufferKey)
+        }
         McBopomofoInputMethodController.slothEGlobalEnglishMode = false
         Preferences.keyboardLayout = saved["layout"] as! KeyboardLayout
         Preferences.chineseConversionEnabled = saved["conv"] as! Bool
@@ -1013,11 +1030,12 @@ final class SlothEEnglishModeTests: SlothEV32TestCase {
     }
 
     func testTheCorrectionEntryIsOffByDefault() {
-        // the three switches with no stored value: pause gate and Shift toggle on, the entry off
-        let keys = ["SlothEPauseGateEnabled", "SlothETypoEntryEnabled", "SlothEShiftToggleEnabled"]
+        // the three switches with no stored value: the Shift toggle on, the entry off, and (v3.4) the pause gate off
+        // (v3.4e: the pause default follows the whole-buffer gate, which this class pins off by the hidden key: unpin it here)
+        let keys = ["SlothEPauseGateEnabled", "SlothETypoEntryEnabled", "SlothEShiftToggleEnabled", Self.fullBufferKey]
         let old = keys.map { UserDefaults.standard.object(forKey: $0) }
         keys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
-        XCTAssertTrue(Preferences.slothEPauseGateEnabled)
+        XCTAssertFalse(Preferences.slothEPauseGateEnabled, "v3.4: the per-key gate scores the whole buffer; the pause gate is opt-in")
         XCTAssertTrue(Preferences.slothEShiftToggleEnabled)
         XCTAssertFalse(Preferences.slothETypoEntryEnabled, "the entry needs re-tuning at the last syllable before it is on")
         Preferences.slothEPauseGateEnabled = false  // (this class runs without the gate)
@@ -1131,6 +1149,10 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         let controller: McBopomofoInputMethodController
         let client = FakeIMKClient()
         var announcements: [String] = []
+        /// v3.4f: what the controller asked the mode HUD to show: the mode and the client's caret rectangle.
+        var huds: [(english: Bool, caret: NSRect?)] = []
+        /// v3.4f: talk to this client instead of the fake one (a client that reports a caret rectangle).
+        var clientOverride: Any?
         var clock: TimeInterval = 1000
 
         init(_ mouse: FakeMouse) {
@@ -1138,6 +1160,7 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
             controller.keyHandler.slothERuntime = nil  // stock handler: nothing here needs the models
             controller.shiftTapDetector = ShiftTapDetector(mouse: mouse.activity)
             controller.announceModeChange = { [unowned self] in self.announcements.append($0) }
+            controller.showModeHUD = { [unowned self] in self.huds.append(($0, $1)) }
             controller.currentClient = client
         }
 
@@ -1145,7 +1168,7 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
             clock += seconds
             let e = NSEvent.keyEvent(with: .flagsChanged, location: .zero, modifierFlags: f, timestamp: clock, windowNumber: 0, context: nil,
                                      characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 56)!
-            return controller.handle(e, client: client)
+            return controller.handle(e, client: clientOverride ?? client)
         }
 
         @discardableResult
@@ -1164,6 +1187,28 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         let s = Setup(mouse)
         XCTAssertNotNil(s.controller)
         return s
+    }
+
+    // v3.4f: the toggle shows the HUD (mode + the client's caret), not the black notifier box
+    func testAShiftTapShowsTheModeHUDAtTheClientsCaret() throws {
+        let s = try setup()
+        s.clientOverride = RectIMKClient(rect: NSRect(x: 320, y: 480, width: 1, height: 20))
+        XCTAssertFalse(s.flags([.shift]))
+        XCTAssertTrue(s.flags([], after: 0.1))
+        XCTAssertEqual(s.huds.count, 1)
+        XCTAssertEqual(s.huds[0].english, true)
+        XCTAssertEqual(s.huds[0].caret, NSRect(x: 320, y: 480, width: 1, height: 20))
+        XCTAssertFalse(s.flags([.shift]))
+        XCTAssertTrue(s.flags([], after: 0.1))
+        XCTAssertEqual(s.huds.map { $0.english }, [true, false])
+    }
+
+    func testAnAppWithNoCaretGetsTheHUDWithoutARectangle() throws {
+        let s = try setup()  // the fake client reports no rectangle
+        XCTAssertFalse(s.flags([.shift]))
+        XCTAssertTrue(s.flags([], after: 0.1))
+        XCTAssertEqual(s.huds.count, 1)
+        XCTAssertNil(s.huds[0].caret, "the HUD then falls back to the bottom center of the active screen")
     }
 
     func testAShiftTapInTheEmptyStateTogglesTheMode() throws {

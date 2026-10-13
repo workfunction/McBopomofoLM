@@ -105,6 +105,14 @@ std::string TailChars(const std::string& s, size_t maxChars) {
   return s.substr(starts[starts.size() - maxChars]);
 }
 
+std::string HeadChars(const std::string& s, size_t maxChars) {
+  size_t i = 0;
+  for (size_t n = 0; n < maxChars && i < s.size(); ++n) {
+    i += Utf8Lead(static_cast<unsigned char>(s[i]));
+  }
+  return i >= s.size() ? s : s.substr(0, i);
+}
+
 // ------------------------------------------------------------- BpeTokenizer
 
 void BpeTokenizer::load(
@@ -479,6 +487,10 @@ double Decoder::charsLogProb(const std::vector<float>& lp,
 
 std::vector<size_t> Decoder::loadedLengths() const {
   return backend_ != nullptr ? backend_->loadedLengths() : std::vector<size_t> {};
+}
+
+size_t Decoder::largestLength() const {
+  return backend_ != nullptr && !backend_->lengths().empty() ? backend_->lengths().back() : 0;
 }
 
 bool Decoder::prewarm(double* milliseconds) {

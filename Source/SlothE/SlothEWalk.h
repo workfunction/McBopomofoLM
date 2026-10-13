@@ -67,16 +67,40 @@ struct InWalkNode {
   std::vector<std::pair<std::string, double>> aligned;
 };
 
-// walk2 dec_combo: decoder-gated override (config A', PLAN.md §9,
-// walk2/frozen_final2.json: 25M, beta 0.3, lambda 2, tau 0.5, top-3; v1 was
-// 12M lambda 3 tau 0.9): blend b = enc + lambda * dec over the encoder's top-3
-// span-aligned candidates, pin the top if p = softmax(b)[top] >= tau, it is
-// neither the shown nor the raw value, and not a variant-only swap. Decoder
-// scores must all be finite and < 0 (walk2 Dec check); otherwise no decision.
+// walk2 dec_combo: decoder-gated override. Blend b = enc + lambda * dec over the
+// encoder's top-3 span-aligned candidates, pin the top if p = softmax(b)[top] >=
+// tau, it is neither the shown nor the raw value, and not a variant-only swap.
+// Decoder scores must all be finite and < 0 (walk2 Dec check); otherwise no
+// decision.
+//
+// v3.4 (SlothE/eval-2026-10/): the decoder scores the whole buffer around the
+// candidate instead of the candidate span alone (fullBuffer), with lambda 1:
+// each request is scored as
+//   context   = carried text + the in-walk text left of the node, with the pins
+//               already decided in this pass (requests go left to right)
+//   scored    = candidate + the in-walk text right of the node (at most
+//               suffixCapChars chars)
+// RunPipeline does the sequencing; DecideDecoderPin only sees the scores.
+// fullBuffer = false is the v3.0-v3.3 per-key gate (config A', walk2/
+// frozen_final2.json: lambda 2, tau 0.5, top-3; candidate scored with the
+// pre-pin text on its left only), which the v2 parity tests pin.
 struct DecoderParams {
-  double lambda = 2.0;
+  double lambda = 1.0;
   double tau = 0.5;
   size_t topK = 3;
+  bool fullBuffer = true;
+  // chars of the buffer text right of the node that join the scored string
+  // (the nearest ones); 0 = the candidate alone
+  size_t suffixCapChars = 24;
+
+  // The v3.0-v3.3 gate: config A' (lambda 2, tau 0.5, top-3), span-only.
+  // Also the v3.2a pause gate's rule, which always scores the whole buffer.
+  static DecoderParams V2() {
+    DecoderParams p;
+    p.lambda = 2.0;
+    p.fullBuffer = false;
+    return p;
+  }
 };
 
 struct DecoderRequest {

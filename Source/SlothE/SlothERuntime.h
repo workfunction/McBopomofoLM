@@ -250,7 +250,9 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 - (McBopomofoSlothE::InWalkParams)inWalkParams;
 /// Non-null only after the decoder loaded.
 - (nullable McBopomofoSlothE::Decoder *)decoder;
-/// Decoder gate, config A' (walk2/frozen_final2.json, 25M): lambda 2, tau 0.5, top-3.
+/// Decoder gate, v3.4: whole-buffer scoring, lambda 1, tau 0.5, top-3, right text capped at 24 chars. The hidden
+/// defaults key SlothEDecoderFullBuffer = NO gives the v3.0-v3.3 gate (DecoderParams::V2(), config A': lambda 2,
+/// candidate span only); SlothEDecoderSuffixCapChars sets the cap.
 - (McBopomofoSlothE::DecoderParams)decoderParams;
 - (McBopomofoSlothE::DecoderScoreCache *)decoderScoreCache;
 #endif

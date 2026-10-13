@@ -1,4 +1,5 @@
 import argparse
+import os
 from .compiler_utils import HEADER
 from ..mandarin.grid import most_plausible_walk
 import sys
@@ -128,6 +129,66 @@ def promote_over_peers(lineno, lm, value, reading):
     return replace_score_in_lm(lm, reading, value, our_score)
 
 
+# The "再" twins (McBopomofoLM v3.4): "<prefix>在" without "<prefix>再" gets one.
+TWIN_FROM = "在"
+TWIN_TO = "再"
+TWIN_SYLLABLE = "ㄗㄞˋ"
+# log10 units, so the twin never outranks the entry it was made from
+TWIN_SCORE_DELTA = 0.1
+
+
+def read_twin_prefixes(path):
+    """Reads the prefix list: one prefix per line, '#' starts a comment."""
+    prefixes = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            if line and line not in prefixes:
+                prefixes.append(line)
+    return prefixes
+
+
+def add_twins(lineno, lm, prefixes):
+    """Adds "<prefix>再" for every "<prefix>在" (reading ending in ㄗㄞˋ, one
+    syllable per character) that has no twin yet, in the same reading, scored
+    TWIN_SCORE_DELTA below the "在" entry. The new entry goes after the entries
+    that score at least as high, so a reading stays ordered by score. Returns
+    the list of (reading, "在 entry", "twin", twin score)."""
+    wanted = set(prefixes)
+    used = set()
+    added = []
+
+    for reading in sorted(lm.keys(), key=lambda x: x.encode()):
+        syllables = reading.split("-")
+        if syllables[-1] != TWIN_SYLLABLE:
+            continue
+
+        for value, score in list(lm[reading]):
+            if len(value) < 2 or len(value) != len(syllables):
+                continue
+            if not value.endswith(TWIN_FROM) or value[:-1] not in wanted:
+                continue
+
+            used.add(value[:-1])
+            twin = value[:-1] + TWIN_TO
+            if any(v == twin for v, _ in lm[reading]):
+                continue
+
+            twin_score = float(score) - TWIN_SCORE_DELTA
+            entry = (twin, "%.8f" % twin_score) if type(score) == str else (twin, twin_score)
+            position = len(lm[reading])
+            while position > 0 and float(lm[reading][position - 1][1]) < twin_score:
+                position -= 1
+            lm[reading].insert(position, entry)
+            added.append((reading, value, twin, twin_score))
+
+    for prefix in prefixes:
+        if prefix not in used:
+            accrue_warning(lineno, f"twin prefix {prefix} has no {prefix}{TWIN_FROM} entry")
+
+    return added
+
+
 def run_assert(lineno, lm, readings, expected, warn_only=False):
     nodes = most_plausible_walk(readings.split("-"), lm)
     result = segmented_values(nodes)
@@ -140,6 +201,7 @@ def run_assert(lineno, lm, readings, expected, warn_only=False):
 
 
 def postprocess(input, directive, output):
+    directive_dir = os.path.dirname(os.path.abspath(directive))
     lm = {}
 
     with open(input) as f:
@@ -183,6 +245,9 @@ def postprocess(input, directive, output):
                 value = elements[1]
                 reading = elements[2]
                 promote_over_peers(lineno, lm, value, reading)
+            elif elements[0] == "add-twins":
+                prefixes = read_twin_prefixes(os.path.join(directive_dir, elements[1]))
+                add_twins(lineno, lm, prefixes)
             elif elements[0] == "epsilon":
                 set_epsilon(float(elements[1]))
             else:

@@ -1,0 +1,12 @@
+data.txt q35 span (current)   char=96.35% sent=76.8%
+data.txt q35 full             char=96.58% sent=78.0%
+data.txt q35 full λ1          char=96.78% sent=78.8%
+data.txt D512 full            char=96.32% sent=75.8%
+data.txt D512 full λ1         char=96.37% sent=76.2%
+data.txt q35+.25D512 full     char=96.88% sent=79.8%
+twins    q35 span (current)   char=96.35% sent=76.8%
+twins    q35 full             char=96.60% sent=78.2%
+twins    q35 full λ1          char=96.81% sent=79.0%
+twins    D512 full            char=96.35% sent=76.0%
+twins    D512 full λ1         char=96.39% sent=76.4%
+twins    q35+.25D512 full     char=96.90% sent=80.0%

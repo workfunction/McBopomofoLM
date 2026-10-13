@@ -31,7 +31,7 @@ data-raw.txt: curation/compilers/main_compiler.py \
 		--macros Macros.txt \
 		--output data-raw.txt
 
-data.txt: curation/compilers/postprocess.py curation/mandarin/grid.py data-raw.txt Postprocess.txt
+data.txt: curation/compilers/postprocess.py curation/mandarin/grid.py data-raw.txt Postprocess.txt zai-twins.txt
 	$(PYTHON) -m curation.compilers.postprocess \
 		--input data-raw.txt \
 		--directive Postprocess.txt \

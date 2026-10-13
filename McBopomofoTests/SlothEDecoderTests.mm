@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -33,6 +34,7 @@
 #include "SlothEEngine.h"
 #include "SlothEPipeline.h"
 #include "SlothEWalk.h"
+#include "SlothEV34TestSupport.h"
 
 using namespace McBopomofoSlothE;
 
@@ -66,14 +68,19 @@ static double DecPct(std::vector<double> v, double p)
     return v[lo] + (v[hi] - v[lo]) * (rank - static_cast<double>(lo));
 }
 
-static std::unique_ptr<SlothEGrid> DecGrid(const std::vector<std::string> &readings)
+static std::unique_ptr<SlothEGrid> DecGridOn(const std::shared_ptr<McBopomofo::McBopomofoLM> &lm, const std::vector<std::string> &readings)
 {
-    auto grid = std::make_unique<SlothEGrid>(gDecLM);
+    auto grid = std::make_unique<SlothEGrid>(lm);
     grid->setReadingSeparator("-");
     for (const auto &r : readings) {
         grid->insertReading(r);
     }
     return grid;
+}
+
+static std::unique_ptr<SlothEGrid> DecGrid(const std::vector<std::string> &readings)
+{
+    return DecGridOn(gDecLM, readings);
 }
 
 static std::string NodesString(const Formosa::Gramambular2::ReadingGrid::WalkResult &w)
@@ -104,7 +111,7 @@ static Formosa::Gramambular2::ReadingGrid::WalkResult DecFinalWalk(SlothEGrid *g
     bool hit = false;
     auto r = gDecEngine->forward(readings, &ms, &hit);
     InWalkParams walkParams;
-    DecoderParams decParams;
+    DecoderParams decParams = DecoderParams::V2();  // v3.4: the v2 fixtures pin the old gate (lambda 2, candidate span only)
     std::vector<InWalkNode> detail;
     auto w0 = grid->rescoredWalk(*r, gDecEngine->vocabulary(), gDecEngine->variants(), walkParams, nullptr, nullptr, &detail);
     if (inWalk != nullptr) {
@@ -142,6 +149,59 @@ static NSArray<NSDictionary *> *FixtureRows(NSString *name)
     }
     return rows;
 }
+
+// v3.4: a decoder backend that records every call (the token rows it was sent) and makes one chosen
+// row of each call far likelier than the others, so a test steers the pins and reads back exactly what
+// the pipeline asked for. The tokenizer is the real one.
+namespace {
+class RecordingBackend : public DecoderBackend {
+ public:
+  std::vector<size_t> lens {16, 32, 64, 96};
+  std::vector<std::vector<std::vector<int32_t>>> calls;  // rows of each call (kBatch rows, padded)
+  std::vector<int> prefer;                               // per call: the row that gets the high likelihood (-1: none)
+  // v3.4e: what the pipeline did, in order: 'L' = lengths() (asked by Decoder::largestLength() at every trimming
+  // step, and once by Decoder::score), 'M' = a model call. The hooks run inside those calls, so a test can make a
+  // newer key "arrive" at an exact point.
+  mutable std::string events;
+  mutable size_t lengthsCalls = 0;
+  std::function<void(size_t)> onLengths;  // 0-based index of this lengths() call
+  std::function<void(size_t)> onModel;    // 0-based index of this model call, before its scores are returned
+  const std::vector<size_t> &lengths() const override
+  {
+    events += 'L';
+    size_t n = lengthsCalls++;
+    if (onLengths) {
+        onLengths(n);
+    }
+    return lens;
+  }
+  bool logProbs(const std::vector<std::vector<int32_t>> &rows, size_t length, std::vector<std::vector<float>> *lp) override
+  {
+    size_t k = calls.size();
+    events += 'M';
+    if (onModel) {
+        onModel(k);
+    }
+    calls.push_back(rows);
+    lp->assign(rows.size(), std::vector<float>(length - 1, -3.0f));
+    int want = k < prefer.size() ? prefer[k] : -1;
+    if (want >= 0 && static_cast<size_t>(want) < rows.size()) {
+      std::fill((*lp)[static_cast<size_t>(want)].begin(), (*lp)[static_cast<size_t>(want)].end(), -0.01f);
+    }
+    return true;
+  }
+};
+
+size_t V34CharCount(const std::string &s)
+{
+    return Utf8Chars(s).size();
+}
+
+std::string V34Tail(const std::string &s, size_t n)
+{
+    return TailChars(s, n);
+}
+}  // namespace
 
 @interface SlothEDecoderTests : XCTestCase
 @end
@@ -276,13 +336,25 @@ static NSArray<NSDictionary *> *FixtureRows(NSString *name)
     if (gDecEngine == nullptr || gDecoder == nullptr) {
         return;
     }
-    DecoderParams p;  // shipped constants = config A' (walk2/frozen_final2.json)
-    XCTAssertEqual(p.lambda, 2.0);
+    // v3.4: the shipped constants are the whole-buffer gate (lambda 1, SlothE/eval-2026-10/); the parity below
+    // runs the v2 gate = config A' (walk2/frozen_final2.json) = DecoderParams::V2().
+    DecoderParams p;
+    XCTAssertEqual(p.lambda, 1.0);
     XCTAssertEqual(p.tau, 0.5);
     XCTAssertEqual(p.topK, 3u);
+    XCTAssertTrue(p.fullBuffer);
+    XCTAssertEqual(p.suffixCapChars, 24u);
+    DecoderParams v2 = DecoderParams::V2();
+    XCTAssertEqual(v2.lambda, 2.0);
+    XCTAssertEqual(v2.tau, 0.5);
+    XCTAssertEqual(v2.topK, 3u);
+    XCTAssertFalse(v2.fullBuffer);
     SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:nil];
-    XCTAssertEqual([runtime decoderParams].lambda, 2.0);
+    XCTAssertEqual([runtime decoderParams].lambda, 1.0);
     XCTAssertEqual([runtime decoderParams].tau, 0.5);
+    XCTAssertEqual([runtime decoderParams].topK, 3u);
+    XCTAssertTrue([runtime decoderParams].fullBuffer);
+    XCTAssertEqual([runtime decoderParams].suffixCapChars, 24u);
     XCTAssertEqual([runtime inWalkParams].beta, 0.3);
     NSMutableDictionary<NSString *, NSString *> *ggml = [NSMutableDictionary dictionary];
     for (NSDictionary *row in FixtureRows(@"walk2_dev_final2_Aprime.walks.jsonl")) {
@@ -292,7 +364,7 @@ static NSArray<NSDictionary *> *FixtureRows(NSString *name)
     std::vector<double> ms;
     for (NSDictionary *row in FixtureRows(@"v2_parity.jsonl")) {
         std::vector<std::string> readings = DecReadings(row[@"readings"]);
-        auto grid = DecGrid(readings);
+        auto grid = DecGridOn(V34::LoadDataWithoutTwins(), readings);  // the fixtures were made before the 再 twins
         std::vector<WalkPin> pins;
         std::string inWalk;
         auto t0 = std::chrono::steady_clock::now();
@@ -323,6 +395,38 @@ static NSArray<NSDictionary *> *FixtureRows(NSString *name)
     XCTAssertEqual(inWalkMatch, n);
     XCTAssertEqual(pinMatch, n);
     XCTAssertLessThanOrEqual(vsGgml, 10u);  // reference run: 4 (near-ties / gate flips)
+}
+
+// The same v2 gate on the data with the 再 twins: only sentences where a twin joins the dictionary walk can change.
+// 開會再列印: 開會 + 再 became 開 + 會再 -- the same text, other node boundaries.
+- (void)testV2GateOnTheTwinDataChangesAFewNodesAndAlmostNoText
+{
+    XCTAssertTrue(gDecEngine != nullptr && gDecoder != nullptr);
+    if (gDecEngine == nullptr || gDecoder == nullptr) {
+        return;
+    }
+    NSUInteger n = 0, nodesSame = 0, textSame = 0;
+    for (NSDictionary *row in FixtureRows(@"v2_parity.jsonl")) {
+        std::vector<std::string> readings = DecReadings(row[@"readings"]);
+        auto grid = DecGrid(readings);  // gDecLM = the bundled data.txt, twins included
+        auto walk = DecFinalWalk(grid.get(), readings, nullptr);
+        std::string got = NodesString(walk);
+        std::string want = WantString(row[@"final"]);
+        std::string wantText;
+        for (NSArray *node in row[@"final"]) {
+            wantText += [node[2] UTF8String];
+        }
+        ++n;
+        nodesSame += got == want;
+        textSame += McBopomofoSlothE::WalkText(walk) == wantText;
+        if (got != want) {
+            NSLog(@"SLOTHE_V34 v2 gate on the twin data, %@: got=%s want=%s", row[@"sid"], got.c_str(), want.c_str());
+        }
+    }
+    NSLog(@"SLOTHE_V34 v2 gate on the twin data: %lu sentences, nodes equal to the v3.1.2 fixture %lu, text equal %lu", (unsigned long)n, (unsigned long)nodesSame, (unsigned long)textSame);
+    XCTAssertEqual(n, 500u);
+    XCTAssertGreaterThanOrEqual(nodesSame, n - 5);
+    XCTAssertGreaterThanOrEqual(textSame, n - 2);
 }
 
 - (void)testLongCompositionsNeverOverflowTheDecoder
@@ -458,6 +562,592 @@ static NSArray<NSDictionary *> *FixtureRows(NSString *name)
     XCTAssertFalse(slot.waitFor(4, 20, true, &out));
     double waitedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     XCTAssertLessThan(waitedMs, 200.0);
+}
+
+#pragma mark - v3.4 full-buffer decoder gate
+
+- (std::unique_ptr<Decoder>)recordingDecoder:(RecordingBackend **)backendOut
+{
+    int32_t bos = 0, pad = 0;
+    std::string error;
+    auto tok = LoadDecoderTokenizer(std::string(DecResources().fileSystemRepresentation), &bos, &pad, &error);
+    XCTAssertTrue(tok != nullptr, @"%s", error.c_str());
+    auto backend = std::make_unique<RecordingBackend>();
+    *backendOut = backend.get();
+    auto decoder = std::make_unique<Decoder>();
+    XCTAssertTrue(decoder->load(std::move(backend), tok, bos, pad, &error), @"%s", error.c_str());
+    return decoder;
+}
+
+// 會再加以討論: the encoder prefers 再, but the dictionary only had 會在 (a word, so 在 sat inside it and no decoder
+// request was made there). With the 再 twin in data.txt the node has two aligned candidates, and the whole-buffer
+// decoder (candidate + 加以討論 on its right) keeps 再.
+- (void)testHuiZaiJiaYiTaoLunEndsAsZai
+{
+    XCTAssertTrue(gDecEngine != nullptr && gDecoder != nullptr);
+    if (gDecEngine == nullptr || gDecoder == nullptr) {
+        return;
+    }
+    // the 18 twins of zai-twins.txt are in the data the host was built with, 0.1 (log10) below their 在 entry,
+    // so 在 stays the one with the higher score
+    for (NSArray<NSString *> *twin in V34::ZaiTwins()) {
+        std::string reading = twin[0].UTF8String, again = twin[1].UTF8String, zai = again;
+        zai.replace(zai.size() - std::string("再").size(), std::string("再").size(), "在");
+        double zaiScore = 0, againScore = 0;
+        for (const auto &u : gDecLM->getUnigrams(reading)) {
+            zaiScore = u.value() == zai ? u.score() : zaiScore;
+            againScore = u.value() == again ? u.score() : againScore;
+        }
+        XCTAssertNotEqual(againScore, 0.0, @"data.txt has no %s: run make in Source/Data", again.c_str());
+        XCTAssertEqualWithAccuracy(zaiScore - againScore, 0.1, 1e-6, @"%s", again.c_str());
+    }
+    // 在 as part of the word gets no twin
+    for (const auto &u : gDecLM->getUnigrams("ㄒㄧㄢˋ-ㄗㄞˋ")) {
+        XCTAssertTrue(u.value() != "現再");
+    }
+    for (const auto &u : gDecLM->getUnigrams("ㄕˊ-ㄗㄞˋ")) {
+        XCTAssertTrue(u.value() != "實再");
+    }
+
+    std::vector<std::string> readings = { "ㄏㄨㄟˋ", "ㄗㄞˋ", "ㄐㄧㄚ", "ㄧˇ", "ㄊㄠˇ", "ㄌㄨㄣˋ" };
+    auto run = [&](const DecoderParams &params, std::string *inWalk) {
+        auto grid = DecGrid(readings);
+        DecoderScoreCache cache;
+        PipelineSlot slot;
+        slot.latestRequested.store(1);
+        PipelineConfig config;
+        config.useDecoder = true;
+        config.decoder = params;
+        PipelineResult res = RunPipeline(gDecEngine, gDecoder, &cache, &slot, config, 1, readings, grid->snapshot().get(), 0);
+        XCTAssertTrue(res.encoder != nullptr && res.decoderDone);
+        std::vector<InWalkNode> detail;
+        *inWalk = McBopomofoSlothE::WalkText(grid->rescoredWalk(*res.encoder, gDecEngine->vocabulary(), gDecEngine->variants(), InWalkParams(), nullptr, nullptr, &detail));
+        return McBopomofoSlothE::WalkText(grid->rescoredWalk(*res.encoder, gDecEngine->vocabulary(), gDecEngine->variants(), InWalkParams(), nullptr, res.pins.empty() ? nullptr : &res.pins, nullptr));
+    };
+    std::string inWalk, inWalkV2;
+    std::string text = run(DecoderParams(), &inWalk);
+    std::string textV2 = run(DecoderParams::V2(), &inWalkV2);
+    NSLog(@"SLOTHE_V34 會再加以討論 in-walk=%s whole-buffer=%s v2-gate=%s", inWalk.c_str(), text.c_str(), textV2.c_str());
+    XCTAssertTrue(text == "會再加以討論", @"%s", text.c_str());
+}
+
+// Requests go left to right and the context of each is the in-walk text left of its node with the pins decided
+// before it (not the text the walk showed before the pins).
+- (void)testFullBufferContextFollowsThePinsDecidedToTheLeft
+{
+    XCTAssertTrue(gDecEngine != nullptr);
+    if (gDecEngine == nullptr) {
+        return;
+    }
+    NSUInteger checked = 0, pinContextDiffers = 0;
+    for (NSDictionary *row in FixtureRows(@"v2_parity.jsonl")) {
+        if (pinContextDiffers >= 3) {
+            break;
+        }
+        std::vector<std::string> readings = DecReadings(row[@"readings"]);
+        auto grid = DecGrid(readings);
+        double ms = 0;
+        bool hit = false;
+        auto enc = gDecEngine->forward(readings, &ms, &hit);
+        std::vector<InWalkNode> detail;
+        grid->rescoredWalk(*enc, gDecEngine->vocabulary(), gDecEngine->variants(), InWalkParams(), nullptr, nullptr, &detail);
+        std::vector<DecoderRequest> requests = BuildDecoderRequests(detail, 3);
+        if (requests.size() < 2) {
+            continue;
+        }
+        // the fake decoder prefers a candidate that is not the shown one, so the request is pinned
+        RecordingBackend *backend = nullptr;
+        std::unique_ptr<Decoder> fake = [self recordingDecoder:&backend];
+        for (const DecoderRequest &q : requests) {
+            int prefer = -1;
+            for (size_t k = 0; k < q.values.size() && prefer < 0; ++k) {
+                if (q.values[k] != q.shown && q.values[k] != q.raw && !gDecEngine->variants().isVariantPair(q.values[k], q.shown)) {
+                    prefer = static_cast<int>(k);
+                }
+            }
+            backend->prefer.push_back(prefer);
+        }
+        DecoderScoreCache cache;
+        PipelineSlot slot;
+        slot.latestRequested.store(1);
+        PipelineConfig config;
+        config.useDecoder = true;
+        config.decoderContext = "前文";
+        PipelineResult res = RunPipeline(gDecEngine, fake.get(), &cache, &slot, config, 1, readings, grid->snapshot().get(), 0);
+        XCTAssertEqual(res.decoderCalls, static_cast<int>(requests.size()));
+        XCTAssertEqual(backend->calls.size(), requests.size());
+        if (backend->calls.size() != requests.size()) {
+            continue;
+        }
+        std::map<size_t, std::string> pinAt;
+        for (const WalkPin &pin : res.pins) {
+            pinAt[pin.start] = pin.value;
+        }
+        for (size_t i = 0; i < requests.size(); ++i) {
+            const DecoderRequest &q = requests[i];
+            std::string left = "前文", leftBeforePins = "前文", right;
+            for (size_t j = 0; j < detail.size(); ++j) {
+                if (detail[j].start < q.start) {
+                    auto pin = pinAt.find(detail[j].start);
+                    left += pin != pinAt.end() ? pin->second : detail[j].shown;
+                    leftBeforePins += detail[j].shown;
+                } else if (detail[j].start > q.start) {
+                    right += detail[j].shown;  // no node right of this one is pinned yet
+                }
+            }
+            std::vector<std::string> texts;
+            for (const std::string &v : q.values) {
+                texts.push_back(v + HeadChars(right, 24));
+            }
+            std::vector<std::vector<int32_t>> want = fake->sequences(left, texts);
+            bool same = true;
+            for (size_t r = 0; r < want.size(); ++r) {
+                const std::vector<int32_t> &got = backend->calls[i][r];
+                same = same && got.size() >= want[r].size() && std::equal(want[r].begin(), want[r].end(), got.begin()) &&
+                       std::all_of(got.begin() + static_cast<std::ptrdiff_t>(want[r].size()), got.end(), [](int32_t t) { return t == 0; });
+            }
+            XCTAssertTrue(same, @"request %zu of %@ was not scored with the pinned left text", i, row[@"sid"]);
+            pinContextDiffers += TailChars(left, 64) != TailChars(leftBeforePins, 64);
+            ++checked;
+        }
+    }
+    NSLog(@"SLOTHE_V34 sequential context: %lu requests checked, %lu of them with a pin to their left that changes the context", (unsigned long)checked, (unsigned long)pinContextDiffers);
+    XCTAssertGreaterThan(pinContextDiffers, 0u, @"no request had a pinned node to its left: the test would prove nothing");
+}
+
+static std::vector<InWalkNode> OneCharNodes(size_t n)
+{
+    // 千字文, one distinct char per node
+    std::vector<std::string> chars = Utf8Chars("天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏閏餘成歲律呂調陽雲騰致雨露結為霜金生麗水玉出崑岡");
+    std::vector<InWalkNode> nodes;
+    for (size_t k = 0; k < n && k < chars.size(); ++k) {
+        InWalkNode node;
+        node.start = k;
+        node.len = 1;
+        node.raw = node.shown = chars[k];
+        nodes.push_back(node);
+    }
+    return nodes;
+}
+
+// candidate + at most suffixCapChars chars of the text on its right; request.values stay the raw candidates.
+- (void)testFullBufferSuffixIsCappedAtSuffixCapChars
+{
+    std::vector<InWalkNode> nodes = OneCharNodes(44);
+    XCTAssertEqual(nodes.size(), 44u);
+    DecoderRequest q;
+    q.node = 5;
+    q.start = 5;
+    q.len = 1;
+    q.values = { "甲", "乙", "丙" };
+    q.shown = "甲";
+    q.raw = "甲";
+    std::vector<std::string> noPins(nodes.size());
+    auto textsFor = [&](size_t cap) {
+        DecoderParams p;
+        p.suffixCapChars = cap;
+        return BuildFullBufferInput("", nodes, noPins, q, p, nullptr).texts;
+    };
+    // defaults: 24 chars (nodes 6..29)
+    std::string right24;
+    for (size_t j = 6; j < 30; ++j) {
+        right24 += nodes[j].shown;
+    }
+    XCTAssertEqual(DecoderParams().suffixCapChars, 24u);
+    std::vector<std::string> texts = textsFor(DecoderParams().suffixCapChars);
+    XCTAssertTrue(texts == (std::vector<std::string> { "甲" + right24, "乙" + right24, "丙" + right24 }));
+    XCTAssertEqual(V34CharCount(texts[0]), 25u);
+    // a smaller cap, no suffix, and a cap longer than the rest of the buffer (38 chars right of node 5)
+    XCTAssertEqual(V34CharCount(textsFor(16)[1]), 17u);
+    XCTAssertTrue(textsFor(0) == q.values);
+    XCTAssertEqual(V34CharCount(textsFor(1000)[2]), 39u);
+    // a pin decided for a node to the right is part of the suffix (the pipeline only has pins to the left)
+    std::vector<std::string> pins(nodes.size());
+    pins[7] = "X";
+    DecoderParams p;
+    DecoderScoreInput input = BuildFullBufferInput("", nodes, pins, q, p, nullptr);
+    XCTAssertTrue(input.texts[0].find("X") != std::string::npos);
+    XCTAssertFalse(input.fallback);
+    // the node itself is never in its own context or suffix; the context is cut to the decoder's 64 chars
+    std::string longContext;
+    for (int k = 0; k < 30; ++k) {
+        longContext += "前文脈絡";
+    }
+    DecoderScoreInput cut = BuildFullBufferInput(longContext, nodes, noPins, q, DecoderParams(), nullptr);
+    XCTAssertEqual(V34CharCount(cut.context), 64u);
+    XCTAssertTrue(cut.context == V34Tail(longContext + nodes[0].shown + nodes[1].shown + nodes[2].shown + nodes[3].shown + nodes[4].shown, 64));
+}
+
+// Over the decoder's limit: the context is cut from the left with the candidate and its right text kept whole;
+// when even that does not fit the request is scored on the candidate alone -- it is never dropped.
+- (void)testFullBufferOverLengthTrimsTheContextThenScoresTheCandidateAlone
+{
+    std::vector<InWalkNode> nodes = OneCharNodes(44);
+    DecoderRequest q;
+    q.node = 10;
+    q.start = 10;
+    q.len = 1;
+    q.values = { "甲", "乙", "丙" };
+    q.shown = "甲";
+    q.raw = "甲";
+    std::vector<std::string> noPins(nodes.size());
+    std::string context = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";  // 30 chars
+    std::string left = context;
+    for (size_t j = 0; j < 10; ++j) {
+        left += nodes[j].shown;
+    }
+    // "fits": context + text within a limit of 40 chars
+    auto limit = [](size_t chars) {
+        return SequenceFits([chars](const std::string &c, const std::vector<std::string> &t) {
+            for (const std::string &x : t) {
+                if (V34CharCount(c) + V34CharCount(x) > chars) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    };
+    DecoderParams p;  // 24 chars of right text: the scored string is 25 chars
+    DecoderScoreInput a = BuildFullBufferInput(context, nodes, noPins, q, p, limit(40));
+    XCTAssertFalse(a.fallback);
+    XCTAssertEqual(V34CharCount(a.texts[0]), 25u);
+    XCTAssertEqual(V34CharCount(a.context), 15u);  // 40 - 25
+    XCTAssertTrue(a.context == V34Tail(left, 15));  // the nearest text is kept
+    // 25 + 0 > 20: the candidate + right text cannot fit even with no context: candidate alone
+    DecoderScoreInput b = BuildFullBufferInput(context, nodes, noPins, q, p, limit(20));
+    XCTAssertTrue(b.fallback);
+    XCTAssertTrue(b.texts == q.values);
+    XCTAssertEqual(V34CharCount(b.context), 19u);  // 20 - 1
+    XCTAssertTrue(b.context == V34Tail(left, 19));
+    // it fits at once: nothing is cut
+    DecoderScoreInput c = BuildFullBufferInput(context, nodes, noPins, q, p, limit(1000));
+    XCTAssertFalse(c.fallback);
+    XCTAssertEqual(V34CharCount(c.context), 40u);
+    // a candidate that does not fit by itself: still a full answer (the decoder refuses it, the pipeline counts a no-decision)
+    DecoderScoreInput d = BuildFullBufferInput(context, nodes, noPins, q, p, limit(0));
+    XCTAssertTrue(d.fallback);
+    XCTAssertTrue(d.context.empty());
+    XCTAssertTrue(d.texts == q.values);
+    // the last node has no right text: no fallback to take
+    DecoderRequest last = q;
+    last.node = 43;
+    last.start = 43;
+    DecoderScoreInput e = BuildFullBufferInput(context, nodes, noPins, last, p, limit(1));
+    XCTAssertFalse(e.fallback);
+}
+
+// The same through the real pipeline: a 160-syllable buffer with an unlimited right text makes every candidate
+// + right text longer than t96 -- the requests are scored on the candidate alone, none is skipped.
+- (void)testFullBufferOverT96FallsBackToTheCandidateNotToSkipping
+{
+    XCTAssertTrue(gDecEngine != nullptr && gDecoder != nullptr);
+    if (gDecEngine == nullptr || gDecoder == nullptr) {
+        return;
+    }
+    std::vector<std::string> readings;
+    for (NSDictionary *row in FixtureRows(@"v2_parity.jsonl")) {
+        for (NSString *r in row[@"readings"]) {
+            readings.emplace_back(r.UTF8String);
+        }
+        if (readings.size() >= 160) {
+            break;
+        }
+    }
+    readings.resize(160);
+    auto grid = DecGrid(readings);
+    double ms = 0;
+    bool hit = false;
+    auto enc = gDecEngine->forward(readings, &ms, &hit);
+    XCTAssertTrue(enc != nullptr);
+    std::vector<InWalkNode> detail;
+    grid->rescoredWalk(*enc, gDecEngine->vocabulary(), gDecEngine->variants(), InWalkParams(), nullptr, nullptr, &detail);
+    size_t requests = BuildDecoderRequests(detail, 3).size();
+    XCTAssertGreaterThan(requests, 20u);
+    DecoderScoreCache cache;
+    PipelineSlot slot;
+    slot.latestRequested.store(1);
+    PipelineConfig config;
+    config.useDecoder = true;
+    config.decoder.suffixCapChars = 100000;
+    PipelineResult res = RunPipeline(gDecEngine, gDecoder, &cache, &slot, config, 1, readings, grid->snapshot().get(), 0);
+    NSLog(@"SLOTHE_V34 over-t96: %zu syllables, %zu requests, %d calls, %d cached, %d fell back to the candidate alone, %d no decision", readings.size(), requests, res.decoderCalls, res.decoderCached, res.decoderFallbacks, res.decoderNoDecision);
+    XCTAssertTrue(res.decoderDone);
+    XCTAssertGreaterThan(res.decoderFallbacks, 0);
+    XCTAssertEqual(res.decoderNoDecision, 0, @"a fallback is a decision, never a skip");
+    XCTAssertEqual(static_cast<size_t>(res.decoderCalls + res.decoderCached), requests);
+    // with the shipped cap of 24 chars nothing is over the limit
+    DecoderScoreCache cache24;
+    PipelineConfig shipped;
+    shipped.useDecoder = true;
+    PipelineResult res24 = RunPipeline(gDecEngine, gDecoder, &cache24, &slot, shipped, 1, readings, grid->snapshot().get(), 0);
+    XCTAssertEqual(res24.decoderFallbacks, 0);
+    XCTAssertEqual(res24.decoderNoDecision, 0);
+    XCTAssertEqual(static_cast<size_t>(res24.decoderCalls + res24.decoderCached), requests);
+}
+
+// The hidden defaults keys (no menu item): SlothEDecoderFullBuffer = NO is the v3.0-v3.3 gate, the suffix cap is settable.
+- (void)testHiddenSwitchesSelectTheGateAndTheSuffixCap
+{
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id savedFull = [defaults objectForKey:@"SlothEDecoderFullBuffer"];
+    id savedCap = [defaults objectForKey:@"SlothEDecoderSuffixCapChars"];
+    [defaults removeObjectForKey:@"SlothEDecoderFullBuffer"];
+    [defaults removeObjectForKey:@"SlothEDecoderSuffixCapChars"];
+    SlothERuntime *runtime = [[SlothERuntime alloc] initWithResourcePath:DecResources() logPath:nil];
+    XCTAssertTrue([runtime decoderParams].fullBuffer);
+    XCTAssertEqual([runtime decoderParams].suffixCapChars, 24u);
+    [defaults setInteger:16 forKey:@"SlothEDecoderSuffixCapChars"];
+    XCTAssertEqual([runtime decoderParams].suffixCapChars, 16u);
+    XCTAssertEqual([runtime decoderParams].lambda, 1.0);
+    [defaults setBool:NO forKey:@"SlothEDecoderFullBuffer"];
+    XCTAssertFalse([runtime decoderParams].fullBuffer);
+    XCTAssertEqual([runtime decoderParams].lambda, 2.0);
+    XCTAssertEqual([runtime decoderParams].tau, 0.5);
+    [defaults setBool:YES forKey:@"SlothEDecoderFullBuffer"];
+    XCTAssertTrue([runtime decoderParams].fullBuffer);
+    // v3.4g: the same value table as the Swift reader (Preferences.slothEDecoderFullBufferEnabled, SlothEV34PreferenceTests):
+    // absent = on; otherwise boolForKey:, so the strings a `defaults write` can leave mean what Foundation says
+    for (id off in @[ @"NO", @"no", @"0", @"false", @NO, @0 ]) {
+        [defaults setObject:off forKey:@"SlothEDecoderFullBuffer"];
+        XCTAssertFalse([runtime decoderParams].fullBuffer, @"stored %@", off);
+        XCTAssertEqual([runtime decoderParams].lambda, 2.0);
+    }
+    for (id on in @[ @"YES", @"yes", @"1", @"true", @YES, @1 ]) {
+        [defaults setObject:on forKey:@"SlothEDecoderFullBuffer"];
+        XCTAssertTrue([runtime decoderParams].fullBuffer, @"stored %@", on);
+    }
+    [defaults removeObjectForKey:@"SlothEDecoderFullBuffer"];
+    XCTAssertTrue([runtime decoderParams].fullBuffer, @"absent = on");
+    for (NSString *key in @[ @"SlothEDecoderFullBuffer", @"SlothEDecoderSuffixCapChars" ]) {
+        id saved = [key isEqualToString:@"SlothEDecoderFullBuffer"] ? savedFull : savedCap;
+        if (saved != nil) {
+            [defaults setObject:saved forKey:key];
+        } else {
+            [defaults removeObjectForKey:key];
+        }
+    }
+}
+
+#pragma mark - v3.4e staleness (Sol r39)
+
+// The trimming tokenizes the candidates again at every step: a newer key stops it at the next step.
+- (void)testFullBufferTrimmingStopsAtOnceWhenANewerKeyArrives
+{
+    std::vector<InWalkNode> nodes = OneCharNodes(44);
+    DecoderRequest q;
+    q.node = 10;
+    q.start = 10;
+    q.len = 1;
+    q.values = { "甲", "乙", "丙" };
+    q.shown = "甲";
+    q.raw = "甲";
+    std::vector<std::string> noPins(nodes.size());
+    std::string context = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十";
+    size_t fitsCalls = 0;
+    SequenceFits never = [&fitsCalls](const std::string &, const std::vector<std::string> &) {
+        ++fitsCalls;
+        return false;  // nothing fits: the whole context is trimmed away
+    };
+    DecoderParams p;
+    DecoderScoreInput all = BuildFullBufferInput(context, nodes, noPins, q, p, never);
+    XCTAssertFalse(all.cancelled);
+    XCTAssertTrue(all.fallback);
+    size_t uncancelledCalls = fitsCalls;
+    XCTAssertGreaterThan(uncancelledCalls, 40u);
+
+    fitsCalls = 0;
+    size_t polls = 0;
+    std::function<bool()> newerKey = [&polls] { return ++polls >= 5; };
+    DecoderScoreInput cut = BuildFullBufferInput(context, nodes, noPins, q, p, never, newerKey);
+    XCTAssertTrue(cut.cancelled);
+    XCTAssertEqual(polls, 5u, @"polled once per trimming step, and not again after it said yes");
+    XCTAssertLessThanOrEqual(fitsCalls, 6u);
+    // a cancel that never comes changes nothing
+    fitsCalls = 0;
+    DecoderScoreInput same = BuildFullBufferInput(context, nodes, noPins, q, p, never, [] { return false; });
+    XCTAssertFalse(same.cancelled);
+    XCTAssertEqual(fitsCalls, uncancelledCalls);
+    XCTAssertTrue(same.context == all.context && same.texts == all.texts && same.fallback == all.fallback);
+}
+
+// The same through RunPipeline: a newer generation that appears inside a trimming loop (the recording backend's
+// lengths() runs at every step) ends the job there: no further step, no model call, nothing published.
+- (void)testPipelineDropsAJobThatGoesStaleWhileTrimming
+{
+    XCTAssertTrue(gDecEngine != nullptr);
+    if (gDecEngine == nullptr) {
+        return;
+    }
+    std::vector<std::string> readings;
+    for (NSDictionary *row in FixtureRows(@"v2_parity.jsonl")) {
+        for (NSString *r in row[@"readings"]) {
+            readings.emplace_back(r.UTF8String);
+        }
+        if (readings.size() >= 160) {
+            break;
+        }
+    }
+    readings.resize(160);
+    auto grid = DecGrid(readings);
+    struct Record {
+        PipelineResult result;
+        std::string events;  // 'L' lengths() call, 'M' model call
+        size_t lengthsCalls = 0;
+        size_t modelCalls = 0;
+        size_t modelCallsAtBump = 0;
+    };
+    // unlimited right text: candidate + right text never fits t96, so every request that has a context trims it away step by step
+    auto run = [&](long bumpAtLength, PipelineSlot *slot) {
+        Record rec;
+        RecordingBackend *backend = nullptr;
+        std::unique_ptr<Decoder> fake = [self recordingDecoder:&backend];
+        backend->events.clear();
+        backend->lengthsCalls = 0;
+        slot->latestRequested.store(1);
+        if (bumpAtLength >= 0) {
+            backend->onLengths = [&rec, backend, slot, bumpAtLength](size_t n) {
+                if (n == static_cast<size_t>(bumpAtLength)) {
+                    slot->latestRequested.store(2);  // a newer key arrives
+                    rec.modelCallsAtBump = backend->calls.size();
+                }
+            };
+        }
+        DecoderScoreCache cache;
+        PipelineConfig config;
+        config.useDecoder = true;
+        config.decoder.suffixCapChars = 100000;
+        rec.result = RunPipeline(gDecEngine, fake.get(), &cache, slot, config, 1, readings, grid->snapshot().get(), 0);
+        rec.events = backend->events;
+        rec.lengthsCalls = backend->lengthsCalls;
+        rec.modelCalls = backend->calls.size();
+        return rec;
+    };
+    // dry run: where is the longest run of lengths() calls without a model call in between? That is a trimming loop
+    // (two calls per step; Decoder::score asks once, next to its model call).
+    PipelineSlot dryslot;
+    Record dry = run(-1, &dryslot);
+    XCTAssertFalse(dry.result.stale);
+    XCTAssertTrue(dry.result.decoderDone);
+    size_t runStart = 0, runLength = 0;
+    {
+        size_t l = 0, streak = 0;
+        for (char e : dry.events) {
+            if (e == 'L') {
+                ++streak;
+                ++l;
+                if (streak > runLength) {
+                    runLength = streak;
+                    runStart = l - streak;
+                }
+            } else {
+                streak = 0;
+            }
+        }
+    }
+    XCTAssertGreaterThan(runLength, 40u, @"no long trimming loop in the dry run");
+    long bumpAt = static_cast<long>(runStart + runLength / 2);  // in the middle of the loop
+    PipelineSlot slot;
+    Record wet = run(bumpAt, &slot);
+    size_t after = wet.lengthsCalls > static_cast<size_t>(bumpAt) ? wet.lengthsCalls - static_cast<size_t>(bumpAt) - 1 : 0;
+    NSLog(@"SLOTHE_V34E stale during trimming: dry run %zu lengths() calls and %zu model calls; a newer key at lengths() #%ld (after %zu model calls); the stale run: %zu lengths() calls after it, %zu model calls in total, stale=%d",
+        dry.lengthsCalls, dry.modelCalls, bumpAt, wet.modelCallsAtBump, after, wet.modelCalls, (int)wet.result.stale);
+    XCTAssertTrue(wet.result.stale);
+    XCTAssertFalse(wet.result.decoderDone);
+    XCTAssertLessThanOrEqual(after, 2u, @"the loop stops at its next step");
+    XCTAssertEqual(wet.modelCalls, wet.modelCallsAtBump, @"no model call after the newer key");
+    XCTAssertEqual(wet.lengthsCalls, static_cast<size_t>(bumpAt) + 1 + after, @"consistent count");
+    XCTAssertLessThan(wet.lengthsCalls, dry.lengthsCalls, @"the job ended before the dry run's end");
+    PipelineResult published;  // waitFor gives the latest snapshot of the generation: the encoder stage, not the decoder stage
+    XCTAssertTrue(!slot.waitFor(1, 0, true, &published) || !published.decoderDone, @"the decoder stage was not published");
+}
+
+// A newer key that arrives during the last model call: the finished job is dropped, not published.
+- (void)testPipelineDropsAJobThatGoesStaleDuringItsLastModelCall
+{
+    XCTAssertTrue(gDecEngine != nullptr);
+    if (gDecEngine == nullptr) {
+        return;
+    }
+    std::vector<std::string> readings = { "ㄏㄨㄟˋ", "ㄗㄞˋ", "ㄐㄧㄚ", "ㄧˇ", "ㄊㄠˇ", "ㄌㄨㄣˋ" };
+    std::vector<InWalkNode> detail;
+    std::vector<DecoderRequest> requests;
+    auto run = [&](bool bump, PipelineResult *out, PipelineSlot *slot, DecoderScoreCache *cache, size_t *modelCalls) {
+        RecordingBackend *backend = nullptr;
+        std::unique_ptr<Decoder> fake = [self recordingDecoder:&backend];
+        auto grid = DecGrid(readings);
+        double ms = 0;
+        bool hit = false;
+        auto enc = gDecEngine->forward(readings, &ms, &hit);
+        detail.clear();
+        grid->rescoredWalk(*enc, gDecEngine->vocabulary(), gDecEngine->variants(), InWalkParams(), nullptr, nullptr, &detail);
+        requests = BuildDecoderRequests(detail, 3);
+        size_t count = requests.size();
+        slot->latestRequested.store(1);
+        if (bump) {
+            backend->onModel = [slot, count](size_t k) {
+                if (k + 1 == count) {
+                    slot->latestRequested.store(2);  // during the last request's model call
+                }
+            };
+        }
+        PipelineConfig config;
+        config.useDecoder = true;
+        *out = RunPipeline(gDecEngine, fake.get(), cache, slot, config, 1, readings, grid->snapshot().get(), 0);
+        *modelCalls = backend->calls.size();
+    };
+    PipelineResult control, stale;
+    PipelineSlot controlSlot, staleSlot;
+    DecoderScoreCache controlCache, staleCache;
+    size_t controlCalls = 0, staleCalls = 0;
+    run(false, &control, &controlSlot, &controlCache, &controlCalls);
+    XCTAssertGreaterThanOrEqual(requests.size(), 1u);
+    XCTAssertFalse(control.stale);
+    XCTAssertTrue(control.decoderDone);
+    std::vector<DecoderRequest> controlRequests = requests;
+    std::vector<InWalkNode> controlDetail = detail;
+    run(true, &stale, &staleSlot, &staleCache, &staleCalls);
+    XCTAssertEqual(staleCalls, controlCalls, @"every model call was made; the job ended on the last one");
+    XCTAssertTrue(stale.stale);
+    XCTAssertFalse(stale.decoderDone);
+    PipelineResult published;
+    XCTAssertTrue(!staleSlot.waitFor(1, 0, true, &published) || !published.decoderDone);
+    PipelineResult controlPublished;
+    XCTAssertTrue(controlSlot.waitFor(1, 0, true, &controlPublished) && controlPublished.decoderDone, @"the control did publish");
+
+    // v3.4g: the call that was cancelled stored nothing in the score cache; the same call of the control run did
+    const DecoderRequest &last = controlRequests.back();
+    std::vector<std::string> pinned(controlDetail.size());
+    for (const WalkPin &pin : control.pins) {
+        for (size_t j = 0; j < controlDetail.size(); ++j) {
+            if (controlDetail[j].start == pin.start && j < last.node) {
+                pinned[j] = pin.value;  // the pins decided to the left of the last request: its context
+            }
+        }
+    }
+    DecoderScoreInput key = BuildFullBufferInput("", controlDetail, pinned, last, DecoderParams(), nullptr);
+    std::vector<double> scores;
+    XCTAssertTrue(controlCache.lookup(key.context, key.texts, &scores), @"the finished job cached its last call");
+    XCTAssertFalse(staleCache.lookup(key.context, key.texts, &scores), @"a cancelled call is not cached");
+    if (controlRequests.size() > 1) {
+        const DecoderRequest &first = controlRequests.front();
+        DecoderScoreInput firstKey = BuildFullBufferInput("", controlDetail, std::vector<std::string>(controlDetail.size()), first, DecoderParams(), nullptr);
+        XCTAssertTrue(staleCache.lookup(firstKey.context, firstKey.texts, &scores), @"the calls before it were cached as usual");
+    }
+}
+
+- (void)testScoreCacheKeepsMoreEntriesAndKeysOnTheScoredString
+{
+    DecoderScoreCache cache;
+    XCTAssertEqual(DecoderScoreCache::kCapacity, 1024u);
+    for (int k = 0; k < 1000; ++k) {
+        cache.store("ctx" + std::to_string(k), { "甲加以討論", "乙加以討論" }, { -1.0 * k, -2.0 });
+    }
+    std::vector<double> scores;
+    XCTAssertTrue(cache.lookup("ctx0", { "甲加以討論", "乙加以討論" }, &scores));
+    XCTAssertFalse(cache.lookup("ctx0", { "甲", "乙" }, &scores), @"the scored string is part of the key");
+    XCTAssertFalse(cache.lookup("ctx0", { "甲加以討論", "乙加以討論了" }, &scores));
+    XCTAssertFalse(cache.lookup("other", { "甲加以討論", "乙加以討論" }, &scores), @"so is the context");
+    XCTAssertTrue(cache.lookup("ctx999", { "甲加以討論", "乙加以討論" }, &scores));
 }
 
 @end
@@ -783,7 +1473,7 @@ static BOOL WaitUntil(BOOL (^done)(void), double seconds)
         slot.latestRequested.store(1);
         PipelineConfig config;
         config.useDecoder = true;
-        config.decoder = [rt decoderParams];
+        config.decoder = DecoderParams::V2();  // v3.4: this is about the t32 function of the span-only gate (the whole-buffer gate also needs t64 / t96)
         PipelineResult res = RunPipeline([rt engine], [rt decoder], &cache, &slot, config, 1, readings, grid->snapshot().get(), 0);
         *pins = res.pins;
         auto w = grid->rescoredWalk(*res.encoder, [rt engine]->vocabulary(), [rt engine]->variants(), [rt inWalkParams], nullptr, &res.pins, nullptr);

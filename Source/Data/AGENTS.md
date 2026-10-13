@@ -31,6 +31,7 @@ The `Source/Data/` directory contains all dictionary data files and the build sy
 | `exclusion.txt` | Phrase frequency exclusions | `phrase context_to_exclude` (tab-separated) |
 | `Symbols.txt` | Special symbols (era names, etc.) | `symbol bopomofo score` |
 | `Macros.txt` | Text macros (date/time) | `MACRO@NAME bopomofo score` |
+| `zai-twins.txt` | Prefixes whose `<prefix>再` twin is generated at build time (McBopomofoLM v3.4) | One prefix per line, `#` comments |
 | `associated-punctuation.txt` | Punctuation for phrase associations | Special format for derive script |
 
 ### Generated Output Files
@@ -131,6 +132,10 @@ Do NOT suggest any changes to `heterophony1.list`, `heterophony2.list` or `heter
 For Mandarin heteronyms, an entry in `heterophony1.list` sets the primary reading and causes other readings of the same character to be demoted. This can be problematic for high-frequency characters whose other readings are also common. To compensate, `heterophony2.list` and `heterophony3.list` "promote" those readings back, but with a frequency discount to ensure they don't outrank the primary one.
 
 This is a complex language model tuning mechanism, so agents must NOT suggest changes on their own.
+
+### The 再 twins (McBopomofoLM)
+
+`make` adds `<prefix>再` next to `<prefix>在` in `data.txt` when the data has the latter (reading ending in ㄗㄞˋ, one syllable per character) but not the former. The twin's score is the `<prefix>在` score minus 0.1 (log10), so 在 stays the default and the SlothE models decide. The step is the `add-twins zai-twins.txt` directive in `Postprocess.txt`. Never add these entries by hand to `data.txt`, `BPMFMappings.txt` or `phrase.occ`. Extend `zai-twins.txt` only with prefixes where 再 is a grammatical adverb (會, 就, 你, 應該 ...), never where 在 is part of the word (實在, 現在, 存在, 所在, 在家, 人在...). The reference for the list is `SlothE/eval-2026-10/`.
 
 ### Adding Emojis and Symbols
 

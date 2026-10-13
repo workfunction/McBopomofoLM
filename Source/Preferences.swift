@@ -62,8 +62,10 @@ private let kSlothERerankEnabledKey = "SlothERerankEnabled"
 private let kSlothEDemoteShownCandidateKey = "SlothEDemoteShownCandidate"
 /// McBopomofoLM phase 3: the SlothE decoder's gated corrections on top of the in-walk re-pick.
 private let kSlothEDecoderEnabledKey = "SlothEDecoderEnabled"
-/// McBopomofoLM v3.2a: the full-sentence decoder gate after a typing pause (default on).
+/// McBopomofoLM v3.2a: the full-sentence decoder gate after a typing pause (default: OFF with the v3.4 whole-buffer gate, ON without it).
 private let kSlothEPauseGateEnabledKey = "SlothEPauseGateEnabled"
+/// McBopomofoLM v3.4: hidden, not in allKeys; NO = the v3.3 per-key gate (SlothERuntime.mm reads it by name).
+private let kSlothEDecoderFullBufferKey = "SlothEDecoderFullBuffer"
 /// McBopomofoLM v3.2b: the correction entry for a legal-but-wrong syllable in the candidate window (default OFF, v3.2d).
 private let kSlothETypoEntryEnabledKey = "SlothETypoEntryEnabled"
 /// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English without committing the buffer (default on).
@@ -532,10 +534,33 @@ extension Preferences {
     /// McBopomofoLM v3.2a: about 150 ms after the last key, run the decoder gate
     /// over the whole buffer (each candidate scored with the text on both sides)
     /// and keep its decisions until the next pause or a pick on that word. Off:
-    /// exactly the v3.1.2 behaviour (left-context gate only). Has no effect while
-    /// the SlothE-T or decoder switch is off.
-    @UserDefault(key: kSlothEPauseGateEnabledKey, defaultValue: true)
+    /// the per-key gate alone. Has no effect while the SlothE-T or decoder switch
+    /// is off.
+    ///
+    /// Default (no stored value) since v3.4: OFF while the per-key gate scores the
+    /// whole buffer (candidate plus the text on its right, lambda 1,
+    /// SlothE/eval-2026-10/), because a second pass after a pause, which uses its own
+    /// lambda 2, would only change the text a second time; ON when the whole-buffer
+    /// gate is switched off (hidden key SlothEDecoderFullBuffer = NO), where the pause
+    /// pass is what fixes a word the span-only gate leaves (v3.3 behaviour). The switch
+    /// and the pass are unchanged: turned on, it behaves as in v3.2a / v3.3 (lambda 2
+    /// on top of the per-key result). A stored value (someone who turned it on or off)
+    /// always wins.
+    @UserDefaultWithFunction(
+        key: kSlothEPauseGateEnabledKey, defaultValueFunction: defaultSlothEPauseGateEnabled)
     @objc static var slothEPauseGateEnabled: Bool
+
+    /// The hidden switch of the whole-buffer decoder gate (no menu item); on unless a stored value says no. Read the
+    /// way SlothERuntime.mm reads it (`objectForKey:` nil = absent = on, else `boolForKey:`), so a Boolean and the
+    /// strings "NO" / "0" that a `defaults write` can leave mean the same in both.
+    static var slothEDecoderFullBufferEnabled: Bool {
+        guard UserDefaults.standard.object(forKey: kSlothEDecoderFullBufferKey) != nil else { return true }
+        return UserDefaults.standard.bool(forKey: kSlothEDecoderFullBufferKey)
+    }
+
+    private static func defaultSlothEPauseGateEnabled() -> Bool {
+        return !slothEDecoderFullBufferEnabled
+    }
 
     @objc static func toggleSlothEPauseGateEnabled() -> Bool {
         slothEPauseGateEnabled = !slothEPauseGateEnabled

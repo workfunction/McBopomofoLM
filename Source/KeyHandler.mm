@@ -3592,7 +3592,7 @@ static NSInteger SlothEChangedChars(const std::string &before, const std::string
     std::vector<std::string> readings = _grid->readings();
     McBopomofoSlothE::PipelineConfig config;
     config.inWalk = [runtime inWalkParams];
-    config.decoder = [runtime decoderParams];
+    config.decoder = McBopomofoSlothE::DecoderParams::V2();  // v3.4: the pause gate keeps its v3.2a rule (lambda 2); off by default
     config.useDecoder = YES;
     config.encoderContext = _slothCarried.encoderReadings();
     config.decoderContext = _slothCarried.decoderText();

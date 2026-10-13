@@ -443,6 +443,12 @@ class SlothEPipelineTests: XCTestCase {
         let burst = Array(keys(readings)).prefix(50).map { String($0) }
         XCTAssertEqual(burst.count, 50)
         spin(until: { false }, timeout: 0.1)
+        // v3.4.0: an earlier test's pass can still hold its grid snapshot when this test starts (the compute queue
+        // drains after that test returned; the long tests that used to sit between them are skipped by the post-merge
+        // policy). Wait for it, bounded, so the baseline below is this burst's own; a timeout fails here, by name.
+        spin(until: { runtime.pendingComputeJobs == 0 && SlothERuntime.liveGridSnapshots() == 0 }, timeout: 3)
+        XCTAssertEqual(runtime.pendingComputeJobs, 0, "previous test's work did not drain (pending compute jobs)")
+        XCTAssertEqual(SlothERuntime.liveGridSnapshots(), 0, "previous test's work did not drain (live grid snapshots)")
         runtime.resetComputeJobStatistics()
         let snapshotsBefore = SlothERuntime.liveGridSnapshots()
         let footprintBefore = SlothERuntime.physFootprintBytes()

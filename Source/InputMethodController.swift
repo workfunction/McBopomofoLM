@@ -56,8 +56,12 @@ class McBopomofoInputMethodController: IMKInputController {
     var state: InputState = InputState.Empty()
     /// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English.
     var shiftTapDetector = ShiftTapDetector()
-    /// Shows a mode change ("English Mode" / "Chinese Mode"); tests replace it (no window).
-    var announceModeChange: (String) -> Void = { NotifierController.notify(message: $0) }
+    /// The text of a mode change ("English Mode" / "Chinese Mode"). Since v3.4f nothing is shown for it (the black
+    /// notifier box is gone, the HUD below replaces it); tests record it.
+    var announceModeChange: (String) -> Void = { _ in }
+    /// McBopomofoLM v3.4f: puts up the mode HUD near the caret (English or Chinese, the client's caret rectangle or
+    /// nil); tests replace it (no window).
+    var showModeHUD: (Bool, NSRect?) -> Void = { ModeSwitchHUD.shared.show(englishMode: $0, caret: $1) }
 
     // Share the stored issues, so a set of issues is shown as notification only once.
     static var latestUserFileIssues: [String] = []
@@ -354,6 +358,7 @@ class McBopomofoInputMethodController: IMKInputController {
                         keyHandler.slothEEnglishMode
                             ? NSLocalizedString("English Mode", comment: "")
                             : NSLocalizedString("Chinese Mode", comment: ""))
+                    showModeHUD(keyHandler.slothEEnglishMode, caretRect(of: client))  // McBopomofoLM v3.4f
                     if keyHandler.slothEEnglishMode {
                         FirstUseNotices.shared.noteEnglishModeEntered()  // v3.3c: explained once, the first time
                     }
@@ -1101,6 +1106,29 @@ extension McBopomofoInputMethodController {
         }
 
         gCurrentCandidateController?.visible = true
+    }
+
+    /// The client's caret rectangle in screen coordinates (the line-height rectangle at the cursor of the composing
+    /// buffer, or of the insertion point when there is none), or nil when the client reports none: a rectangle at
+    /// the origin means "not supplied", as in the candidate window's lookup above. McBopomofoLM v3.4f.
+    func caretRect(of client: Any!) -> NSRect? {
+        guard let text = client as? IMKTextInput else { return nil }
+        var cursor = 0
+        if let notEmpty = state as? InputState.NotEmpty {
+            cursor = Int(notEmpty.cursorIndex)
+            if cursor == notEmpty.composingBuffer.count && cursor != 0 {
+                cursor -= 1
+            }
+        }
+        while cursor >= 0 {
+            var rect = NSRect.zero
+            _ = text.attributes(forCharacterIndex: cursor, lineHeightRectangle: &rect)
+            if rect.origin.x != 0 || rect.origin.y != 0 {
+                return rect
+            }
+            cursor -= 1
+        }
+        return nil
     }
 
     private func show(tooltip: String, composingBuffer: String, cursorIndex: UInt, client: Any!) {

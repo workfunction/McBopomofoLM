@@ -1,0 +1,4 @@
+beta=0.3: in-walk char=96.05% sent=75.2% (wrong in-span 123, needs-reseg 49) | +q35 char=96.35% sent=76.8%
+beta=0.5: in-walk char=95.77% sent=73.8% (wrong in-span 137, needs-reseg 47) | +q35 char=96.23% sent=76.0%
+beta=0.7: in-walk char=95.57% sent=73.2% (wrong in-span 148, needs-reseg 45) | +q35 char=95.91% sent=75.2%
+beta=1.0: in-walk char=95.40% sent=72.2% (wrong in-span 157, needs-reseg 43) | +q35 char=95.77% sent=74.2%

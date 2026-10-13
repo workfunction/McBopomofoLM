@@ -22,6 +22,7 @@
 #include "SlothEEngine.h"
 #include "SlothEPipeline.h"
 #include "SlothETypo.h"
+#include "SlothEV34TestSupport.h"
 #include "SlothEWalk.h"
 
 using McBopomofoSlothE::Engine;
@@ -59,10 +60,10 @@ static double InWalkMsSince(std::chrono::steady_clock::time_point t0)
 + (void)setUp
 {
     gInWalkEngine = [SlothERuntime.sharedLoadedRuntimeForTesting engine];
-    // McBopomofoLM with only the bundled data.txt: the same model walk2_cli uses.
-    gDataOnlyLM = std::make_shared<McBopomofo::McBopomofoLM>();
-    NSString *data = [NSBundle.mainBundle pathForResource:@"data" ofType:@"txt"];
-    gDataOnlyLM->loadLanguageModel(data.fileSystemRepresentation);
+    // McBopomofoLM with only the bundled data.txt: the same model walk2_cli uses. v3.4: without the 18 再 twins
+    // (SlothEV34TestSupport.h): the walk2 / W5 / W7 / W9 fixtures were made before them, and a twin changes the
+    // node boundaries of a few sentences (the twins' own effect is tested in SlothEDecoderTests).
+    gDataOnlyLM = V34::LoadDataWithoutTwins();
 }
 
 + (void)tearDown
@@ -739,6 +740,7 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
                 std::vector<std::string> readings(all.begin() + static_cast<std::ptrdiff_t>(s), all.begin() + static_cast<std::ptrdiff_t>(e));
                 McBopomofoSlothE::PipelineConfig config;
                 config.useDecoder = true;
+                config.decoder = McBopomofoSlothE::DecoderParams::V2();  // v3.4: the fixture's decoder scores are the v2 gate's (lambda 2, span only)
                 config.encoderContext = carried.encoderReadings();
                 config.decoderContext = carried.decoderText();
                 contextSame += config.encoderContext == Readings(entry[@"enc"]) && config.decoderContext == Bytes(entry[@"ctx"]);
@@ -839,6 +841,7 @@ class FixtureEncoder : public McBopomofoSlothE::EncoderBackend {
         auto snapshot = grid->snapshot();
         McBopomofoSlothE::PipelineConfig config;
         config.useDecoder = true;
+        config.decoder = McBopomofoSlothE::DecoderParams::V2();  // w9 config A: lambda 2 (the KeyHandler passes the same)
         McBopomofoSlothE::PauseGateResult result = McBopomofoSlothE::RunPauseGate(&engine, decoder, &scores, config, ++generation, readings, snapshot.get(), [] { return false; });
         XCTAssertTrue(result.encoder != nullptr && !result.stale && !result.skipped);
         if (result.encoder == nullptr) {

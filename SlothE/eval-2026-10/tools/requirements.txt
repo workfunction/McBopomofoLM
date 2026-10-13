@@ -1,0 +1,8 @@
+torch==2.14.1
+transformers==5.19.0
+onnxruntime==1.31.0
+numpy==2.5.4
+huggingface_hub
+g2pw==0.1.1
+requests
+opencc-python-reimplemented

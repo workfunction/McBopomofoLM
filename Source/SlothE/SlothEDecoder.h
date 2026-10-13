@@ -137,6 +137,9 @@ class Decoder {
   // v3.1b tests: nextTokenLogProbs calls made.
   uint64_t nextTokenCallCount() const { return nextCalls_.load(); }
   std::vector<size_t> loadedLengths() const;
+  // The largest sequence length the model accepts (96 with t16/t32/t64/t96;
+  // <bos> included); 0 before load. A request longer than this gets no scores.
+  size_t largestLength() const;
 
   static constexpr size_t kMaxContextChars = 64;
   static constexpr size_t kBatch = 3;
@@ -154,6 +157,8 @@ class Decoder {
 
 // The last maxChars code points of s.
 std::string TailChars(const std::string& s, size_t maxChars);
+// The first maxChars code points of s.
+std::string HeadChars(const std::string& s, size_t maxChars);
 
 }  // namespace McBopomofoSlothE
 

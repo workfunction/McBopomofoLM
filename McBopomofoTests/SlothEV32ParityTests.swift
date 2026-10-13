@@ -1,6 +1,6 @@
 // McBopomofoLM v3.2 L4 check: with the three v3.2 preferences OFF (pause gate,
-// legal-typo entry, Shift toggle) the key handler must behave exactly like
-// v3.1.2. The golden file SlothEFixtures/v32_parity_golden.jsonl was recorded
+// legal-typo entry, Shift toggle) and (v3.4) the whole-buffer decoder gate OFF, the
+// key handler must behave exactly like v3.1.2. The golden file SlothEFixtures/v32_parity_golden.jsonl was recorded
 // by running this same test on the clean v3.1.2 tree (d4d70e41):
 //   TEST_RUNNER_SLOTHE_PARITY_OUT=/abs/path/golden.jsonl xcodebuild test -only-testing:McBopomofoTests/SlothEV32ParityTests
 // Each row: a w7 dev sentence (first N of v31a_dev_chunks.jsonl) typed through a
@@ -15,7 +15,10 @@ import XCTest
 
 final class SlothEV32ParityTests: XCTestCase {
     static let sentenceCount = 100
-    static let v32Keys = ["SlothEPauseGateEnabled", "SlothETypoEntryEnabled", "SlothEShiftToggleEnabled"]
+    // v3.4: the fourth key is the whole-buffer decoder gate (hidden switch, SlothERuntime.mm): off = the v3.1.2
+    // per-key gate (candidate span only, lambda 2). The golden is v3.1.2's, so it is compared with that gate;
+    // only the 再 twins in data.txt (v3.4a) may differ (reports/v34-app.md).
+    static let v32Keys = ["SlothEPauseGateEnabled", "SlothETypoEntryEnabled", "SlothEShiftToggleEnabled", "SlothEDecoderFullBuffer"]
     var saved: [String: Any] = [:]
     var savedDefaults: [String: Any?] = [:]
 

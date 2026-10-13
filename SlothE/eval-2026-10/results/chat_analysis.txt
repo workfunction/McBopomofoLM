@@ -1,0 +1,26 @@
+general pool n=1497 units, 16366 chars
+  A       char=93.69%  sent=58.0%
+  inwalk  char=95.71%  sent=68.4%
+  B       char=96.10%  sent=71.1%
+  C       char=96.44%  sent=73.8%
+  D       char=96.44%  sent=73.8%
+  E       char=96.59%  sent=74.9%
+  C vs B: +0.34pt  95% CI [+0.18, +0.50]  fixed 113 / broken 57 chars
+  D vs C: +0.00pt  95% CI [+0.00, +0.00]  fixed 0 / broken 0 chars
+  E vs D: +0.15pt  95% CI [+0.07, +0.23]  fixed 35 / broken 11 chars
+  B vs A: +2.41pt  95% CI [+2.04, +2.78]  fixed 561 / broken 167 chars
+  E vs B: +0.49pt  95% CI [+0.32, +0.65]  fixed 128 / broken 48 chars
+error breakdown (general pool; in-span = gold is a unigram on the chosen span):
+  in-walk wrong chars: in-span 534, needs re-segmentation 168
+decoder requests per unit: mean 3.61, max 14
+ㄗㄞˋ positions: 3425 (在 2072, 再 1353)
+  A       acc=72.1%  在→在 2057 在→再 12 再→再 412 再→在 937 other 7
+  inwalk  acc=82.6%  在→在 2053 在→再 17 再→再 775 再→在 573 other 7
+  B       acc=86.3%  在→在 2038 在→再 31 再→再 919 再→在 422 other 15
+  C       acc=90.6%  在→在 2037 在→再 33 再→再 1065 再→在 278 other 12
+  D       acc=91.0%  在→在 2036 在→再 34 再→再 1082 再→在 261 other 12
+  E       acc=91.3%  在→在 2038 在→再 33 再→再 1090 再→在 255 other 9
+  McNemar D vs C: D fixes 17, breaks 1, p=0.000145
+  McNemar D vs B: D fixes 182, breaks 21, p=3.38e-33
+  McNemar C vs B: C fixes 165, breaks 20, p=1.45e-29
+  McNemar E vs D: E fixes 16, breaks 6, p=0.0525

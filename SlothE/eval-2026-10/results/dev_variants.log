@@ -1,0 +1,8 @@
+stock McBopomofo                             char=94.35% sent=67.0%
+in-walk only (no decoder)                    char=96.05% sent=75.2%
+current: q35 λ2 τ.5                          char=96.35% sent=76.8%
+q35 + sequential context                     char=96.37% sent=77.0%
+D512 λ2 τ.5                                  char=96.09% sent=75.2%
+D512 λ2 τ.5 + sequential                     char=96.16% sent=75.4%
+q35+0.25·D512 λ2 τ.6                         char=96.58% sent=78.4%
+q35+0.25·D512 λ2 τ.6 + sequential            char=96.62% sent=78.6%
