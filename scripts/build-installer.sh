@@ -127,7 +127,20 @@ fi
 codesign --verify --deep --strict "$IME_APP" || fail "the IME's code signature is not valid"
 IME_ARCHS="$(lipo -archs "$IME_APP/Contents/MacOS/$APP_NAME" 2>/dev/null || true)"
 case " $IME_ARCHS " in *" arm64 "*) ;; *) fail "the IME binary has no arm64 slice (found: ${IME_ARCHS:-none})" ;; esac
-echo "    IME and installer: $IME_SHORT (r$IME_BUILD), IME architectures: $IME_ARCHS"
+# A binary built with code coverage carries LLVM's profile writer, which drops default.profraw into
+# the working directory when the process exits (v3.3i/j shipped like that). nm must run and print
+# something before the symbols are counted: a failed nm prints nothing, which would read as "no
+# profiling" (v3.3l). The count goes through printf and `grep -c`, not `grep -q`, which would quit
+# early and SIGPIPE the writer under pipefail.
+no_profiling() { # <binary> <what>
+    local symbols count
+    symbols="$(nm "$1" 2>/dev/null)" || fail "nm could not read $2 ($1), so it cannot be checked for profile instrumentation"
+    [ -n "$symbols" ] || fail "nm printed no symbols for $2 ($1), so it cannot be checked for profile instrumentation"
+    count="$(printf '%s\n' "$symbols" | grep -c '__llvm_profile' || true)"
+    [ "$count" = 0 ] || fail "$2 contains LLVM profile instrumentation ($count symbols); build it with CLANG_COVERAGE_MAPPING=NO and the scheme's code coverage off"
+}
+no_profiling "$IME_APP/Contents/MacOS/$APP_NAME" "the IME"
+echo "    IME and installer: $IME_SHORT (r$IME_BUILD), IME architectures: $IME_ARCHS, no profiling"
 
 ZIP_NAME="$APP_NAME-r$IME_BUILD.zip"
 OUT_ZIP_NAME="McBopomofoLM-Installer-$IME_SHORT.zip"
@@ -179,6 +192,7 @@ if [ -n "${SOURCE_PACKAGES_DIR:-}" ]; then
 fi
 if ! (cd "$ROOT" && xcodebuild -project McBopomofo.xcodeproj -scheme McBopomofoInstaller \
     -configuration Release -derivedDataPath "$DERIVED" ${PACKAGE_ARGS[@]+"${PACKAGE_ARGS[@]}"} \
+    CLANG_COVERAGE_MAPPING=NO \
     ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGN_IDENTITY=- build >"$BUILD_LOG" 2>&1); then
     tail -60 "$BUILD_LOG" >&2
     fail "xcodebuild failed (the log was in the temp folder, shown above)"
@@ -191,6 +205,7 @@ BIN="$PRODUCT/Contents/MacOS/McBopomofoInstaller"
 ARCHS_FOUND="$(lipo -archs "$BIN")"
 case " $ARCHS_FOUND " in *" arm64 "*) ;; *) fail "no arm64 slice in the installer ($ARCHS_FOUND)" ;; esac
 case " $ARCHS_FOUND " in *" x86_64 "*) ;; *) fail "no x86_64 slice in the installer ($ARCHS_FOUND)" ;; esac
+no_profiling "$BIN" "the installer"
 BUILT_PLIST="$PRODUCT/Contents/Info.plist"
 [ "$(plist "$BUILT_PLIST" CFBundleVersion)" = "$IME_BUILD" ] || fail "the built installer's CFBundleVersion is not $IME_BUILD"
 [ "$(plist "$BUILT_PLIST" CFBundleShortVersionString)" = "$IME_SHORT" ] || fail "the built installer's CFBundleShortVersionString is not $IME_SHORT"

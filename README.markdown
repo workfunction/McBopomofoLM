@@ -49,7 +49,7 @@ xattr -dr com.apple.quarantine
 
 以下是真實使用的量測：M2、16 GB 記憶體，2026-10-02 到 10-13，版本 v3.2–v3.3。
 
-- 按鍵處理（按鍵到畫面）：P50 1.5 ms、P95 4.4 ms、P99 10.5 ms（n = 82,022）。
+- 按鍵處理函式耗時（不含 app 重繪）：P50 1.5 ms、P95 4.4 ms、P99 10.5 ms（n = 82,022）。
 - 模型在背景跑完一輪（encoder＋decoder）：P50 8.8 ms、P95 24 ms、P99 39 ms（n = 22,305）。模型在背景跑，不會擋住打字。
 - CPU：閒置時 0%；31 分鐘的正常使用只用了約 41 秒 CPU，因為模型主要跑在 Neural Engine 上。
 - 記憶體和硬碟用量見下面的「系統資源」。
@@ -61,9 +61,9 @@ xattr -dr com.apple.quarantine
 - 記憶體（輸入法 process 的 footprint）：平常 76–200 MB；尖峰 688 MB，出現在啟動時載入、編譯模型的時候。
 - 模型檔以 mmap 映射：總共 825 MB，實際駐留約 118 MB，主要是 encoder 的嵌入表（114 MB）。這類 file-backed 記憶體不計入 footprint；記憶體吃緊時 macOS 可以先釋放，之後再從硬碟讀回來，代價是下一次打字會稍微慢一點。
 - Neural Engine 的權重由系統驅動程式管理，不算在輸入法的帳上（要有 root 權限才看得到確切數字）。Apple 晶片的 CPU 和 Neural Engine 共用同一塊記憶體，Neural Engine 不會直接讀硬碟。整體實際占用估計約 300–400 MB。
-- 硬碟：app 160 MB（其中模型 140 MB），加上 Neural Engine 的編譯快取約 1.2 GB（`~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM/com.apple.e5rt.e5bundlecache`），合計約 1.5 GB。這份快取每次安裝或更新都會重新產生，約需 3 分鐘。安裝程式的「移除」**不會**刪掉它（它只把 app 丟進垃圾桶，並問你要不要刪使用者資料）；想一併清掉，請用「開發者」那一節「用終端機移除」裡的指令。
+- 硬碟：app 160 MB（其中模型 140 MB），加上 Neural Engine 的編譯快取約 1.2 GB（`~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM/com.apple.e5rt.e5bundlecache`），合計約 1.5 GB。這份快取每次安裝或更新都會重新產生，約需 3 分鐘。安裝程式的「移除」會把它一併刪掉（它可以再生，所以不另外詢問，最後的說明裡會告訴你）；用終端機移除的話，要自己刪，指令在「開發者」那一節的「用終端機移除」。
 - CPU：閒置 0%；正常使用 31 分鐘累計約 41 秒 CPU。
-- 延遲：按鍵到畫面 P50 1.5 ms、P95 4.4 ms、P99 10.5 ms；模型在背景跑完一輪 P50 8.8 ms、P95 24 ms、P99 39 ms（見上面的「效能」）。
+- 延遲：按鍵處理函式耗時（不含 app 重繪）P50 1.5 ms、P95 4.4 ms、P99 10.5 ms；模型在背景跑完一輪 P50 8.8 ms、P95 24 ms、P99 39 ms（見上面的「效能」）。
 - 在 macOS 的「活動監視器」裡看到的記憶體只包含第一項（footprint），所以看起來很低。
 
 ### 隱私
@@ -75,7 +75,7 @@ xattr -dr com.apple.quarantine
 ### 更新與移除
 
 - **更新**：下載新版，再打開新版的安裝程式（第一次打開一樣要放行一次）。它會先關掉舊版再安裝，目前正在使用「注音 LM」的話，會先幫你切換到 ABC。
-- **移除**：打開安裝程式，按視窗右上角的「移除」（電腦裡有裝才會出現），再按一次「移除」確認。它會關閉輸入法、把「小麥注音 LM」丟進垃圾桶，並詢問要不要一併刪除使用者資料（設定和使用者詞庫，在 `~/Library/Application Support/McBopomofoLM`）：「保留」是預設，要刪才選「移到垃圾桶」。Neural Engine 的編譯快取（約 1.2 GB，見「系統資源」）不在這個選項裡，不會被刪；要清掉的話，見「開發者」那一節的「用終端機移除」。
+- **移除**：打開安裝程式，按視窗右上角的「移除」（電腦裡有裝才會出現），再按一次「移除」確認。它會關閉輸入法、把「小麥注音 LM」丟進垃圾桶，並詢問要不要一併刪除使用者資料（設定和使用者詞庫，在 `~/Library/Application Support/McBopomofoLM`）：「保留」是預設，要刪才選「移到垃圾桶」。它也會把 Neural Engine 的編譯快取（約 1.2 GB，見「系統資源」）刪掉：那是可以再生的快取，所以不另外詢問，移除完成的說明裡會寫一句。
 
 ## 做了什麼
 

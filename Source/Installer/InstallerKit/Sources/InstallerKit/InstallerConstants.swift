@@ -28,6 +28,16 @@ public enum InstallerConstants {
         (NSHomeDirectory() as NSString).appendingPathComponent("Library/Input Methods")
     }
 
+    /// `~/Library/Caches`.
+    public static var cachesDirectory: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent("Library/Caches")
+    }
+
+    /// The Neural Engine compile cache of the input method (v3.3k: the removal deletes it).
+    public static var compileCacheDirectory: String {
+        (cachesDirectory as NSString).appendingPathComponent(bundleID)
+    }
+
     /// The input method's user data folder (user phrases, settings, the optional diagnostics log).
     public static var userDataDirectory: String {
         (NSHomeDirectory() as NSString)

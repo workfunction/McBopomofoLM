@@ -461,6 +461,14 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         _ = try? await background { try ProcessRunner.run("/usr/bin/killall", ["-9", kTargetBin]) }
     }
 
+    /// Is a process of the input method (this bundle identifier, from whatever path: also a
+    /// translocated copy; the compile cache is keyed by the identifier) still around? `killall`'s
+    /// status only says that a signal was sent.
+    private func imeProcessIsRunning() -> Bool {
+        NSRunningApplication.runningApplications(withBundleIdentifier: InstallerConstants.bundleID)
+            .contains { !$0.isTerminated }
+    }
+
     /// Lets the run loop turn between two looks at the input source list.
     private func pause() {
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -500,6 +508,7 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
             pause: { self.pause() },
             offMain: { work in try await self.background(work) },
             killOldProcess: { await self.killOldProcess() },
+            isOldProcessRunning: { self.imeProcessIsRunning() },
             waitForTranslocationRemoval: { await self.waitForTranslocationRemoval() },
             moveToTrash: { try await self.recycle($0.path) },
             willRun: { step, index, total in
@@ -687,10 +696,14 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         let installedPath = (kTargetPartialPath as NSString).expandingTildeInPath
         let userData = InstallerConstants.userDataDirectory
         let appExists = FileManager.default.fileExists(atPath: installedPath)
+        let compileCache = InstallerConstants.compileCacheDirectory
         let steps = UninstallPlan.steps(
             userDataExists: FileManager.default.fileExists(atPath: userData),
-            appExists: appExists)
+            appExists: appExists,
+            compileCacheExists: CompileCache.exists(at: compileCache))
         var userDataTrashed = false
+        var compileCacheOutcome: CompileCache.Outcome?
+        var processStop = ProcessStop.Result.gone
         do {
             try await InstallRunner.runAsync(steps, willRun: { step, index, total in
                 self.showStep(title(for: step), index: index, total: total)
@@ -714,6 +727,9 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
                     }
                 case .stopProcess:
                     await killOldProcess()
+                    // Up to 5 s for the process to be really gone; the compile cache is deleted
+                    // only if it is (the summary says so otherwise).
+                    processStop = await ProcessStop.waitUntilGone(isRunning: { self.imeProcessIsRunning() })
                 case .moveToTrash:
                     do {
                         try await recycle(installedPath)
@@ -721,6 +737,16 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
                         throw StepFailure(
                             title: NSLocalizedString("Remove Failed", comment: ""),
                             message: String(format: NSLocalizedString("Cannot remove the existing version at %@, error: %@", comment: ""), installedPath, error.localizedDescription))
+                    }
+                case .removeCompileCache:
+                    // A regenerable cache of the Neural Engine models (about 1.2 GB), deleted
+                    // after the app was stopped and trashed. No question. A refusal or a failure
+                    // does not fail the removal; the summary says so.
+                    let stop = processStop
+                    compileCacheOutcome = try await background {
+                        CompileCache.removeAfterStop(
+                            stop, cachesDirectory: InstallerConstants.cachesDirectory,
+                            bundleID: InstallerConstants.bundleID)
                     }
                 case .askAboutUserData:
                     if askAboutUserData(path: userData) == .moveToTrash {
@@ -747,6 +773,16 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         var message = appExists
             ? NSLocalizedString("McBopomofo LM has been moved to the Trash. If it still shows up in the input menu, please log out or restart your Mac.", comment: "")
             : NSLocalizedString("McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac.", comment: "")
+        switch compileCacheOutcome {
+        case .removed?:
+            message += "\n\n" + NSLocalizedString("The Neural Engine compile cache of the models was deleted as well.", comment: "")
+        case .refused?, .failed?:
+            message += "\n\n" + String(format: NSLocalizedString("The compile cache of the models could not be deleted. You can delete the folder %@ yourself.", comment: ""), (compileCache as NSString).abbreviatingWithTildeInPath)
+        case .skippedProcessRunning?:
+            message += "\n\n" + String(format: NSLocalizedString("McBopomofo LM was still running, so its compile cache was not deleted. Log out and in again, then delete the folder %@ yourself.", comment: ""), (compileCache as NSString).abbreviatingWithTildeInPath)
+        case .notThere?, nil:
+            break
+        }
         if !userDataTrashed && FileManager.default.fileExists(atPath: userData) {
             message += "\n\n" + String(format: NSLocalizedString("Your user phrases and settings were kept in %@.", comment: ""), (userData as NSString).abbreviatingWithTildeInPath)
         }
@@ -789,6 +825,7 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .disableInputSources: return NSLocalizedString("Turning off the input method…", comment: "")
         case .stopProcess: return NSLocalizedString("Stopping McBopomofo LM…", comment: "")
         case .moveToTrash: return NSLocalizedString("Moving McBopomofo LM to the Trash…", comment: "")
+        case .removeCompileCache: return NSLocalizedString("Deleting the compile cache of the models…", comment: "")
         case .askAboutUserData: return NSLocalizedString("Your user data", comment: "")
         }
     }
@@ -882,6 +919,9 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .installCommandFailed(let code, _):
             headline = NSLocalizedString("McBopomofo LM was copied, but could not be registered as an input method.", comment: "")
             detail = status(code)
+        case .cannotStopOldProcess:
+            headline = NSLocalizedString("The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again.", comment: "")
+            detail = nil
         case .cannotLeaveMcBopomofoLM:
             headline = NSLocalizedString("McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed.", comment: "")
             detail = nil

@@ -40,6 +40,7 @@ cat >"$WORK/bin/xcodebuild" <<'STUB'
 # Stub: -version works; a build makes a fake product the way Xcode would (Info.plist, a binary,
 # the NotarizedArchives folder copied without .DS_Store), unless STUB_XCODEBUILD says otherwise.
 [ "${1:-}" = "-version" ] && { echo "Xcode (stub)"; exit 0; }
+echo "$*" >"$STUB_REPO/xcodebuild-args"
 dd=""
 while [ $# -gt 0 ]; do [ "$1" = "-derivedDataPath" ] && dd="$2"; shift; done
 echo "$dd" >"$STUB_REPO/dd-path"
@@ -80,6 +81,18 @@ exec /usr/bin/getconf "$@"
 STUB
 printf '#!/bin/bash\nexit 0\n' >"$WORK/bin/codesign"
 printf '#!/bin/bash\necho "x86_64 arm64"\n' >"$WORK/bin/lipo"
+# nm stub (v3.3l): ordinary symbols by default; STUB_NM=profiled adds LLVM's profile runtime,
+# fail = nm cannot read the file (status 1, nothing on stdout), empty = status 0 and no output.
+cat >"$WORK/bin/nm" <<'STUB'
+#!/bin/bash
+case "${STUB_NM:-}" in
+fail) echo "nm: file format not recognized" >&2; exit 1 ;;
+empty) exit 0 ;;
+esac
+echo "0000000000001000 T _main"
+[ "${STUB_NM:-}" = profiled ] && echo "0000000000002000 S ___llvm_profile_runtime"
+exit 0
+STUB
 chmod +x "$WORK/bin/"*
 
 # ---- fixtures --------------------------------------------------------------------------------
@@ -187,6 +200,24 @@ check "an existing output file makes the script refuse" $([ "$status" -ne 0 ] &&
 check "...and the output folder is untouched" \
     $([ "$(cat "$repo/out/McBopomofoLM-Installer-3.3.0.zip")" = precious ] && [ -e "$repo/out/other" ] && echo 0 || echo 1)
 check "...and the repository folder is as it was" $([ "$(ls -A "$repo/Source/Installer/NotarizedArchives")" = ".gitkeep" ] && echo 0 || echo 1)
+
+# ---- 4b. coverage (v3.3k): the build is told not to, and a profiled binary is refused -----------
+check "the installer build runs with CLANG_COVERAGE_MAPPING=NO" \
+    $(yes_if grep -q -- "CLANG_COVERAGE_MAPPING=NO" "$WORK/r1/xcodebuild-args")
+repo="$(new_repo r4b)"
+run "$repo" STUB_NM=profiled
+check "an IME with LLVM profile instrumentation is refused" \
+    $([ "$status" -ne 0 ] && echo "$out" | grep -q "profile instrumentation" && echo 0 || echo 1)
+check "...before anything was added or built" \
+    $([ "$(ls -A "$repo/Source/Installer/NotarizedArchives")" = ".gitkeep" ] && [ -z "$(ls -A "$repo/out")" ] && [ ! -e "$repo/dd-path" ] && echo 0 || echo 1)
+for mode in fail empty; do
+    repo="$(new_repo r4c-$mode)"
+    run "$repo" STUB_NM=$mode
+    check "an nm that ${mode}s makes the script refuse instead of reading it as 'no profiling'" \
+        $([ "$status" -ne 0 ] && echo "$out" | grep -q "cannot be checked for profile instrumentation" && echo 0 || echo 1)
+    check "...before anything was added or built ($mode)" \
+        $([ "$(ls -A "$repo/Source/Installer/NotarizedArchives")" = ".gitkeep" ] && [ -z "$(ls -A "$repo/out")" ] && [ ! -e "$repo/dd-path" ] && echo 0 || echo 1)
+done
 
 # ---- 5. a failing build is cleaned up -----------------------------------------------------------
 repo="$(new_repo r5)"

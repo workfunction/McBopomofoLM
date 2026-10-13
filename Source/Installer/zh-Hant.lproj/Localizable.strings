@@ -118,3 +118,12 @@
 "Almost done…" = "即將完成…";
 "The models are ready." = "模型已準備好。";
 "The models are prepared, but not all of them run on the Neural Engine." = "模型已準備好，但並非所有模型都能在 Neural Engine 上執行。";
+
+/* Removal also deletes the Neural Engine compile cache (v3.3k) */
+"Deleting the compile cache of the models…" = "正在刪除模型的編譯快取…";
+"The Neural Engine compile cache of the models was deleted as well." = "模型的 Neural Engine 編譯快取也已刪除。";
+"The compile cache of the models could not be deleted. You can delete the folder %@ yourself." = "無法刪除模型的編譯快取。您可以自行刪除這個資料夾：%@";
+
+/* The old process must be gone before anything is replaced or deleted (v3.3l) */
+"McBopomofo LM was still running, so its compile cache was not deleted. Log out and in again, then delete the folder %@ yourself." = "小麥注音 LM 還在執行，所以沒有刪除它的模型編譯快取。請先登出再登入，然後自行刪除這個資料夾：%@";
+"The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again." = "無法停止目前安裝的小麥注音 LM，所以沒有更動任何東西。請先登出再登入，然後重新打開安裝程式。";

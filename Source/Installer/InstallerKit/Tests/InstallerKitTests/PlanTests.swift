@@ -180,6 +180,29 @@ struct UninstallPlanTests {
             ])
     }
 
+    @Test func theCompileCacheGoesAfterTheAppIsStoppedAndTrashedAndBeforeTheQuestion() {
+        let steps = UninstallPlan.steps(
+            userDataExists: true, appExists: true, compileCacheExists: true)
+        #expect(
+            steps == [
+                .selectASCIIInputSource, .disableInputSources, .stopProcess, .moveToTrash,
+                .removeCompileCache, .askAboutUserData,
+            ])
+        // also when the app is gone already, and with nothing to ask
+        #expect(
+            UninstallPlan.steps(userDataExists: false, appExists: false, compileCacheExists: true)
+                == [.selectASCIIInputSource, .disableInputSources, .stopProcess, .removeCompileCache])
+        // never before the process is stopped
+        let order = steps.firstIndex(of: .stopProcess)! < steps.firstIndex(of: .removeCompileCache)!
+        #expect(order)
+        #expect(
+            steps.firstIndex(of: .disableInputSources)! < steps.firstIndex(of: .removeCompileCache)!)
+    }
+
+    @Test func noCacheNoStep() {
+        #expect(!UninstallPlan.steps(userDataExists: true).contains(.removeCompileCache))
+    }
+
     @Test func userDataIsKeptByDefault() {
         #expect(UserDataChoice.default == .keep)
     }

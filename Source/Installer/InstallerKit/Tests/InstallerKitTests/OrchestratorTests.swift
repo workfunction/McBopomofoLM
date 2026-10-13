@@ -98,7 +98,8 @@ struct OrchestratorTests {
     /// the app; every other effect records whether it ran on the main thread.
     private func environment(
         _ setup: Setup, ops: FakeInputSources, translocationGone: Bool = true,
-        willRun: @escaping @MainActor (InstallStep) -> Void = { _ in }
+        willRun: @escaping @MainActor (InstallStep) -> Void = { _ in },
+        isOldProcessRunning: @escaping @MainActor () -> Bool = { false }
     ) -> InstallEnvironment {
         let log = setup.log
         log.ops = ops
@@ -123,6 +124,8 @@ struct OrchestratorTests {
                 // Where the keystrokes go at the moment the old IME is killed.
                 log.addOnMain("kill (current: \(ops.currentID ?? "none"))")
             },
+            isOldProcessRunning: isOldProcessRunning,
+            sleep: { _ in log.addOnMain("sleep") },  // the wait between two looks: not really waited
             waitForTranslocationRemoval: {
                 log.addOnMain("wait translocation")
                 return translocationGone
@@ -449,5 +452,73 @@ struct OrchestratorTests {
         }
         #expect(!setup.log.all.contains { $0.hasPrefix("models prepared") })
         #expect(state.phase == .failed)
+    }
+    // MARK: The old process must be gone before anything is replaced (v3.3l)
+
+    /// A fake process layer: running for the first `looks` looks, then gone. `Int.max` = never.
+    @MainActor private final class FakeProcess {
+        var looks = 0
+        let runsFor: Int
+        init(runsFor: Int) { self.runsFor = runsFor }
+        func isRunning() -> Bool {
+            looks += 1
+            return looks <= runsFor
+        }
+    }
+
+    @Test func theUpgradeWaitsForTheOldProcessToExitAndThenGoesOn() async throws {
+        let setup = makeSetup()
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        let process = FakeProcess(runsFor: 3)  // still there for three looks after the kill
+        let env = environment(setup, ops: ops, isOldProcessRunning: { process.isRunning() })
+        let outcome = try await InstallOrchestrator.run(
+            steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+            environment: env)
+        #expect(outcome == InstallOutcome())
+        let log = setup.log.all
+        #expect(process.looks == 4)
+        #expect(log.filter { $0 == "sleep" }.count == 3)
+        // killed first, looked at, and only then the new version was copied in
+        let kill = try #require(log.firstIndex { $0.hasPrefix("kill") })
+        let copy = try #require(log.firstIndex(of: "step copy"))
+        #expect(kill < copy)
+        #expect(VersionCheck.readVersions(ofAppAt: setup.oldApp).build == "2600")
+    }
+
+    @Test func anOldProcessThatDoesNotExitStopsTheUpgradeAndTheOldVersionComesBack() async throws {
+        let setup = makeSetup()
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        let process = FakeProcess(runsFor: .max)
+        let env = environment(setup, ops: ops, isOldProcessRunning: { process.isRunning() })
+        do {
+            _ = try await InstallOrchestrator.run(
+                steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+                environment: env)
+            Issue.record("expected the upgrade to stop")
+        } catch let failure as InstallFailure {
+            #expect(failure.underlying as? InstallerError == .cannotStopOldProcess)
+            guard case .restored = failure.restore else {
+                Issue.record("the old version should have been put back")
+                return
+            }
+        }
+        let log = setup.log.all
+        // looked for the whole timeout (50 looks 0.1 s apart), and then nothing was installed
+        #expect(log.filter { $0 == "sleep" }.count == 50)
+        #expect(!log.contains("step copy") && !log.contains("step runInstall"))
+        #expect(marker(setup.oldApp) == "old")
+        #expect(!log.contains { $0.hasPrefix("trash") })
+    }
+
+    @Test func aProcessThatIsAlreadyGoneIsNotWaitedFor() async throws {
+        let setup = makeSetup()
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        _ = try await InstallOrchestrator.run(
+            steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+            environment: environment(setup, ops: ops))
+        #expect(!setup.log.all.contains("sleep"))
     }
 }

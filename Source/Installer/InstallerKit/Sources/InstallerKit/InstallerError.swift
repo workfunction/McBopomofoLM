@@ -50,6 +50,8 @@ public enum InstallerError: Error, Equatable, CustomStringConvertible {
     case cannotLeaveMcBopomofoLM
     /// A failed upgrade could not put the old version back; it is at `backup`.
     case cannotRestoreOld(backup: String, reason: String)
+    /// The old input method was still running 5 s after it was killed (v3.3l).
+    case cannotStopOldProcess
 
     public var description: String {
         switch self {
@@ -85,6 +87,8 @@ public enum InstallerError: Error, Equatable, CustomStringConvertible {
             return "McBopomofoLM is the current input source and the switch to ABC did not take"
         case .cannotRestoreOld(let backup, let reason):
             return "cannot put the old version back from \(backup): \(reason)"
+        case .cannotStopOldProcess:
+            return "the installed McBopomofoLM was still running after it was killed"
         }
     }
 }

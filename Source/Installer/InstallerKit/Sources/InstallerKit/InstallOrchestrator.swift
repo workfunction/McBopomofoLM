@@ -52,6 +52,11 @@ public struct InstallEnvironment {
     /// waits for it. The app uses a background queue; tests may run it in place or on a queue.
     public var offMain: @MainActor (@escaping @Sendable () throws -> Void) async throws -> Void
     public var killOldProcess: @MainActor () async -> Void
+    /// Is a process of the old input method left? Looked at after `killOldProcess` (v3.3l); the
+    /// upgrade stops with `cannotStopOldProcess` when it is still there after `ProcessStop.timeout`.
+    public var isOldProcessRunning: @MainActor () -> Bool
+    /// The wait between two looks; tests do not really wait.
+    public var sleep: @MainActor (TimeInterval) async -> Void
     /// Waits for Gatekeeper to drop the translocated old copy; false when it is still there.
     public var waitForTranslocationRemoval: @MainActor () async -> Bool
     public var moveToTrash: @MainActor (URL) async throws -> Void
@@ -67,6 +72,10 @@ public struct InstallEnvironment {
         inputSources: any InputSourceOperations, pause: @escaping @MainActor () -> Void,
         offMain: @escaping @MainActor (@escaping @Sendable () throws -> Void) async throws -> Void,
         killOldProcess: @escaping @MainActor () async -> Void,
+        isOldProcessRunning: @escaping @MainActor () -> Bool = { false },
+        sleep: @escaping @MainActor (TimeInterval) async -> Void = { seconds in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        },
         waitForTranslocationRemoval: @escaping @MainActor () async -> Bool,
         moveToTrash: @escaping @MainActor (URL) async throws -> Void,
         willRun: @escaping @MainActor (InstallStep, Int, Int) -> Void = { _, _, _ in },
@@ -79,6 +88,8 @@ public struct InstallEnvironment {
         self.pause = pause
         self.offMain = offMain
         self.killOldProcess = killOldProcess
+        self.isOldProcessRunning = isOldProcessRunning
+        self.sleep = sleep
         self.waitForTranslocationRemoval = waitForTranslocationRemoval
         self.moveToTrash = moveToTrash
         self.willRun = willRun
@@ -151,6 +162,11 @@ public enum InstallOrchestrator {
                     case .stopOldProcess:
                         try leaveMcBopomofoLM()
                         await env.killOldProcess()
+                        // Nothing is replaced, and no new compile starts, while the old input
+                        // method may still be running: stop here and put the old version back.
+                        let stopped = await ProcessStop.waitUntilGone(
+                            isRunning: env.isOldProcessRunning, sleep: env.sleep)
+                        if stopped == .stillRunning { throw InstallerError.cannotStopOldProcess }
                     case .waitForTranslocationRemoval:
                         if !(await env.waitForTranslocationRemoval()) {
                             outcome.value.needsRelogin = true

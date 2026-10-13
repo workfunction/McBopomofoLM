@@ -73,13 +73,16 @@ public enum UninstallStep: String, Equatable, CaseIterable, Sendable {
     case stopProcess
     /// Only when the app is still there.
     case moveToTrash
+    /// v3.3k: delete the Neural Engine compile cache (`CompileCache`), a regenerable cache, so no
+    /// question; only after the input sources are off and the process is stopped.
+    case removeCompileCache
     /// Ask whether to delete `~/Library/Application Support/McBopomofoLM`; the default is keep.
     case askAboutUserData
 }
 
 public enum UninstallPlan {
     public static func steps(
-        userDataExists: Bool, appExists: Bool = true
+        userDataExists: Bool, appExists: Bool = true, compileCacheExists: Bool = false
     ) -> [UninstallStep] {
         // The switch to ABC is always planned; it does nothing unless McBopomofoLM is current
         // when it runs.
@@ -87,6 +90,11 @@ public enum UninstallPlan {
         steps.append(contentsOf: [.disableInputSources, .stopProcess])
         if appExists {
             steps.append(.moveToTrash)
+        }
+        // After the process is stopped (nothing can write to it) and the app is gone, before the
+        // one question the user is asked.
+        if compileCacheExists {
+            steps.append(.removeCompileCache)
         }
         if userDataExists {
             steps.append(.askAboutUserData)
