@@ -217,6 +217,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NonModalAlertWindowControlle
         serviceProvider.delegate = (serviceProviderHelper as! any ServiceProviderDelegate)
         NSApp.servicesProvider = serviceProvider
 
+        // McBopomofoLM v3.4h: selecting another input source (ABC, ...) ends English mode, so coming back is Chinese.
+        if !SlothERuntime.runningUnderXCTest {
+            McBopomofoInputMethodController.startWatchingInputSource()
+        }
+
         enableBopomofoFontAnnotationSupportMenuItemIfRelevantFontsInstalled()
 
         // McBopomofoLM side-by-side test build: no update check at all (compiled

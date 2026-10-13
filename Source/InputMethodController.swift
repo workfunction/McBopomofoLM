@@ -54,6 +54,18 @@ class McBopomofoInputMethodController: IMKInputController {
     var currentClient: Any?
     var keyHandler: KeyHandler = KeyHandler()
     var state: InputState = InputState.Empty()
+
+    /// McBopomofoLM v3.4i (Sol r42): every controller that is alive (weak), so that leaving for another input source
+    /// can bring each one's own English mode and composing-state marker back in line with the cleared global flag.
+    static let liveControllers = NSHashTable<McBopomofoInputMethodController>.weakObjects()
+    /// Moves on each time the user selects an input source that is not ours. A Shift tap remembers the epoch its press
+    /// began in; if the epoch moved before its release it toggles nothing.
+    static var inputSourceEpoch = 0
+    private var shiftTapEpoch = 0
+    private var shiftIsDown = false
+    /// False from deactivateServer, or from a leave for another input source, until the next activateServer: a controller
+    /// that does not have the input source cannot toggle the process-wide flag.
+    private var ownsInputSource = true
     /// McBopomofoLM v3.2c: a single tap of Shift toggles Chinese / English.
     var shiftTapDetector = ShiftTapDetector()
     /// The text of a mode change ("English Mode" / "Chinese Mode"). Since v3.4f nothing is shown for it (the black
@@ -84,6 +96,32 @@ class McBopomofoInputMethodController: IMKInputController {
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         keyHandler.delegate = self
+        Self.liveControllers.add(self)  // McBopomofoLM v3.4i
+    }
+
+    /// McBopomofoLM v3.4i: the user selected an input source that is not ours (InputSourceLeaveWatcher). English mode ends
+    /// everywhere: the epoch moves on (a Shift tap that began earlier toggles nothing), the process-wide flag is cleared
+    /// (the menu-bar "A" follows it), and each live controller drops its own English mode and the English marker of its
+    /// composing state (a thick underline) without touching the composing text.
+    static func handleLeftInputSource() {
+        inputSourceEpoch += 1
+        slothEGlobalEnglishMode = false
+        for controller in liveControllers.allObjects {
+            controller.syncAfterLeavingInputSource()
+        }
+    }
+
+    func syncAfterLeavingInputSource() {
+        ownsInputSource = false
+        shiftTapDetector.reset()
+        shiftIsDown = false
+        keyHandler.slothEEnglishMode = false
+        if let inputting = state as? InputState.Inputting, inputting.englishMode {
+            let cleared = InputState.Inputting(composingBuffer: inputting.composingBuffer, cursorIndex: inputting.cursorIndex)
+            cleared.tooltip = inputting.tooltip
+            cleared.englishMode = false
+            handle(state: cleared, client: currentClient)
+        }
     }
 
     deinit {
@@ -261,6 +299,7 @@ class McBopomofoInputMethodController: IMKInputController {
             withKeyboardNamed: Preferences.basisKeyboardLayout)
         // reset the state
         currentClient = client
+        ownsInputSource = true  // McBopomofoLM v3.4i
 
         keyHandler.clear()
         keyHandler.syncWithPreferences()
@@ -282,6 +321,7 @@ class McBopomofoInputMethodController: IMKInputController {
 
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
+        ownsInputSource = false  // McBopomofoLM v3.4i
         EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(self))  // McBopomofoLM v3.3d
         keyHandler.clear()
         // McBopomofoLM v3.2i: the composing buffer is committed or cleared as before; the English mode stays.
@@ -346,10 +386,24 @@ class McBopomofoInputMethodController: IMKInputController {
         }
 
         if event.type == .flagsChanged {
+            // McBopomofoLM v3.4i: the input-source epoch a Shift press began in (the release that completes the tap
+            // checks it).
+            if event.modifierFlags.contains(.shift) {
+                if !shiftIsDown {
+                    shiftIsDown = true
+                    shiftTapEpoch = Self.inputSourceEpoch
+                }
+            } else {
+                shiftIsDown = false
+            }
             // McBopomofoLM v3.2c: a single tap of Shift (down and up within 250 ms, no key in between)
             // toggles Chinese / English and keeps the composing buffer. Also with an empty buffer (M1).
             if Preferences.slothEShiftToggleEnabled && keyHandler.inputMode == .bopomofo {
-                if shiftTapDetector.flagsChanged(event.modifierFlags, timestamp: event.timestamp),
+                let tapped = shiftTapDetector.flagsChanged(event.modifierFlags, timestamp: event.timestamp)
+                // v3.4i: a tap that began before the user left for another input source, or that reaches a controller
+                // which no longer has the source, toggles nothing and writes nothing into the global flag.
+                let valid = tapped && ownsInputSource && shiftTapEpoch == Self.inputSourceEpoch
+                if valid,
                     keyHandler.slothEToggleEnglishMode(
                         from: state, stateCallback: { newState in self.handle(state: newState, client: client) })
                 {
