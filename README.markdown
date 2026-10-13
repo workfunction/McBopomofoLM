@@ -17,7 +17,7 @@
 
 這個輸入法沒有 Apple 的開發者簽章（沒有付 Apple 的年費），所以第一次打開安裝程式時，macOS 會擋下來，要你到「系統設定」放行一次。照下面做就好，不需要用終端機。
 
-1. 到 [Releases](https://github.com/workfunction/McBopomofoLM/releases) 下載最新的 `McBopomofoLM-Installer-3.3.0.zip`。到「下載項目」雙擊它解壓縮，會得到安裝程式「安裝小麥注音 LM」（檔案本身叫 `McBopomofoInstaller.app`）。
+1. 到 [Releases](https://github.com/workfunction/McBopomofoLM/releases) 下載最新的 `McBopomofoLM-Installer-3.4.0.zip`。到「下載項目」雙擊它解壓縮，會得到安裝程式「安裝小麥注音 LM」（檔案本身叫 `McBopomofoInstaller.app`）。
 2. 雙擊「安裝小麥注音 LM」。macOS 會跳出「Apple 無法驗證…」之類的警告，按「完成」（**不要**按「移到垃圾桶」）。
 3. 打開「系統設定 → 隱私權與安全性」，往下捲到「安全性」。會看到一行「已阻擋「安裝小麥注音 LM」…」，按旁邊的「仍要打開」。
    - 這個按鈕只會在你剛剛被擋下之後的一段時間（約一小時）內出現。找不到的話，回到步驟 2 再雙擊一次安裝程式，然後馬上回來看。
@@ -109,10 +109,10 @@ xattr -dr com.apple.quarantine
 
 ### 用終端機安裝（不用安裝程式）
 
-發佈的 zip 裡只有圖形安裝程式（`McBopomofoLM-Installer-3.3.0.zip`，裡面是 `McBopomofoInstaller.app`）。要從終端機安裝，可以把安裝程式內嵌的 IME 取出（模型已經包在裡面），或是自己編譯（見下面「自行編譯」）：
+發佈的 zip 裡只有圖形安裝程式（`McBopomofoLM-Installer-3.4.0.zip`，裡面是 `McBopomofoInstaller.app`）。要從終端機安裝，可以把安裝程式內嵌的 IME 取出（模型已經包在裡面），或是自己編譯（見下面「自行編譯」）：
 
 ```bash
-mkdir -p /tmp/mcbpmf && unzip -q -d /tmp/mcbpmf McBopomofoInstaller.app/Contents/Resources/NotarizedArchives/McBopomofoLM-r2600.zip
+mkdir -p /tmp/mcbpmf && unzip -q -d /tmp/mcbpmf McBopomofoInstaller.app/Contents/Resources/NotarizedArchives/McBopomofoLM-r2601.zip
 cd /tmp/mcbpmf   # 裡面就是 McBopomofoLM.app
 ```
 
@@ -151,7 +151,7 @@ defaults delete org.openvanilla.inputmethod.McBopomofoLM
 
 - 每版的發佈說明在 `release/<版本>/NOTES.md`，裡面有 IME 本體（`McBopomofoLM.app/Contents/MacOS/McBopomofoLM`）和 zip 的 SHA-256。下載後可以核對：
   ```bash
-  shasum -a 256 McBopomofoLM-Installer-3.3.0.zip
+  shasum -a 256 McBopomofoLM-Installer-3.4.0.zip
   ```
 - 安裝程式（universal：arm64 + x86_64，Intel 的 Mac 只會看到說明）把 IME 的 zip 放在自己的 `Contents/Resources/NotarizedArchives/McBopomofoLM-r<build>.zip`，zip 裡是 ad-hoc 簽署的 `McBopomofoLM.app`。用 `codesign --verify --deep --strict McBopomofoLM.app` 驗證簽章結構。
 - 發佈內容不含任何 Apple 公證；這是 v3.3 的設計（見 `PLAN.md` §22）。

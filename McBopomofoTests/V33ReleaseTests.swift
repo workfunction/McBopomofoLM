@@ -26,8 +26,8 @@ final class V33ReleaseTests: XCTestCase {
     func testTheImeAndTheInstallerShareOneVersion() throws {
         let ime = try plist("Source/McBopomofo-Info.plist")
         let installer = try plist("Source/Installer/Installer-Info.plist")
-        XCTAssertEqual(ime["CFBundleShortVersionString"] as? String, "3.3.0")
-        XCTAssertEqual(installer["CFBundleShortVersionString"] as? String, "3.3.0")
+        XCTAssertEqual(ime["CFBundleShortVersionString"] as? String, "3.4.0")
+        XCTAssertEqual(installer["CFBundleShortVersionString"] as? String, "3.4.0")
         let imeBuild = try XCTUnwrap(ime["CFBundleVersion"] as? String)
         let installerBuild = try XCTUnwrap(installer["CFBundleVersion"] as? String)
         XCTAssertEqual(imeBuild, installerBuild)
