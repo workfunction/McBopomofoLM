@@ -89,32 +89,18 @@ let kRunningAsTestHost = ProcessInfo.processInfo.environment["XCTestConfiguratio
 /// rename the app after this step. Models that cannot run on the ANE are not
 /// used (the input method then behaves like stock McBopomofo), which is
 /// reported here; registration goes ahead either way.
-private let kInstallOK = "McBopomofoLM: both models run on the Neural Engine."
-private let kInstallWarning =
-    "McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above. Those models are not used"
-    + " (no encoder = stock McBopomofo; no decoder = encoder-only). The input method retries at every start."
-
 /// v3.1.2: on a terminal, one progress line and a short summary; with
 /// `--verbose` or a non-terminal stdout, every detailed line as before.
+/// v3.3i: `--progress-lines` (the GUI installer) adds PROGRESS lines; see InstallLoadOutput.
 /// `load` runs the model load, reporting each detailed line to its argument.
-private func runInstallLoad(verbose: Bool, _ load: (@escaping (String) -> Void) -> Bool) {
+private func runInstallLoad(verbose: Bool, progressLines: Bool, _ load: (@escaping (String) -> Void) -> Bool) {
     let out = FileHandle.standardOutput
     func write(_ s: String) { out.write(s.data(using: .utf8)!) }
-    write("McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 3 minutes)...\n")
-    if verbose || isatty(STDOUT_FILENO) == 0 {
-        let ok = load { write($0 + "\n") }
-        write((ok ? kInstallOK : kInstallWarning) + "\n")
-        return
-    }
-    let bar = InstallProgressBar(write: write)
-    defer { bar.stop() }
-    bar.begin()
-    let ok = load { bar.line($0) }
-    bar.finish(finalLine: ok ? kInstallOK : kInstallWarning)
+    InstallLoadOutput.run(verbose: verbose, progressLines: progressLines, isTTY: isatty(STDOUT_FILENO) != 0, write: write, load)
 }
 
 private func compileModelsForInstall() {
-    runInstallLoad(verbose: CommandLine.arguments.contains("--verbose")) { report in
+    runInstallLoad(verbose: CommandLine.arguments.contains("--verbose"), progressLines: CommandLine.arguments.contains("--progress-lines")) { report in
         SlothERuntime.shared.loadForInstall { report($0) }
     }
 }
@@ -123,7 +109,7 @@ private func compileModelsForInstall() {
 /// load lines with short sleeps. No Core ML, no cache, no registration.
 private func progressDemo() {
     let warn = ProcessInfo.processInfo.environment["MCBPMF_LM_PROGRESS_DEMO"] == "warn"
-    runInstallLoad(verbose: CommandLine.arguments.contains("--verbose")) { report in
+    runInstallLoad(verbose: CommandLine.arguments.contains("--verbose"), progressLines: CommandLine.arguments.contains("--progress-lines")) { report in
         func step(_ line: String, _ s: Double) {
             Thread.sleep(forTimeInterval: s)
             report(line)

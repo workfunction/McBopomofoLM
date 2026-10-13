@@ -111,3 +111,10 @@
 "Version found: %@, expected: %@" = "Version found: %1$@, expected: %2$@";
 "Version found: r%@, expected: r%@" = "Version found: r%1$@, expected: r%2$@";
 "Warning: not every model can run on the Neural Engine." = "Warning: not every model can run on the Neural Engine.";
+
+/* The model progress bar (v3.3i) */
+"Compiling the models for the Neural Engine (about 3 minutes)…" = "Compiling the models for the Neural Engine (about 3 minutes)…";
+"Checking that the models run on the Neural Engine…" = "Checking that the models run on the Neural Engine…";
+"Almost done…" = "Almost done…";
+"The models are ready." = "The models are ready.";
+"The models are prepared, but not all of them run on the Neural Engine." = "The models are prepared, but not all of them run on the Neural Engine.";

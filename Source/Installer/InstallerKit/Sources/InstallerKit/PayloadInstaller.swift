@@ -154,13 +154,17 @@ public final class PayloadInstaller: @unchecked Sendable {
         public var modelStatus: ModelStatus
     }
 
-    /// `<installed app>/Contents/MacOS/McBopomofoLM install` as a child process. Its stdout is a
-    /// pipe, not a terminal, so the child prints every detailed line (registration, the Neural
-    /// Engine compile of the models). Each stdout line is parsed into an `InstallOutput.Event`
+    /// `<installed app>/Contents/MacOS/McBopomofoLM install --progress-lines` as a child process.
+    /// Its stdout is a pipe, not a terminal, so the child prints every detailed line (registration,
+    /// the Neural Engine compile of the models), and `--progress-lines` adds the PROGRESS lines
+    /// that drive the window's bar (an IME that does not know the flag ignores it and prints none:
+    /// the bar then stays indeterminate). Each stdout line is parsed into an `InstallOutput.Event`
     /// for `onEvent` (called from background threads); the raw lines are not handed out, because
-    /// they are English text for a terminal. Throws when the command exits with a status other
-    /// than 0; exit status 0 with the Neural Engine warning is a success whose result says
-    /// `.degraded`. The dry run never gets here, and no test points it at a real input method.
+    /// they are English text for a terminal. PROGRESS lines are not kept for the error tail: twice
+    /// a second they would push out the lines that say what went wrong. Throws when the command
+    /// exits with a status other than 0; exit status 0 with the Neural Engine warning is a success
+    /// whose result says `.degraded`. The dry run never gets here, and no test points it at a
+    /// real input method.
     @discardableResult
     public func runInstallCommand(
         onEvent: @escaping @Sendable (InstallOutput.Event) -> Void = { _ in }
@@ -171,8 +175,9 @@ public final class PayloadInstaller: @unchecked Sendable {
             "Contents/MacOS/" + InstallerConstants.appName)
         let tail = LineTail()
         let flags = ModelFlags()
-        let status = try ProcessRunner.runStreaming(executable, ["install"]) { line in
-            tail.add(line.text)
+        let status = try ProcessRunner.runStreaming(executable, InstallerConstants.installArguments) {
+            line in
+            if line.isError || ModelProgress.parse(line.text) == nil { tail.add(line.text) }
             guard !line.isError, let event = InstallOutput.parse(line.text) else { return }
             flags.see(event)
             onEvent(event)

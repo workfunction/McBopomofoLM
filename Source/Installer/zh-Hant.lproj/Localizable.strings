@@ -111,3 +111,10 @@
 "Version found: %@, expected: %@" = "找到的版本：%1$@，預期的版本：%2$@";
 "Version found: r%@, expected: r%@" = "找到的版本：r%1$@，預期的版本：r%2$@";
 "Warning: not every model can run on the Neural Engine." = "提醒：並非所有模型都能在 Neural Engine 上執行。";
+
+/* The model progress bar (v3.3i) */
+"Compiling the models for the Neural Engine (about 3 minutes)…" = "正在為 Neural Engine 編譯模型（約 3 分鐘）…";
+"Checking that the models run on the Neural Engine…" = "正在確認模型能在 Neural Engine 上執行…";
+"Almost done…" = "即將完成…";
+"The models are ready." = "模型已準備好。";
+"The models are prepared, but not all of them run on the Neural Engine." = "模型已準備好，但並非所有模型都能在 Neural Engine 上執行。";

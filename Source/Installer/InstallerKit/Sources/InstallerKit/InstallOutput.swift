@@ -32,10 +32,18 @@ public enum InstallOutput {
         /// "McBopomofoLM: WARNING: not every model can run on the Neural Engine; ..." The input
         /// method still works but without the models that cannot run there.
         case degraded
+        /// "PROGRESS 0.4210 decoder-t16", printed by `install --progress-lines` (v3.3i): about
+        /// every half second during the compile, so the window can show a determinate bar. A
+        /// malformed or out-of-range PROGRESS line yields no event.
+        case progress(ModelProgress)
     }
 
     public static func parse(_ line: String) -> Event? {
         let text = line.trimmingCharacters(in: .whitespaces)
+        if let progress = ModelProgress.parse(text) {
+            if case .update(let update) = progress { return .progress(update) }
+            return nil
+        }
         if text.hasPrefix("McBopomofoLM: preparing the SlothE models") { return .preparing }
         if text.hasPrefix("Cleared this app's Neural Engine compile cache") { return .cacheCleared }
         if text.hasPrefix("SlothE-T") && text.contains("encoder") { return .encoderStarted }

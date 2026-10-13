@@ -17,6 +17,9 @@ public enum InstallerConstants {
     /// The input source id of the ASCII keyboard the installer switches to before it stops the
     /// running input method.
     public static let asciiKeyboardID = "com.apple.keylayout.ABC"
+    /// The arguments of the `install` child: register, compile the models, and (v3.3i) print
+    /// `PROGRESS <fraction> <step-key>` lines for the window's progress bar.
+    public static let installArguments = ["install", "--progress-lines"]
     /// The first macOS version the input method (and so the installer) runs on.
     public static let minimumMajorOSVersion = 15
 

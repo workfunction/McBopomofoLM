@@ -943,3 +943,165 @@ class InstallProgressTests: XCTestCase {
         XCTAssertEqual(qs[2], "  decoder ON the Neural Engine (lowest placement 71.2%, gate 80%; 1 function below the gate, not used)")
     }
 }
+
+// McBopomofoLM v3.3i: `install --progress-lines` (the GUI installer's progress bar) and the proof
+// that the output without the flag did not change. Fake loads only: no Core ML, no cache, no
+// registration.
+class InstallProgressLinesTests: XCTestCase {
+    static let preamble = "McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 3 minutes)...\n"
+    static let ok = "McBopomofoLM: both models run on the Neural Engine.\n"
+    static let warning =
+        "McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above. Those models are not used"
+        + " (no encoder = stock McBopomofo; no decoder = encoder-only). The input method retries at every start.\n"
+
+    /// Runs InstallLoadOutput with `lines` as the load's detailed lines and returns what it wrote.
+    private func output(verbose: Bool = false, progressLines: Bool, isTTY: Bool, lines: [String] = InstallProgressTests.realRun.map { $0.1 }, loadOK: Bool = true) -> String {
+        var written = ""
+        let lock = NSLock()
+        InstallLoadOutput.run(
+            verbose: verbose, progressLines: progressLines, isTTY: isTTY,
+            write: { lock.lock(); written += $0; lock.unlock() }
+        ) { report in
+            for l in lines { report(l) }
+            return loadOK
+        }
+        return written
+    }
+
+    private var detailed: String { InstallProgressTests.realRun.map { $0.1 + "\n" }.joined() }
+
+    // MARK: Without the flag: unchanged
+
+    func testWithoutTheFlagANonTerminalGetsTheDetailedLinesAndTheFinalLineOnly() {
+        // The golden is written out here, not built from the constants under test.
+        let expected = Self.preamble + detailed + Self.ok
+        XCTAssertEqual(output(progressLines: false, isTTY: false), expected)
+        XCTAssertFalse(expected.contains("PROGRESS"))
+        let expectedWarning = Self.preamble + detailed + Self.warning
+        XCTAssertEqual(output(progressLines: false, isTTY: false, loadOK: false), expectedWarning)
+        // `--verbose` on a terminal is the same text.
+        XCTAssertEqual(output(verbose: true, progressLines: false, isTTY: true), expected)
+        XCTAssertEqual(output(verbose: true, progressLines: false, isTTY: false), expected)
+    }
+
+    func testWithoutTheFlagATerminalStillGetsTheUpdatingLineAndTheSummary() {
+        let text = output(progressLines: false, isTTY: true)
+        XCTAssertTrue(text.hasPrefix(Self.preamble + "\r[░░░░░░░░░░░░░░░░░░░░]   0% "), String(text.prefix(200)))
+        XCTAssertTrue(text.hasSuffix("\n" + Self.ok), String(text.suffix(200)))
+        XCTAssertTrue(text.contains("\n  encoder ON the Neural Engine (lowest placement 100.0%, gate 99%)\n"))
+        XCTAssertTrue(text.contains("  done"))  // the last frame
+        XCTAssertFalse(text.contains("PROGRESS"))
+        XCTAssertFalse(text.contains("SlothE decoder (dec60m.mlmodelc):"))  // detailed lines stay out of the bar
+    }
+
+    // MARK: With the flag
+
+    private func progressRows(_ text: String) -> [String] { text.split(separator: "\n").map(String.init).filter { $0.hasPrefix("PROGRESS") } }
+
+    func testTheProgressLineGrammar() {
+        let text = output(progressLines: true, isTTY: false)
+        let rows = progressRows(text)
+        XCTAssertGreaterThan(rows.count, 20)
+        let grammar = try! NSRegularExpression(pattern: #"^PROGRESS (0\.[0-9]{4}|1\.0000) [A-Za-z0-9]+(-[A-Za-z0-9]+)*$"#)
+        var last = -1.0
+        for row in rows {
+            XCTAssertNotNil(grammar.firstMatch(in: row, range: NSRange(row.startIndex..., in: row)), row)
+            let f = Double(row.split(separator: " ")[1])!
+            XCTAssertGreaterThanOrEqual(f, last, row)  // never goes back
+            last = f
+        }
+        XCTAssertEqual(rows.first, "PROGRESS 0.0000 encoder-L8")
+        XCTAssertEqual(rows.last, "PROGRESS 1.0000 done")
+        XCTAssertTrue(text.hasSuffix("PROGRESS 1.0000 done\n" + Self.ok), String(text.suffix(200)))
+    }
+
+    func testTakingThePROGRESSLinesOutLeavesExactlyTheOutputWithoutTheFlag() {
+        let with = output(progressLines: true, isTTY: false)
+        let without = output(progressLines: false, isTTY: false)
+        let stripped = with.split(separator: "\n", omittingEmptySubsequences: false).filter { !$0.hasPrefix("PROGRESS") }.joined(separator: "\n")
+        XCTAssertEqual(stripped, without)
+        // The summary lines the installer reads are all still there.
+        XCTAssertTrue(with.contains("Models ready in 184.9 s: encoder on the Neural Engine, decoder on the Neural Engine.\n"))
+        XCTAssertTrue(with.hasSuffix(Self.ok))
+        // A degraded result keeps its warning, after the last PROGRESS line.
+        XCTAssertTrue(output(progressLines: true, isTTY: false, loadOK: false).hasSuffix("PROGRESS 1.0000 done\n" + Self.warning))
+    }
+
+    func testTheFlagWinsOnATerminal() {
+        let text = output(progressLines: true, isTTY: true)
+        XCTAssertFalse(text.contains("\r"))
+        XCTAssertEqual(text.split(separator: "\n").filter { !$0.hasPrefix("PROGRESS") }.joined(separator: "\n"), (Self.preamble + detailed + Self.ok).split(separator: "\n").joined(separator: "\n"))
+        XCTAssertEqual(progressRows(text).first, "PROGRESS 0.0000 encoder-L8")
+    }
+
+    func testAPROGRESSLineFollowsEveryDetailedLine() {
+        let text = output(progressLines: true, isTTY: false)
+        let rows = text.split(separator: "\n").map(String.init)
+        // preamble, PROGRESS 0, then (line, PROGRESS) pairs, PROGRESS 1.0 done, final line
+        XCTAssertEqual(rows.count, 2 + 2 * InstallProgressTests.realRun.count + 2)
+        XCTAssertEqual(rows[0] + "\n", Self.preamble)
+        XCTAssertEqual(rows[1], "PROGRESS 0.0000 encoder-L8")
+        for (i, (_, line)) in InstallProgressTests.realRun.enumerated() {
+            XCTAssertEqual(rows[2 + 2 * i], line)
+            XCTAssertTrue(rows[3 + 2 * i].hasPrefix("PROGRESS "), rows[3 + 2 * i])
+        }
+    }
+
+    func testTheStepKeysOfTheRealRun() {
+        let p = InstallProgress()
+        var keys: [String] = [String(p.progressLine(now: 0).split(separator: " ")[2])]
+        for (at, line) in InstallProgressTests.realRun {
+            p.consume(line, now: at)
+            let key = String(p.progressLine(now: at).split(separator: " ")[2])
+            if key != keys.last { keys.append(key) }
+        }
+        var expected = ["encoder-L8", "encoder-L16", "encoder-L32", "encoder-L64", "encoder-L256", "placement-encoder"]
+        for f in ["t16", "t32", "t64", "t96", "n16", "n32", "n64", "n96"] { expected += ["decoder-\(f)", "placement-decoder-\(f)"] }
+        expected.append("finishing")  // after the last probe the load has nothing left to run
+        // (the first decoder function is entered by the encoder's latency probe, so it shows as compiling)
+        XCTAssertEqual(keys, expected)
+    }
+
+    func testTheFractionCreepsInsideALongStepAndStopsAtNinetyFivePercentOfIt() {
+        let p = InstallProgress()
+        XCTAssertEqual(p.progressLine(now: 0), "PROGRESS 0.0000 encoder-L8")
+        XCTAssertEqual(p.progressLine(now: 2.5), "PROGRESS 0.0135 encoder-L8")  // 2.5 of 185.7 s
+        XCTAssertEqual(p.progressLine(now: 100), "PROGRESS 0.0256 encoder-L8")  // 95 % of the 5 s step
+        XCTAssertEqual(p.progressLine(now: 100, finished: true), "PROGRESS 1.0000 done")
+    }
+
+    func testTheTickerPrintsAtLeastEverySecondDuringALongStep() {
+        XCTAssertLessThanOrEqual(InstallProgressLines.tickInterval, 1.0)
+        var stamps: [Date] = []
+        let lock = NSLock()
+        InstallLoadOutput.run(
+            verbose: false, progressLines: true, isTTY: false,
+            write: { s in
+                lock.lock()
+                if s.hasPrefix("PROGRESS") { stamps.append(Date()) }
+                lock.unlock()
+            }
+        ) { report in
+            report("SlothE-T 25M encoder (enc25m.mlmodelc):")
+            Thread.sleep(forTimeInterval: 2.4)  // one long step, no line
+            return true
+        }
+        XCTAssertGreaterThanOrEqual(stamps.count, 5, "\(stamps.count) updates in 2.4 s")
+        let gaps = zip(stamps.dropFirst(), stamps).map { $0.timeIntervalSince($1) }
+        XCTAssertLessThanOrEqual(gaps.max() ?? 0, 1.0, "\(gaps)")
+    }
+
+    func testTheTickerStopsWithFinish() {
+        var count = 0
+        let lock = NSLock()
+        let lines = InstallProgressLines(write: { _ in lock.lock(); count += 1; lock.unlock() }, tickInterval: 0.02)
+        lines.begin()
+        Thread.sleep(forTimeInterval: 0.2)
+        lines.finish()
+        lock.lock(); let atFinish = count; lock.unlock()
+        Thread.sleep(forTimeInterval: 0.2)
+        lock.lock(); let later = count; lock.unlock()
+        XCTAssertGreaterThan(atFinish, 3)
+        XCTAssertEqual(later, atFinish)
+    }
+}

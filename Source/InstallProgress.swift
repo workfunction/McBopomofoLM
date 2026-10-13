@@ -94,6 +94,34 @@ final class InstallProgress {
         return lastFraction
     }
 
+    /// v3.3i, `install --progress-lines`: the stable ASCII token for what is running now, which the
+    /// GUI installer maps to a sentence in the user's language. Never reworded once shipped; a new
+    /// step may add a token, and the installer shows its generic sentence for a token it does not
+    /// know.
+    ///   encoder-L8 ... encoder-L256       an encoder function is compiling
+    ///   placement-encoder                 the encoder's placement check
+    ///   decoder-t16 ... decoder-n96       a decoder function is loading (compiling)
+    ///   placement-decoder-t16 ... -n96    that function's placement check and probe
+    ///   finishing                         all steps passed, the load has not returned yet
+    ///   done                              the load returned (printed by `finish`, fraction 1)
+    private func progressKeyLocked(finished: Bool) -> String {
+        if finished { return "done" }
+        guard current < Self.steps.count else { return "finishing" }
+        let s = Self.steps[current]
+        let token = s.key.replacingOccurrences(of: " ", with: "-")
+        if s.key == "encoder placement" { return "placement-encoder" }
+        return readySeen ? "placement-" + token : token
+    }
+
+    /// One machine-readable update: `PROGRESS <fraction 0..1, four decimals> <step-key>`, with the
+    /// same weighted fraction (and creep inside a long step) as the terminal bar.
+    func progressLine(now: TimeInterval, finished: Bool = false) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let f = finished ? 1.0 : fractionLocked(now: now)
+        return "PROGRESS \(String(format: "%.4f", f)) \(progressKeyLocked(finished: finished))"
+    }
+
     /// The updating line, at most `width` columns.
     func frame(now: TimeInterval, spinner: Int, finished: Bool = false) -> String {
         lock.lock()
@@ -261,5 +289,115 @@ final class InstallProgressBar {
 
     deinit {
         timer?.cancel()
+    }
+}
+
+/// v3.3i, `install --progress-lines`: the machine-readable twin of `InstallProgressBar`, for the
+/// GUI installer, which reads the child's stdout through a pipe. The detailed lines are printed as
+/// without the flag (the installer still parses them), each followed by one PROGRESS line; a
+/// ticker adds one every `tickInterval` while a long step runs, so the installer's bar never
+/// looks frozen. Every write is one complete line (or two), under one lock, so the ticker thread
+/// and the load thread never interleave.
+final class InstallProgressLines {
+    /// "At least every second": half of that, so one late tick still keeps the promise.
+    static let tickInterval: TimeInterval = 0.5
+
+    let progress = InstallProgress()
+    private let out: (String) -> Void
+    private let clock: () -> TimeInterval
+    private let tickInterval: TimeInterval
+    private var timer: DispatchSourceTimer?
+    private let lock = NSLock()
+    private var stopped = false
+
+    /// `now` defaults to the seconds since this object was made.
+    init(write: @escaping (String) -> Void, tickInterval: TimeInterval = InstallProgressLines.tickInterval, now: (() -> TimeInterval)? = nil) {
+        out = write
+        self.tickInterval = tickInterval
+        let start = Date()
+        clock = now ?? { Date().timeIntervalSince(start) }
+    }
+
+    /// The first update (fraction 0), then the ticker.
+    func begin() {
+        emit()
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now() + tickInterval, repeating: tickInterval)
+        t.setEventHandler { [weak self] in self?.emit() }
+        timer = t
+        t.resume()
+    }
+
+    /// A detailed line of the load: printed as it is, then the update it may have caused.
+    func line(_ l: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return }
+        progress.consume(l, now: clock())
+        out(l + "\n" + progress.progressLine(now: clock()) + "\n")
+    }
+
+    private func emit() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return }
+        out(progress.progressLine(now: clock()) + "\n")
+    }
+
+    /// Stops the ticker and prints the last update: 1.0000 done.
+    func finish() {
+        stop()
+        lock.lock()
+        defer { lock.unlock() }
+        out(progress.progressLine(now: clock(), finished: true) + "\n")
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+        timer?.cancel()
+        timer = nil
+    }
+
+    deinit {
+        timer?.cancel()
+    }
+}
+
+/// What `McBopomofoLM install` prints around the model load (moved here from main.swift in
+/// v3.3i so that a test can run it with a fake load; the text is unchanged).
+enum InstallLoadOutput {
+    static let preamble = "McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 3 minutes)...\n"
+    static let ok = "McBopomofoLM: both models run on the Neural Engine."
+    static let warning =
+        "McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above. Those models are not used"
+        + " (no encoder = stock McBopomofo; no decoder = encoder-only). The input method retries at every start."
+
+    /// v3.1.2: on a terminal, one progress line and a short summary; with `--verbose` or a
+    /// non-terminal stdout, every detailed line. v3.3i: with `--progress-lines` (the GUI installer),
+    /// every detailed line plus PROGRESS lines, also on a terminal; without the flag nothing
+    /// changed. `load` runs the model load, reporting each detailed line to its argument.
+    static func run(verbose: Bool, progressLines: Bool = false, isTTY: Bool, write: @escaping (String) -> Void, _ load: (@escaping (String) -> Void) -> Bool) {
+        write(preamble)
+        if progressLines {
+            let lines = InstallProgressLines(write: write)
+            defer { lines.stop() }
+            lines.begin()
+            let ok = load { lines.line($0) }
+            lines.finish()
+            write((ok ? Self.ok : Self.warning) + "\n")
+            return
+        }
+        if verbose || !isTTY {
+            let ok = load { write($0 + "\n") }
+            write((ok ? Self.ok : Self.warning) + "\n")
+            return
+        }
+        let bar = InstallProgressBar(write: write)
+        defer { bar.stop() }
+        bar.begin()
+        let ok = load { bar.line($0) }
+        bar.finish(finalLine: ok ? Self.ok : Self.warning)
     }
 }

@@ -58,6 +58,10 @@ public struct InstallEnvironment {
     public var willRun: @MainActor (InstallStep, Int, Int) -> Void
     /// A line of `McBopomofoLM install` as an event. Delivered on the main actor, in order.
     public var onEvent: @MainActor (InstallOutput.Event) -> Void
+    /// `McBopomofoLM install` exited 0 (v3.3i): the models are prepared, with the status it
+    /// reported. Not called when the command fails; the failure is thrown by `run`.
+    public var onInstallCommandSucceeded:
+        @MainActor (PayloadInstaller.InstallCommandResult.ModelStatus) -> Void
 
     public init(
         inputSources: any InputSourceOperations, pause: @escaping @MainActor () -> Void,
@@ -66,7 +70,10 @@ public struct InstallEnvironment {
         waitForTranslocationRemoval: @escaping @MainActor () async -> Bool,
         moveToTrash: @escaping @MainActor (URL) async throws -> Void,
         willRun: @escaping @MainActor (InstallStep, Int, Int) -> Void = { _, _, _ in },
-        onEvent: @escaping @MainActor (InstallOutput.Event) -> Void = { _ in }
+        onEvent: @escaping @MainActor (InstallOutput.Event) -> Void = { _ in },
+        onInstallCommandSucceeded: @escaping @MainActor (
+            PayloadInstaller.InstallCommandResult.ModelStatus
+        ) -> Void = { _ in }
     ) {
         self.inputSources = inputSources
         self.pause = pause
@@ -76,6 +83,7 @@ public struct InstallEnvironment {
         self.moveToTrash = moveToTrash
         self.willRun = willRun
         self.onEvent = onEvent
+        self.onInstallCommandSucceeded = onInstallCommandSucceeded
     }
 }
 
@@ -165,6 +173,7 @@ public enum InstallOrchestrator {
                         if result.value.modelStatus == .degraded {
                             outcome.value.warnings.append(.degradedModels)
                         }
+                        env.onInstallCommandSucceeded(result.value.modelStatus)
                     case .enableBopomofoMode:
                         switch InputSourceFlow.enableOnlyBopomofo(
                             env.inputSources,

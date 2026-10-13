@@ -155,10 +155,12 @@ struct PayloadInstallerTests {
     }
 
     private func installedPayload(
-        _ root: TempDir, installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine
+        _ root: TempDir, installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine,
+        installProgress: StubProgress = .normal
     ) throws -> PayloadInstaller {
         let resources = Fixture.makeInstallerResources(
-            in: root, installExitStatus: installExitStatus, installModels: installModels)
+            in: root, installExitStatus: installExitStatus, installModels: installModels,
+            installProgress: installProgress)
         let archive = ArchiveLocator.archivePath(
             resourcePath: resources, appName: InstallerConstants.appName, build: Fixture.build)
         let payload = PayloadInstaller(
@@ -193,6 +195,67 @@ struct PayloadInstallerTests {
         #expect(events.contains(.modelsReady(seconds: 184.9)))
         #expect(events.last == .allOnNeuralEngine)
         #expect(result.modelStatus == .bothOnNeuralEngine)
+    }
+
+    // MARK: --progress-lines (v3.3i)
+
+    private func progressUpdates(_ events: [InstallOutput.Event]) -> [ModelProgress] {
+        events.compactMap { event in
+            if case .progress(let update) = event { return update }
+            return nil
+        }
+    }
+
+    @Test func theInstallCommandIsAskedForProgressLines() throws {
+        #expect(InstallerConstants.installArguments == ["install", "--progress-lines"])
+        let root = TempDir()
+        defer { root.cleanUp() }
+        let payload = try installedPayload(root)
+        // The stub prints PROGRESS lines only when its second argument is --progress-lines.
+        let updates = progressUpdates(try collectEvents(payload).0)
+        #expect(
+            updates == [
+                ModelProgress(fraction: 0, step: "encoder-L8"),
+                ModelProgress(fraction: 0.027, step: "encoder-L16"),
+                ModelProgress(fraction: 0.15, step: "placement-encoder"),
+                ModelProgress(fraction: 0.3, step: "placement-decoder-t16"),
+                ModelProgress(fraction: 1, step: "done"),
+            ])
+    }
+
+    @Test func anIMEWithoutTheFlagPrintsNoProgressAndTheInstallStillSucceeds() throws {
+        let root = TempDir()
+        defer { root.cleanUp() }
+        let payload = try installedPayload(root, installProgress: .none)
+        let (events, result) = try collectEvents(payload)
+        #expect(progressUpdates(events).isEmpty)
+        #expect(events.count == 8)
+        #expect(result.modelStatus == .bothOnNeuralEngine)
+    }
+
+    @Test func malformedAndOutOfRangeLinesAreDroppedAndTheRestStillCount() throws {
+        let root = TempDir()
+        defer { root.cleanUp() }
+        let payload = try installedPayload(root, installProgress: .noisy)
+        let (events, result) = try collectEvents(payload)
+        #expect(progressUpdates(events).count == 5)
+        #expect(events.count == 13)
+        #expect(result.modelStatus == .bothOnNeuralEngine)
+    }
+
+    @Test func progressLinesDoNotCrowdOutTheErrorTail() throws {
+        let root = TempDir()
+        defer { root.cleanUp() }
+        let payload = try installedPayload(root, installExitStatus: 3, installProgress: .noisy)
+        do {
+            try payload.runInstallCommand()
+            Issue.record("expected the install command to fail")
+        } catch InstallerError.installCommandFailed(let status, let tail) {
+            #expect(status == 3)
+            #expect(!tail.contains { $0.hasPrefix("PROGRESS") })
+            #expect(tail.contains("  encoder L8 ready in 4.6 s"))
+            #expect(tail.contains("registering"))  // stderr is kept
+        }
     }
 
     @Test func aDegradedModelWarningWithExitZeroIsASuccessThatSaysSo() throws {

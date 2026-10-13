@@ -68,11 +68,12 @@ struct OrchestratorTests {
 
     private func makeSetup(
         installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine,
-        withOldApp: Bool = true
+        installProgress: StubProgress = .normal, withOldApp: Bool = true
     ) -> Setup {
         let root = TempDir()
         let resources = Fixture.makeInstallerResources(
-            in: root, installExitStatus: installExitStatus, installModels: installModels)
+            in: root, installExitStatus: installExitStatus, installModels: installModels,
+            installProgress: installProgress)
         let destination = root.sub("Input Methods")
         let oldApp: String
         if withOldApp {
@@ -131,7 +132,8 @@ struct OrchestratorTests {
                 log.addOnMain("step \(step.rawValue)")
                 willRun(step)
             },
-            onEvent: { event in log.addOnMain("event \(event)") })
+            onEvent: { event in log.addOnMain("event \(event)") },
+            onInstallCommandSucceeded: { status in log.addOnMain("models prepared \(status)") })
     }
 
     private func plan(translocated: Bool = false) -> [InstallStep] {
@@ -175,10 +177,21 @@ struct OrchestratorTests {
         #expect(log.filter { $0 == "file or process work" }.count >= 6)  // unzip ... install
         // The `install` command prints on reader threads; its events reach the main-thread
         // callback one by one, in the order the child printed them.
-        let events = log.filter { $0.hasPrefix("event ") }
+        let events = log.filter { $0.hasPrefix("event ") && !$0.hasPrefix("event progress") }
         #expect(events.count == 8, "\(events)")
         #expect(events.first == "event preparing")
         #expect(events.last == "event allOnNeuralEngine")
+        // The PROGRESS lines arrive the same way (the installer passes --progress-lines), between
+        // them, in order, and the end of the command comes after the last of them.
+        let progress = log.filter { $0.hasPrefix("event progress") }
+        #expect(progress.count == 5, "\(progress)")
+        #expect(progress.first?.contains("encoder-L8") == true)
+        #expect(progress.last?.contains("done") == true)
+        let all = log.filter { $0.hasPrefix("event ") || $0.hasPrefix("models prepared") }
+        #expect(all.last == "models prepared bothOnNeuralEngine", "\(all.suffix(3))")
+        #expect(log.filter { $0.hasPrefix("models prepared") }.count == 1)
+        let order = log.filter { $0 == "step runInstall" || $0 == "step enableBopomofoMode" || $0.hasPrefix("models prepared") }
+        #expect(order == ["step runInstall", "models prepared bothOnNeuralEngine", "step enableBopomofoMode"])
         // Steps are announced on the main thread in plan order.
         let steps = log.filter { $0.hasPrefix("step ") }.map { String($0.dropFirst(5)) }
         #expect(steps == plan().map(\.rawValue))
@@ -353,5 +366,88 @@ struct OrchestratorTests {
         }
         #expect(marker(setup.oldApp) == "old")
         #expect(!setup.log.all.contains { $0.hasPrefix("trash") })
+    }
+    // MARK: The progress bar's feed (v3.3i)
+
+    @Test func theBarReachesOneHundredPercentWhenTheCommandSucceeds() async throws {
+        let setup = makeSetup()
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        var state = ModelProgressState()
+        var env = environment(setup, ops: ops)
+        let log = setup.log
+        env.onEvent = { state.apply($0); log.addOnMain("event \($0)") }
+        env.onInstallCommandSucceeded = { _ in state.markSucceeded() }
+        _ = try await InstallOrchestrator.run(
+            steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+            environment: env)
+        #expect(state.phase == .done && state.percent == 100)
+    }
+
+    @Test func anIMEThatPrintsNoProgressLinesStaysIndeterminateAndStillFinishesAtOneHundred()
+        async throws
+    {
+        let setup = makeSetup(installProgress: .none)
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        var state = ModelProgressState()
+        var env = environment(setup, ops: ops)
+        let log = setup.log
+        var indeterminateAtTheEnd = false
+        env.onEvent = { state.apply($0); log.addOnMain("event \($0)") }
+        env.onInstallCommandSucceeded = { _ in
+            indeterminateAtTheEnd = state.isIndeterminate  // all of the child's lines were in by now
+            state.markSucceeded()
+        }
+        _ = try await InstallOrchestrator.run(
+            steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+            environment: env)
+        #expect(setup.log.all.filter { $0.hasPrefix("event progress") }.isEmpty)
+        #expect(setup.log.all.filter { $0.hasPrefix("event ") }.count == 8)
+        #expect(indeterminateAtTheEnd)
+        #expect(state.phase == .done && state.percent == 100)
+    }
+
+    @Test func malformedAndOutOfRangeLinesNeverMoveTheBar() async throws {
+        let setup = makeSetup(installProgress: .noisy)
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        var state = ModelProgressState()
+        var percents: [Int] = []
+        var env = environment(setup, ops: ops)
+        let log = setup.log
+        env.onEvent = {
+            state.apply($0)
+            percents.append(state.percent)
+            log.addOnMain("event \($0)")
+        }
+        _ = try await InstallOrchestrator.run(
+            steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+            environment: env)
+        // The five valid lines are there, the six bad ones are not events.
+        #expect(setup.log.all.filter { $0.hasPrefix("event progress") }.count == 5)
+        #expect(percents.last == 100 && state.phase == .finishing)
+        #expect(percents == percents.sorted())
+    }
+
+    @Test func aFailedCommandDoesNotReportSuccessAndTheBarCanBeMarkedFailed() async throws {
+        let setup = makeSetup(installExitStatus: 3)
+        defer { setup.finish() }
+        let ops = sources(current: InstallerConstants.asciiKeyboardID)
+        var state = ModelProgressState()
+        var env = environment(setup, ops: ops)
+        let log = setup.log
+        env.onEvent = { state.apply($0); log.addOnMain("event \($0)") }
+        env.onInstallCommandSucceeded = { _ in state.markSucceeded() }
+        do {
+            _ = try await InstallOrchestrator.run(
+                steps: plan(), payload: setup.payload, backup: setup.backup, isUpgrade: true,
+                environment: env)
+            Issue.record("expected the install command to fail")
+        } catch is InstallFailure {
+            state.markFailed()
+        }
+        #expect(!setup.log.all.contains { $0.hasPrefix("models prepared") })
+        #expect(state.phase == .failed)
     }
 }

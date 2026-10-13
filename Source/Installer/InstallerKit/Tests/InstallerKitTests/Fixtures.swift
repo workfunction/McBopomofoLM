@@ -43,6 +43,16 @@ enum StubModels: Sendable {
     case silent
 }
 
+/// What the stub `install` command prints for `--progress-lines` (v3.3i).
+enum StubProgress: Sendable {
+    /// Valid PROGRESS lines, as the IME prints them.
+    case normal
+    /// An IME that does not know the flag: no PROGRESS line at all.
+    case none
+    /// Valid lines mixed with malformed, out-of-range and half-written ones.
+    case noisy
+}
+
 enum Fixture {
     static let build = "2600"
     static let short = "3.3.0"
@@ -51,7 +61,8 @@ enum Fixture {
     static func makeApp(
         in directory: String, build: String = Fixture.build, short: String = Fixture.short,
         bundleID: String = InstallerConstants.bundleID, declareBopomofoMode: Bool = true,
-        installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine
+        installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine,
+        installProgress: StubProgress = .normal
     ) -> String {
         let app = (directory as NSString).appendingPathComponent(InstallerConstants.appBundleName)
         let fm = FileManager.default
@@ -82,17 +93,41 @@ enum Fixture {
         case .silent:
             closing = "true"
         }
+        // PROGRESS lines are printed only when the second argument is --progress-lines (so a
+        // test sees whether the installer passed it) and the stub is not the old-IME kind.
+        let progressEnabled: Int
+        let noise: Int
+        switch installProgress {
+        case .normal: (progressEnabled, noise) = (1, 0)
+        case .none: (progressEnabled, noise) = (0, 0)
+        case .noisy: (progressEnabled, noise) = (1, 1)
+        }
         let stub = """
             #!/bin/sh
             if [ "$1" = install ]; then
               if [ -t 1 ]; then echo "tty"; exit 9; fi
+              P=0
+              if [ "$2" = --progress-lines ] && [ \(progressEnabled) = 1 ]; then P=1; fi
+              p() { if [ "$P" = 1 ]; then echo "PROGRESS $1 $2"; fi; }
+              junk() { if [ "$P" = 1 ] && [ \(noise) = 1 ]; then echo "$1"; fi; }
               echo "McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 3 minutes)..."
+              p 0.0000 encoder-L8
               echo "SlothE-T 25M encoder (enc25m.mlmodelc):"
               echo "  encoder L8 ready in 4.6 s"
+              p 0.0270 encoder-L16
+              junk "PROGRESS abc encoder-L16"
+              junk "PROGRESS 1.5 decoder-t16"
+              junk "PROGRESS 0.9"
+              junk "PROGRESS -0.2 decoder-t16"
+              junk "PROGRESS 0.9 bad_key"
+              junk "PROGRESS 0.9 decoder-t16 extra"
               echo "  encoder ON the Neural Engine: loaded in 53.6 s (ANE compile included when not cached)"
+              p 0.1500 placement-encoder
               echo "SlothE decoder (dec60m.mlmodelc):"
               echo "  decoder t16 ready in 4.2 s"
+              p 0.3000 placement-decoder-t16
               echo "Models ready in 184.9 s: encoder on the Neural Engine, decoder on the Neural Engine."
+              p 1.0000 done
               \(closing)
               echo "registering" >&2
               exit \(installExitStatus)
@@ -124,13 +159,14 @@ enum Fixture {
     static func makeInstallerResources(
         in root: TempDir, build: String = Fixture.build, short: String = Fixture.short,
         installExitStatus: Int = 0,
-        installModels: StubModels = .bothOnNeuralEngine
+        installModels: StubModels = .bothOnNeuralEngine,
+        installProgress: StubProgress = .normal
     ) -> String {
         let source = root.sub("source")
         try! FileManager.default.createDirectory(atPath: source, withIntermediateDirectories: true)
         let app = makeApp(
             in: source, build: build, short: short, installExitStatus: installExitStatus,
-            installModels: installModels)
+            installModels: installModels, installProgress: installProgress)
         let resources = root.sub("Resources")
         zip(
             app: app,
