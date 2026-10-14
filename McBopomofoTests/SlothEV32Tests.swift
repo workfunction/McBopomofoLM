@@ -1150,7 +1150,7 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         let client = FakeIMKClient()
         var announcements: [String] = []
         /// v3.4f: what the controller asked the mode HUD to show: the mode and the client's caret rectangle.
-        var huds: [(english: Bool, caret: NSRect?)] = []
+        var huds: [(english: Bool, caret: NSRect?, query: ModeHUDCaretQuery)] = []
         /// v3.4f: talk to this client instead of the fake one (a client that reports a caret rectangle).
         var clientOverride: Any?
         var clock: TimeInterval = 1000
@@ -1160,7 +1160,7 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
             controller.keyHandler.slothERuntime = nil  // stock handler: nothing here needs the models
             controller.shiftTapDetector = ShiftTapDetector(mouse: mouse.activity)
             controller.announceModeChange = { [unowned self] in self.announcements.append($0) }
-            controller.showModeHUD = { [unowned self] in self.huds.append(($0, $1)) }
+            controller.showModeHUD = { [unowned self] in self.huds.append(($0, $1, $2)) }
             controller.currentClient = client
         }
 
@@ -1198,6 +1198,11 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         XCTAssertEqual(s.huds.count, 1)
         XCTAssertEqual(s.huds[0].english, true)
         XCTAssertEqual(s.huds[0].caret, NSRect(x: 320, y: 480, width: 1, height: 20))
+        // v3.4j: and what was asked, for the diagnostic line
+        XCTAssertEqual(s.huds[0].query.index, 0)
+        XCTAssertEqual(s.huds[0].query.tries, 1)
+        XCTAssertEqual(s.huds[0].query.raw, NSRect(x: 320, y: 480, width: 1, height: 20))
+        XCTAssertEqual(s.huds[0].query.bundleID, "org.example.rect")
         XCTAssertFalse(s.flags([.shift]))
         XCTAssertTrue(s.flags([], after: 0.1))
         XCTAssertEqual(s.huds.map { $0.english }, [true, false])
@@ -1208,7 +1213,7 @@ final class SlothEShiftControllerTests: SlothEV32TestCase {
         XCTAssertFalse(s.flags([.shift]))
         XCTAssertTrue(s.flags([], after: 0.1))
         XCTAssertEqual(s.huds.count, 1)
-        XCTAssertNil(s.huds[0].caret, "the HUD then falls back to the bottom center of the active screen")
+        XCTAssertNil(s.huds[0].caret, "the HUD then falls back to the mouse pointer's place")
     }
 
     func testAShiftTapInTheEmptyStateTogglesTheMode() throws {

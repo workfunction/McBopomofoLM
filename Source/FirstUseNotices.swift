@@ -4,7 +4,8 @@
 //    skipped the installer, or after a system update): "AI 模型準備中，約需 3 分鐘，期間使用一般選字";
 //    when BOTH are ready (encoder and decoder): "AI 模型已就緒"; when the decoder cannot be used and
 //    only the encoder is: a different notice (v3.3h), and the "ready" one stays unused.
-//  - The first time English mode is entered: "單點 Shift 可切換中英文".
+//  - The first time English mode is entered: "單點 Shift 可切換中英文" and, on a second line (v3.4j), "可以按住 ⌘
+//    把選單列的「中／A」拖到「ㄅ」旁邊" (the menu-bar mode item can be moved with ⌘-drag).
 //
 // Each notice is shown once: its flag lives in UserDefaults. The two model notices are driven by the
 // runtime's loaded state (`SlothERuntime.loaded / loading / loadFailed`), polled once a second on the
@@ -83,8 +84,13 @@ final class FirstUseNotices {
     static var partialMessage: String {
         NSLocalizedString("AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone.", comment: "")
     }
+    /// v3.4j: the second line says how to bring the menu-bar mode item next to the input menu's "ㄅ". It is part of
+    /// this one notice (no extra notification).
     static var englishToggleMessage: String {
-        NSLocalizedString("Tap Shift to switch between Chinese and English", comment: "")
+        NSLocalizedString("Tap Shift to switch between Chinese and English", comment: "") + "\n" + modeItemDragHint
+    }
+    static var modeItemDragHint: String {
+        NSLocalizedString("Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ", comment: "")
     }
 
     // MARK: flags

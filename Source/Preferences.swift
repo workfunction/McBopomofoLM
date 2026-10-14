@@ -594,14 +594,18 @@ extension Preferences {
     @UserDefault(key: kSlothEShiftToggleEnabledKey, defaultValue: true)
     @objc static var slothEShiftToggleEnabled: Bool
 
+    /// The defaults key of the switch above (the menu-bar mode item observes it, v3.4l).
+    static var slothEShiftToggleEnabledKey: String { kSlothEShiftToggleEnabledKey }
+
     /// The one place the Shift-toggle switch changes, for the menu and the preferences window alike:
-    /// turned off, English mode ends everywhere at once (the process-wide mode, and with it the menu-bar
-    /// "A"; v3.3h, before the notification so every key handler's own reset follows it).
+    /// turned off, English mode ends everywhere at once (the process-wide mode; v3.3h, before the notification so
+    /// every key handler's own reset follows it), and the menu-bar mode item (v3.4j) hides or shows with the switch.
     @objc static func toggleSlothEShiftToggleEnabled() -> Bool {
         slothEShiftToggleEnabled = !slothEShiftToggleEnabled
         if !slothEShiftToggleEnabled {
             McBopomofoInputMethodController.slothEGlobalEnglishMode = false
         }
+        EnglishModeIndicator.shared.refresh()  // v3.4j: the menu-bar mode item is shown while this switch is on
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothEShiftToggleEnabled
     }

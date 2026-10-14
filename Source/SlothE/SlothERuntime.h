@@ -226,6 +226,9 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 /// Shift tap), tap_reading (a tap that turned a Zhuyin reading in progress into letters), reset (a switch was
 /// turned off, or the input method was activated / deactivated with English mode on).
 - (void)noteInputModeChange:(NSString *)mode source:(NSString *)source;
+/// v3.4j: one H line per Shift-tap mode HUD (geometry only, no text): `geometry` is the tab-separated fields
+/// `idx raw verdict place pointer frame visible hud` (see the H note in the log header), `client` the app's bundle id.
+- (void)noteModeHUDGeometry:(NSString *)geometry client:(nullable NSString *)client;
 /// Input mode changes to English (main thread).
 @property (readonly, nonatomic) NSUInteger englishModeCount;
 /// Pause-gate passes: finished (any outcome), applied to the buffer, applied and changed the shown text.

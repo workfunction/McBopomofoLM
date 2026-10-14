@@ -276,5 +276,6 @@
 "AI model is ready" = "AI 模型已就緒";
 "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone." = "AI 模型只有一部分可用：這台 Mac 無法執行解碼器，目前只用編碼器選字";
 "Tap Shift to switch between Chinese and English" = "單點 Shift 可切換中英文";
+"Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ" = "可以按住 ⌘ 把選單列的「中／A」拖到「ㄅ」旁邊";
 "English Mode" = "英文模式";
 "Chinese Mode" = "中文模式";

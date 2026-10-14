@@ -276,5 +276,6 @@
 "AI model is ready" = "AI model is ready";
 "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone." = "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone.";
 "Tap Shift to switch between Chinese and English" = "Tap Shift to switch between Chinese and English";
+"Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ" = "Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ";
 "English Mode" = "English Mode";
 "Chinese Mode" = "Chinese Mode";

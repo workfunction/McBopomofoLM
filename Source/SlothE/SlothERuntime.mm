@@ -70,10 +70,21 @@ static NSString *const kLatencyLogHeader =
     @"#   counted always, but carried into ctx_len only when the client's selection can confirm the insertion (v3.2f; a\n"
     @"#   key the app ignored then shows as sr=mismatch / reset=moved). A count only: no key, no text. Older C lines\n"
     @"#   have no pass. v3.2g: reset also has unverified_backspace = Backspace with an empty buffer while the context\n"
-    @"#   had gaps (a key or line break the app inserted that the context does not hold): the whole context is dropped.\n";
+    @"#   had gaps (a key or line break the app inserted that the context does not hold): the whole context is dropped.\n"
+    @"# H = the Shift-tap mode HUD was placed (v3.4j); geometry only, no text; AppKit screen points, origin bottom-left;\n"
+    @"#   a rectangle is x,y,w,h: H time client idx raw verdict place pointer frame visible hud\n"
+    @"#   client = bundle id; idx = index/tries of the caret query (the character index last passed to the client's\n"
+    @"#   attributes(forCharacterIndex:lineHeightRectangle:), and how many indexes were tried: an answer at the origin\n"
+    @"#   means 'none' and the next lower index is asked), or - when the client has no text-input interface;\n"
+    @"#   raw = the rectangle the client answered at that index; verdict = ok (the rectangle was used) or why not:\n"
+    @"#   nil / origin / not_finite / negative_size / empty / off_screen (on no screen's full frame);\n"
+    @"#   place = caret / pointer (no usable caret: next to the mouse pointer) / bottom (neither); pointer = the mouse\n"
+    @"#   pointer x,y or -; frame / visible = the full and the visible frame of the screen it was placed on;\n"
+    @"#   hud = the panel's frame.\n";
 static NSString *const kLatencyLogGMarker = @"# G = the typing-pause decoder gate";  // the v3.2 line docs start here ...
 static NSString *const kLatencyLogMDoc = @"# M = the input mode changed";           // ... this one ends v3.2c's ...
 static NSString *const kLatencyLogNewestDoc = @"# C line, v3.2g:";                  // ... and this one (v3.2g; v3.2e / v3.2f wrote older texts) is the newest
+static NSString *const kLatencyLogHDoc = @"# H = the Shift-tap mode HUD";            // v3.4j: the last block of the header
 static NSString *const kLatencyLogVersionPrefix = @"# McBopomofoLM latency log v4";
 NSNotificationName const SlothEPreferencesDidChangeNotification = @"SlothEPreferencesDidChange";
 NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification = @"SlothEDiagnosticLogPreferenceDidChange";
@@ -1210,6 +1221,24 @@ static const size_t kMaxEndToEndSamples = 4096;
     [self _appendTimestampedLine:@"M" tail:[NSString stringWithFormat:@"\t%@\t%@\n", mode, source]];
 }
 
+- (void)noteModeHUDGeometry:(NSString *)geometry client:(NSString *)client
+{
+    if (![self _logging]) {
+        return;
+    }
+    // bundle identifiers are ASCII; anything else is dropped so the log never holds text
+    NSMutableString *app = [NSMutableString string];
+    for (NSUInteger i = 0; i < client.length && i < 128; ++i) {
+        unichar c = [client characterAtIndex:i];
+        if (c > 0x20 && c < 0x7f && c != '\t') {
+            [app appendFormat:@"%C", c];
+        }
+    }
+    // the geometry is numbers, '/', ',', '-' and the words in the H doc; a tab separates its fields, never a newline
+    NSString *fields = [[geometry stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByReplacingOccurrencesOfString:@"\r" withString:@" "];
+    [self _appendTimestampedLine:@"H" tail:[NSString stringWithFormat:@"\t%@\t%@\n", app.length ? app : @"-", fields]];
+}
+
 - (void)noteTypoWindowWithCandidates:(NSUInteger)count chosen:(NSString *)chosen readyMilliseconds:(double)readyMilliseconds source:(NSString *)source
 {
     if (![self _logging]) {
@@ -1365,6 +1394,7 @@ static const size_t kMaxEndToEndSamples = 4096;
     // made by v3.2c / v3.2d has them but not the v3.2e C-line note: append only that note, once
     BOOL needsV32Doc = NO;
     BOOL needsV32eDoc = NO;
+    BOOL needsHDoc = NO;
     if (attrs != nil) {
         // (the log is at most 4 MB and this runs once per process start)
         NSData *all = [NSData dataWithContentsOfFile:_logPath options:NSDataReadingMappedIfSafe error:nil];
@@ -1373,6 +1403,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         };
         needsV32Doc = !has(kLatencyLogMDoc);
         needsV32eDoc = !needsV32Doc && !has(kLatencyLogNewestDoc);
+        needsHDoc = !needsV32Doc && !needsV32eDoc && !has(kLatencyLogHDoc);  // (the two blocks above end with it)
     }
     _logHandle = [NSFileHandle fileHandleForWritingAtPath:_logPath];
     if (_logHandle == nil) {
@@ -1385,6 +1416,9 @@ static const size_t kMaxEndToEndSamples = 4096;
     } else if (needsV32eDoc) {
         NSRange e = [kLatencyLogHeader rangeOfString:kLatencyLogNewestDoc];
         [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:e.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
+    } else if (needsHDoc) {
+        NSRange h = [kLatencyLogHeader rangeOfString:kLatencyLogHDoc];
+        [_logHandle writeData:[[kLatencyLogHeader substringFromIndex:h.location] dataUsingEncoding:NSUTF8StringEncoding] error:nil];
     }
     // Build marker, once per log open (= once per process start or rotation).
     NSString *marker = [NSString stringWithFormat:@"# McBopomofoLM v3.3h (candidate window jump-ahead C, delta %.1f; UNK split; 1-syllable LM order; carried context; correction window; typing-pause gate; correction entry; Shift toggle; keypad literals; pass-through caret fix; English direct output; pass-through carried only when confirmable; Backspace drops a context with gaps; English mode global for the process; diagnostic log written only while switched on; log switch serialized with writes) log opened %@\n", McBopomofoSlothE::kJumpAheadDelta, [self _timestamp:[NSDate date]]];

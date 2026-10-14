@@ -72,8 +72,10 @@ class McBopomofoInputMethodController: IMKInputController {
     /// notifier box is gone, the HUD below replaces it); tests record it.
     var announceModeChange: (String) -> Void = { _ in }
     /// McBopomofoLM v3.4f: puts up the mode HUD near the caret (English or Chinese, the client's caret rectangle or
-    /// nil); tests replace it (no window).
-    var showModeHUD: (Bool, NSRect?) -> Void = { ModeSwitchHUD.shared.show(englishMode: $0, caret: $1) }
+    /// nil; v3.4j: and what the client was asked, for the diagnostic log); tests replace it (no window).
+    var showModeHUD: (Bool, NSRect?, ModeHUDCaretQuery) -> Void = {
+        ModeSwitchHUD.shared.show(englishMode: $0, caret: $1, query: $2)
+    }
 
     // Share the stored issues, so a set of issues is shown as notification only once.
     static var latestUserFileIssues: [String] = []
@@ -85,8 +87,8 @@ class McBopomofoInputMethodController: IMKInputController {
     /// input mode changes (Bopomofo <-> Plain Bopomofo) and the Shift-toggle switch is turned off (in
     /// the menu, or outside it: v3.2j, the first event or activation that sees it off).
     ///
-    /// v3.3d: every change goes to the menu-bar indicator (a brown "A" while English mode is on and
-    /// the input method is active), whoever writes it.
+    /// v3.3d: every change goes to the menu-bar mode item ("中" / "A"; v3.4j: shown while this input method is the
+    /// selected source and the Shift toggle is on), whoever writes it.
     static var slothEGlobalEnglishMode = false {
         didSet { EnglishModeIndicator.shared.englishMode = slothEGlobalEnglishMode }
     }
@@ -122,11 +124,6 @@ class McBopomofoInputMethodController: IMKInputController {
             cleared.englishMode = false
             handle(state: cleared, client: currentClient)
         }
-    }
-
-    deinit {
-        // McBopomofoLM v3.3d: a controller that goes away while active must not keep the "A" on screen.
-        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(self))
     }
 
     /// A menu title with a state suffix: a full-width suffix ("（準備中）") follows the title directly, a
@@ -308,7 +305,7 @@ class McBopomofoInputMethodController: IMKInputController {
             Self.slothEGlobalEnglishMode = false  // the switch was turned off outside the menu
         }
         keyHandler.slothEEnglishMode = Self.slothEGlobalEnglishMode
-        EnglishModeIndicator.shared.clientActivated(ObjectIdentifier(self))  // McBopomofoLM v3.3d
+        EnglishModeIndicator.shared.clientActivated()  // McBopomofoLM v3.3d / v3.4j
         shiftTapDetector.reset()
         // McBopomofoLM v3.1a: a client/field change drops the carried context.
         keyHandler.slothEResetCarriedContext("activate")
@@ -322,7 +319,6 @@ class McBopomofoInputMethodController: IMKInputController {
     override func deactivateServer(_ client: Any!) {
         currentClient = nil
         ownsInputSource = false  // McBopomofoLM v3.4i
-        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(self))  // McBopomofoLM v3.3d
         keyHandler.clear()
         // McBopomofoLM v3.2i: the composing buffer is committed or cleared as before; the English mode stays.
         shiftTapDetector.reset()
@@ -412,7 +408,8 @@ class McBopomofoInputMethodController: IMKInputController {
                         keyHandler.slothEEnglishMode
                             ? NSLocalizedString("English Mode", comment: "")
                             : NSLocalizedString("Chinese Mode", comment: ""))
-                    showModeHUD(keyHandler.slothEEnglishMode, caretRect(of: client))  // McBopomofoLM v3.4f
+                    let caret = caretQuery(of: client)  // McBopomofoLM v3.4f / v3.4j
+                    showModeHUD(keyHandler.slothEEnglishMode, caret.rect, caret)
                     if keyHandler.slothEEnglishMode {
                         FirstUseNotices.shared.noteEnglishModeEntered()  // v3.3c: explained once, the first time
                     }
@@ -1166,7 +1163,15 @@ extension McBopomofoInputMethodController {
     /// buffer, or of the insertion point when there is none), or nil when the client reports none: a rectangle at
     /// the origin means "not supplied", as in the candidate window's lookup above. McBopomofoLM v3.4f.
     func caretRect(of client: Any!) -> NSRect? {
-        guard let text = client as? IMKTextInput else { return nil }
+        caretQuery(of: client).rect
+    }
+
+    /// The same lookup with what was asked and answered (the index, how many were tried, the last raw rectangle and
+    /// the client's bundle id), for the HUD's diagnostic log line. McBopomofoLM v3.4j.
+    func caretQuery(of client: Any!) -> ModeHUDCaretQuery {
+        var query = ModeHUDCaretQuery()
+        guard let text = client as? IMKTextInput else { return query }
+        query.bundleID = text.bundleIdentifier()
         var cursor = 0
         if let notEmpty = state as? InputState.NotEmpty {
             cursor = Int(notEmpty.cursorIndex)
@@ -1177,12 +1182,15 @@ extension McBopomofoInputMethodController {
         while cursor >= 0 {
             var rect = NSRect.zero
             _ = text.attributes(forCharacterIndex: cursor, lineHeightRectangle: &rect)
+            query.index = cursor
+            query.tries += 1
+            query.raw = rect
             if rect.origin.x != 0 || rect.origin.y != 0 {
-                return rect
+                break
             }
             cursor -= 1
         }
-        return nil
+        return query
     }
 
     private func show(tooltip: String, composingBuffer: String, cursorIndex: UInt, client: Any!) {

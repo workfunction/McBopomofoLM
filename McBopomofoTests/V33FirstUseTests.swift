@@ -172,12 +172,14 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         XCTAssertEqual(zh["AI model is ready"], "AI 模型已就緒")
         XCTAssertEqual(zh["AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone."], "AI 模型只有一部分可用：這台 Mac 無法執行解碼器，目前只用編碼器選字")
         XCTAssertEqual(zh["Tap Shift to switch between Chinese and English"], "單點 Shift 可切換中英文")
+        XCTAssertEqual(zh["Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ"], "可以按住 ⌘ 把選單列的「中／A」拖到「ㄅ」旁邊")
         for localization in ["Base", "en"] {
             let en = try table(localization)
             XCTAssertNotNil(en["AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile."])
             XCTAssertEqual(en["AI model is ready"], "AI model is ready")
             XCTAssertNotNil(en["AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone."])
             XCTAssertNotNil(en["Tap Shift to switch between Chinese and English"])
+            XCTAssertNotNil(en["Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ"])
         }
     }
 
@@ -198,6 +200,20 @@ final class V33ModelNoticeTests: FirstUseTestCase {
 }
 
 final class V33EnglishToggleNoticeTests: FirstUseTestCase {
+    // v3.4j: the ⌘-drag hint is a second line of the same notice, not another notification
+    func testTheNoticeCarriesTheDragHintAsASecondLine() {
+        let notices = makeNotices()
+        let text = FirstUseNotices.englishToggleMessage
+        let lines = text.components(separatedBy: "\n")
+        XCTAssertEqual(lines.count, 2)
+        XCTAssertEqual(lines[0], NSLocalizedString("Tap Shift to switch between Chinese and English", comment: ""))
+        XCTAssertEqual(lines[1], FirstUseNotices.modeItemDragHint)
+        XCTAssertTrue(FirstUseNotices.modeItemDragHint.contains("⌘"))
+        XCTAssertEqual(notices.noteEnglishModeEntered(), text)
+        XCTAssertNil(notices.noteEnglishModeEntered())
+        XCTAssertEqual(shown.count, 1, "one notification")
+    }
+
     func testTheExplanationComesOnTheFirstEnglishModeOnly() {
         let notices = makeNotices()
         XCTAssertFalse(notices.englishToggleShown)

@@ -74,6 +74,18 @@ final class OwnInputSourceTests: XCTestCase {
         XCTAssertFalse(ours(nil, nil))
     }
 
+    // v3.4j: the menu-bar mode item and the watcher ask "is the selected source ours", nil when TIS says nothing
+    func testTheSelectionIsOursIsNilWhenTheSystemSaysNothing() {
+        func selection(_ id: String?, _ bundle: String?) -> Bool? {
+            OwnInputSource.currentSelectionIsOurs(selected: (id, bundle), ownBundleID: own, modeIDs: modes)
+        }
+        XCTAssertNil(selection(nil, nil))
+        XCTAssertEqual(selection(own + ".Bopomofo", own), true)
+        XCTAssertEqual(selection(own + ".PlainBopomofo", nil), true)
+        XCTAssertEqual(selection("com.apple.keylayout.ABC", nil), false)
+        XCTAssertEqual(selection(dev + ".Bopomofo", dev), false)
+    }
+
     // the mode IDs come from the running app's Info.plist, not from a constant
     func testTheRegisteredModeIDsAreReadFromTheInfoPlist() throws {
         let fake: [String: Any] = ["ComponentInputModeDict": ["tsInputModeListKey": ["x.y.A": [:], "x.y.B": [:]]]]
@@ -98,13 +110,15 @@ final class InputSourceLeaveWatcherTests: XCTestCase {
     let center = NotificationCenter()
     var selected: (inputSourceID: String?, bundleID: String?) = (nil, nil)
     var leaves = 0
+    var selects = 0
     var watcher: InputSourceLeaveWatcher!
 
     override func setUp() {
         watcher = InputSourceLeaveWatcher(
             center: center, name: InputSourceLeaveWatcher.notificationName, ownBundleID: own,
             modeIDs: [own + ".Bopomofo", own + ".PlainBopomofo"],
-            currentSource: { [unowned self] in self.selected }, onLeave: { [unowned self] in self.leaves += 1 })
+            currentSource: { [unowned self] in self.selected }, onLeave: { [unowned self] in self.leaves += 1 },
+            onSelect: { [unowned self] in self.selects += 1 })
         watcher.start()
     }
 
@@ -134,6 +148,11 @@ final class InputSourceLeaveWatcherTests: XCTestCase {
         selected = (own + ".PlainBopomofo", own)
         post()
         XCTAssertEqual(leaves, 0)
+        XCTAssertEqual(selects, 2, "v3.4j: but it says that ours is selected (the menu-bar mode item shows again)")
+        selected = ("com.apple.keylayout.ABC", nil)
+        post()
+        XCTAssertEqual(selects, 2, "a leave is not a select")
+        XCTAssertEqual(leaves, 1)
     }
 
     func testTheDevelopmentBuildsModeIsALeaveForTheReleaseBuild() {
@@ -149,6 +168,7 @@ final class InputSourceLeaveWatcherTests: XCTestCase {
         selected = (nil, nil)
         post()
         XCTAssertEqual(leaves, 0)
+        XCTAssertEqual(selects, 0)
     }
 
     func testStoppedWatchersAndOtherNotificationsAreQuiet() {
@@ -188,7 +208,14 @@ final class InputSourceSwitchControllerTests: SlothEV32TestCase {
         savedIndicator = EnglishModeIndicator.shared
         savedFirstUse = FirstUseNotices.shared
         item = FakeStatusItem()
-        EnglishModeIndicator.shared = EnglishModeIndicator(item: item, hideDelay: 0)
+        // v3.4j: the indicator reads the faked system selection (nil = unreadable = an activation counts as ours)
+        EnglishModeIndicator.shared = EnglishModeIndicator(
+            item: item,
+            selectedSourceIsOurs: { [unowned self] in
+                OwnInputSource.currentSelectionIsOurs(
+                    selected: self.selected, ownBundleID: self.own, modeIDs: [self.own + ".Bopomofo", self.own + ".PlainBopomofo"])
+            },
+            shiftToggleEnabled: { Preferences.slothEShiftToggleEnabled })
         suite = "org.openvanilla.McBopomofoLM.tests.inputsource.\(UUID().uuidString)"
         FirstUseNotices.shared = FirstUseNotices(defaults: UserDefaults(suiteName: suite)!, notify: { _ in })
         watcher = McBopomofoInputMethodController.makeInputSourceWatcher(
@@ -245,19 +272,23 @@ final class InputSourceSwitchControllerTests: SlothEV32TestCase {
         s.controller.activateServer(s.client)
         tap(s)
         XCTAssertTrue(s.english)
-        XCTAssertTrue(item.isShown, "the menu-bar A while English mode is on")
+        XCTAssertTrue(item.isShown, "the menu-bar item says A while English mode is on")
+        XCTAssertTrue(item.showsEnglish)
         let hudsBefore = s.huds.count
         // the user selects ABC: our controller is deactivated, the system announces the new source
         s.controller.deactivateServer(s.client)
         post(("com.apple.keylayout.ABC", nil))
         XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode, "English mode is cleared")
-        XCTAssertFalse(item.isShown, "the menu-bar A is gone")
+        XCTAssertFalse(item.isShown, "the menu-bar item is hidden while ABC is selected")
         XCTAssertEqual(s.huds.count, hudsBefore, "no HUD for it")
         // and back to 注音 LM: Chinese mode, in the same controller and in the controller of another client
         post((own + ".Bopomofo", own))
+        XCTAssertTrue(item.isShown, "v3.4j: ours is selected again: the item is back, saying 中")
+        XCTAssertFalse(item.showsEnglish)
         s.controller.activateServer(s.client)
         XCTAssertFalse(s.english)
-        XCTAssertFalse(item.isShown)
+        XCTAssertTrue(item.isShown)
+        XCTAssertFalse(item.showsEnglish)
         let other = SlothEShiftControllerTests.Setup(FakeMouse())
         other.controller.activateServer(other.client)
         XCTAssertFalse(other.english)
@@ -266,6 +297,24 @@ final class InputSourceSwitchControllerTests: SlothEV32TestCase {
         XCTAssertTrue(s.english)
         s.controller.deactivateServer(s.client)
         other.controller.deactivateServer(other.client)
+    }
+
+    // v3.4j: the item goes first, then English mode is cleared: at no moment is it on screen saying 中 under ABC
+    func testTheItemNeverSaysChineseWhileAnotherSourceIsActive() {
+        let s = SlothEShiftControllerTests.Setup(FakeMouse())
+        s.controller.activateServer(s.client)
+        tap(s)
+        XCTAssertTrue(item.isShown)
+        XCTAssertTrue(item.showsEnglish)
+        item.states.removeAll()
+        post(("com.apple.keylayout.ABC", nil))
+        XCTAssertFalse(item.isShown)
+        XCTAssertFalse(item.states.isEmpty)
+        XCTAssertFalse(item.states.contains { $0.shown && !$0.english }, "a visible 中 appeared during the leave: \(item.states)")
+        // and while ABC stays selected nothing brings it back: not a window switch, not a Shift tap's activation
+        s.controller.activateServer(FakeIMKClient())  // (the system would not activate us under ABC; the read says no)
+        XCTAssertFalse(item.isShown)
+        s.controller.deactivateServer(s.client)
     }
 
     func testSwitchingToAnotherInputMethodAlsoClears() {

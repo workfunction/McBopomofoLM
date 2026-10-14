@@ -250,23 +250,26 @@ final class V33PreferencesWindowTests: V33OptionsTestCase {
     private func checkShiftSwitchFromTheWindow() {
         let item = FakeStatusItem()
         let savedIndicator = EnglishModeIndicator.shared
-        EnglishModeIndicator.shared = EnglishModeIndicator(item: item, hideDelay: 0)
+        EnglishModeIndicator.shared = EnglishModeIndicator(
+            item: item, selectedSourceIsOurs: { true }, shiftToggleEnabled: { Preferences.slothEShiftToggleEnabled })
         defer {
             EnglishModeIndicator.shared = savedIndicator
             McBopomofoInputMethodController.slothEGlobalEnglishMode = false
         }
         let model = PreferencesViewModel()
         Preferences.slothEShiftToggleEnabled = true
-        // English mode is on and a client is active: the A is up.
-        EnglishModeIndicator.shared.clientActivated(ObjectIdentifier(model))
+        // English mode is on and ours is the selected source: the item is up, saying A.
+        EnglishModeIndicator.shared.clientActivated()
         McBopomofoInputMethodController.slothEGlobalEnglishMode = true
         XCTAssertTrue(item.isShown)
+        XCTAssertTrue(item.showsEnglish)
         let controller = McBopomofoInputMethodController(server: nil, delegate: nil, client: nil)!
         controller.keyHandler.slothEEnglishMode = true
 
         model.slothEShiftToggleEnabled = false  // the preferences window, no controller involved
         XCTAssertFalse(McBopomofoInputMethodController.slothEGlobalEnglishMode, "the process-wide mode ends at once")
-        XCTAssertFalse(item.isShown, "and so does the A")
+        XCTAssertFalse(item.isShown, "and the menu-bar item hides with the switch (v3.4j)")
+        XCTAssertFalse(item.showsEnglish)
         XCTAssertFalse(controller.keyHandler.slothEEnglishMode, "every key handler's own flag, by the notification")
         // Turned on again before any key event: no English mode comes back by itself, in any later activation.
         model.slothEShiftToggleEnabled = true
@@ -274,7 +277,6 @@ final class V33PreferencesWindowTests: V33OptionsTestCase {
         controller.activateServer(NSObject())
         XCTAssertFalse(controller.keyHandler.slothEEnglishMode)
         controller.deactivateServer(NSObject())
-        EnglishModeIndicator.shared.clientDeactivated(ObjectIdentifier(model))
     }
 
     func testTheNewSettingsPostTheNotificationsTheRuntimesListenTo() {

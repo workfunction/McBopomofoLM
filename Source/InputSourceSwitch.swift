@@ -7,7 +7,7 @@
 // keyboard input source changes. When the newly selected source is not one of this input method's modes (ABC,
 // another input method), English mode is cleared; the next time the user comes back to 注音 LM it is in Chinese
 // mode, so it cannot be mistaken for the system's English layout. Clearing the flag is all that happens: the
-// menu-bar "A" follows the flag (EnglishModeIndicator), no HUD is shown, and the composing buffer is not
+// menu-bar mode item follows the flag (EnglishModeIndicator), no HUD is shown, and the composing buffer is not
 // touched (by then it was committed on deactivate, or it is no longer ours). The next activateServer of any
 // controller takes the cleared flag over (v3.2i).
 //
@@ -15,6 +15,9 @@
 // that began before the leave cannot write the flag back; the flag is cleared; every live controller drops its local
 // English mode and its composing state's English marker (the text is not touched) and stops owning the source until its
 // next activateServer.
+//
+// v3.4j: the same notification also tells the menu-bar mode item whether this input method is selected: it hides
+// when another source is selected (before English mode is cleared) and shows again when one of ours is.
 //
 // A source that cannot be read (TIS answers nothing) changes nothing.
 
@@ -64,10 +67,23 @@ enum OwnInputSource {
         }
         return (property(kTISPropertyInputSourceID), property(kTISPropertyBundleID))
     }
+
+    /// Is the selected input source one of ours? nil when the system does not say (v3.4j; the menu-bar mode item's
+    /// visibility and the watcher use it). The three inputs are replaceable for tests.
+    static func currentSelectionIsOurs(
+        selected: (inputSourceID: String?, bundleID: String?) = currentSelected(),
+        ownBundleID: String = Bundle.main.bundleIdentifier ?? "",
+        modeIDs: Set<String> = registeredModeIDs()
+    ) -> Bool? {
+        if selected.inputSourceID == nil && selected.bundleID == nil {
+            return nil  // unreadable
+        }
+        return isOurs(inputSourceID: selected.inputSourceID, bundleID: selected.bundleID, ownBundleID: ownBundleID, modeIDs: modeIDs)
+    }
 }
 
-/// Calls `onLeave` when the selected input source changes to one that is not ours. The center is injectable
-/// (the app uses the distributed center; tests post to a private one).
+/// Calls `onLeave` when the selected input source changes to one that is not ours, and (v3.4j) `onSelect` when it
+/// changes to one that is. The center is injectable (the app uses the distributed center; tests post to a private one).
 final class InputSourceLeaveWatcher {
     static let notificationName = Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String)
 
@@ -77,6 +93,7 @@ final class InputSourceLeaveWatcher {
     private let modeIDs: Set<String>
     private let currentSource: () -> (inputSourceID: String?, bundleID: String?)
     private let onLeave: () -> Void
+    private let onSelect: (() -> Void)?
     private var token: NSObjectProtocol?
 
     init(
@@ -85,7 +102,8 @@ final class InputSourceLeaveWatcher {
         ownBundleID: String = Bundle.main.bundleIdentifier ?? "",
         modeIDs: Set<String> = OwnInputSource.registeredModeIDs(),
         currentSource: @escaping () -> (inputSourceID: String?, bundleID: String?) = OwnInputSource.currentSelected,
-        onLeave: @escaping () -> Void
+        onLeave: @escaping () -> Void,
+        onSelect: (() -> Void)? = nil
     ) {
         self.center = center
         self.name = name
@@ -93,6 +111,7 @@ final class InputSourceLeaveWatcher {
         self.modeIDs = modeIDs
         self.currentSource = currentSource
         self.onLeave = onLeave
+        self.onSelect = onSelect
     }
 
     deinit { stop() }
@@ -115,13 +134,15 @@ final class InputSourceLeaveWatcher {
 
     /// What the notification does; also called directly by tests.
     func selectedSourceChanged() {
-        let selected = currentSource()
-        if selected.inputSourceID == nil && selected.bundleID == nil {
+        guard
+            let ours = OwnInputSource.currentSelectionIsOurs(
+                selected: currentSource(), ownBundleID: ownBundleID, modeIDs: modeIDs)
+        else {
             return  // unreadable: change nothing
         }
-        if !OwnInputSource.isOurs(
-            inputSourceID: selected.inputSourceID, bundleID: selected.bundleID, ownBundleID: ownBundleID, modeIDs: modeIDs)
-        {
+        if ours {
+            onSelect?()
+        } else {
             onLeave()
         }
     }
@@ -139,7 +160,12 @@ extension McBopomofoInputMethodController {
     ) -> InputSourceLeaveWatcher {
         InputSourceLeaveWatcher(
             center: center, name: name, ownBundleID: ownBundleID, modeIDs: modeIDs, currentSource: currentSource,
-            onLeave: { McBopomofoInputMethodController.handleLeftInputSource() })
+            onLeave: {
+                // v3.4j: the menu-bar mode item goes first, so it never says 中 while another source is active
+                EnglishModeIndicator.shared.sourceSelectionChanged(isOurs: false)
+                McBopomofoInputMethodController.handleLeftInputSource()
+            },
+            onSelect: { EnglishModeIndicator.shared.sourceSelectionChanged(isOurs: true) })
     }
 
     /// The running input method's watcher (made at launch, not under XCTest).
@@ -150,5 +176,7 @@ extension McBopomofoInputMethodController {
             inputSourceWatcher = makeInputSourceWatcher()
         }
         inputSourceWatcher?.start()
+        EnglishModeIndicator.shared.syncWithSystem()  // v3.4j: the menu-bar mode item, if ours is already selected
+        EnglishModeIndicator.shared.startObservingPreference()  // v3.4l: and it follows the Shift switch changed from outside
     }
 }
