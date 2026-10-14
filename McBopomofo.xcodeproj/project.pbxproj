@@ -135,6 +135,8 @@
 		A34F0011B3E04D9AB1C2D3E4 /* InstallCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0010B3E04D9AB1C2D3E4 /* InstallCommand.swift */; };
 		A34F0009B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */; };
 		A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */; };
+		A34F0015B3E04D9AB1C2D3E4 /* V34pTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0014B3E04D9AB1C2D3E4 /* V34pTests.swift */; };
+		A34F0017B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = A34F0016B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm */; };
 		4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -331,6 +333,8 @@
 		A34F0010B3E04D9AB1C2D3E4 /* InstallCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallCommand.swift; sourceTree = "<group>"; };
 		A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeSwitchHUDTests.swift; sourceTree = "<group>"; };
 		A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34nTests.swift; sourceTree = "<group>"; };
+		A34F0014B3E04D9AB1C2D3E4 /* V34pTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34pTests.swift; sourceTree = "<group>"; };
+		A34F0016B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEModelStoreTests.mm; sourceTree = "<group>"; };
 		5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33EnglishIndicatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -622,6 +626,8 @@
 				A34F000CB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift */,
 				A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */,
 				A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */,
+				A34F0014B3E04D9AB1C2D3E4 /* V34pTests.swift */,
+				A34F0016B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm */,
 				7A63687C7CAC3A4BF7B908AB /* V33FirstUseTests.swift */,
 				967A467D1C931E6F7B13AAA3 /* V33OptionsTests.swift */,
 				0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */,
@@ -929,6 +935,8 @@
 				A34F000DB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift in Sources */,
 				A34F0009B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift in Sources */,
 				A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */,
+				A34F0015B3E04D9AB1C2D3E4 /* V34pTests.swift in Sources */,
+				A34F0017B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm in Sources */,
 				7EF035FF42FF58BD8EBF0517 /* V33FirstUseTests.swift in Sources */,
 				0353026CBF7B683EB9F00D42 /* V33OptionsTests.swift in Sources */,
 				00A5F3A8A9C947CFA480A073 /* V33ReleaseTests.swift in Sources */,

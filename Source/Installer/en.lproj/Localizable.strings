@@ -113,6 +113,12 @@
 "The Neural Engine compile cache of the models was deleted as well." = "The Neural Engine compile cache of the models was deleted as well.";
 "The compile cache of the models could not be deleted. You can delete the folder %@ yourself." = "The compile cache of the models could not be deleted. You can delete the folder %@ yourself.";
 
+/* Removal also deletes the input method's copy of the models, outside the app (v3.4p) */
+"Deleting the copy of the models…" = "Deleting the copy of the models…";
+"The copy of the models that McBopomofo LM kept outside the app was deleted as well." = "The copy of the models that McBopomofo LM kept outside the app was deleted as well.";
+"The copy of the models could not be deleted. You can delete the folder %@ yourself." = "The copy of the models could not be deleted. You can delete the folder %@ yourself.";
+"McBopomofo LM was still running, so its copy of the models was not deleted. Log out and in again, then delete the folder %@ yourself." = "McBopomofo LM was still running, so its copy of the models was not deleted. Log out and in again, then delete the folder %@ yourself.";
+
 /* The old process must be gone before anything is replaced or deleted (v3.3l) */
 "McBopomofo LM was still running, so its compile cache was not deleted. Log out and in again, then delete the folder %@ yourself." = "McBopomofo LM was still running, so its compile cache was not deleted. Log out and in again, then delete the folder %@ yourself.";
 "The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again." = "The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again.";

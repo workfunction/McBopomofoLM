@@ -29,9 +29,14 @@ final class V34nInstallCommandTests: XCTestCase {
         var markerResult = true
         var compileCalls = 0
         let runtime: SlothERuntime
+        private let storeHolder: String
         init(resourcePath: String) {
             runtime = SlothERuntime(resourcePath: resourcePath, logPath: nil)
+            // v3.4p: install makes the model store; this rig's lives in a temp folder (nothing in Application Support)
+            storeHolder = (NSTemporaryDirectory() as NSString).appendingPathComponent("v34n-store-\(UUID().uuidString)")
+            runtime.modelStoreRootForTesting = (storeHolder as NSString).appendingPathComponent("Models")
         }
+        deinit { try? FileManager.default.removeItem(atPath: storeHolder) }
         func command(bundleID: String? = "org.example.fake") -> InstallCommand {
             InstallCommand(
                 bundleID: bundleID, bundleURL: URL(fileURLWithPath: "/tmp/Fake.app"), runtime: runtime, registrar: registrar,
@@ -56,9 +61,10 @@ final class V34nInstallCommandTests: XCTestCase {
         XCTAssertFalse(rig.runtime.loaded)
         XCTAssertFalse(rig.runtime.loading, "nothing was loaded or compiled")
         XCTAssertFalse(rig.runtime.decoderLoaded)
-        XCTAssertEqual(rig.lines.count, 2)
+        XCTAssertEqual(rig.lines.count, 3, "v3.4p: the verified line, the model store line, the closing line")
         XCTAssertNotNil(rig.lines[0].range(of: #"^McBopomofoLM: model files verified \(size \+ sha256\) in [0-9]+ ms\.$"#, options: .regularExpression), rig.lines[0])
-        XCTAssertTrue(rig.lines[1].contains("first time it starts"))
+        XCTAssertTrue(rig.lines[1].contains("model store"), rig.lines[1])
+        XCTAssertTrue(rig.lines[2].contains("first time it starts"))
     }
 
     func testDamagedFilesStopBeforeAnythingIsRegistered() {
@@ -1050,6 +1056,12 @@ final class ANEColdStartTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: cache)  // this host's own dev cache: a cold start
         let runtime = SlothERuntime(resourcePath: slothEResourcePath, logPath: nil)
         runtime.aneCacheClearMarkerPathForTesting = (NSTemporaryDirectory() as NSString).appendingPathComponent("v34n-no-marker-\(UUID().uuidString)")
+        // v3.4p: the first start as the input method makes it: no store yet, so the models are copied to the store (here a
+        // temp folder, not Application Support) and compiled from there
+        let coldStoreHolder = (NSTemporaryDirectory() as NSString).appendingPathComponent("v34p-cold-start-models")
+        try? FileManager.default.removeItem(atPath: coldStoreHolder)
+        runtime.modelStoreRootForTesting = (coldStoreHolder as NSString).appendingPathComponent("Models")
+        defer { try? FileManager.default.removeItem(atPath: coldStoreHolder) }
         let handler = KeyHandler()
         handler.inputMode = .bopomofo
         handler.slothERuntime = runtime
@@ -1146,6 +1158,7 @@ final class ANEColdStartTests: XCTestCase {
         typeFor(keysCount: 150)
         let after = samples
 
+        NSLog("SLOTHE_V34N cold start model store: %@ (%@)", runtime.modelStoreStatus ?? "?", runtime.modelDirectory ?? "?")
         NSLog("SLOTHE_V34N cold start: encoder loaded at %.1f s, encoder + decoder t16 at %.1f s, eager pass done at %.1f s (pass %.1f s), %d keys typed on the main thread", loadedAt ?? -1, fullyLoadedAt ?? -1, total, runtime.eagerCompileMilliseconds / 1000, during.count)
         NSLog("SLOTHE_V34N key handler ms: idle p50 %.3f p95 %.3f max %.3f | during the compile + pass p50 %.3f p95 %.3f p99 %.3f max %.3f | after p50 %.3f p95 %.3f max %.3f",
               percentile(idle, 0.5), percentile(idle, 0.95), idle.max() ?? .nan,

@@ -113,6 +113,12 @@
 "The Neural Engine compile cache of the models was deleted as well." = "模型的 Neural Engine 編譯快取也已刪除。";
 "The compile cache of the models could not be deleted. You can delete the folder %@ yourself." = "無法刪除模型的編譯快取。您可以自行刪除這個資料夾：%@";
 
+/* Removal also deletes the input method's copy of the models, outside the app (v3.4p) */
+"Deleting the copy of the models…" = "正在刪除模型副本…";
+"The copy of the models that McBopomofo LM kept outside the app was deleted as well." = "小麥注音 LM 存放在 App 外面的模型副本也已刪除。";
+"The copy of the models could not be deleted. You can delete the folder %@ yourself." = "無法刪除模型副本。您可以自行刪除這個資料夾：%@";
+"McBopomofo LM was still running, so its copy of the models was not deleted. Log out and in again, then delete the folder %@ yourself." = "小麥注音 LM 還在執行，所以沒有刪除它的模型副本。請先登出再登入，然後自行刪除這個資料夾：%@";
+
 /* The old process must be gone before anything is replaced or deleted (v3.3l) */
 "McBopomofo LM was still running, so its compile cache was not deleted. Log out and in again, then delete the folder %@ yourself." = "小麥注音 LM 還在執行，所以沒有刪除它的模型編譯快取。請先登出再登入，然後自行刪除這個資料夾：%@";
 "The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again." = "無法停止目前安裝的小麥注音 LM，所以沒有更動任何東西。請先登出再登入，然後重新打開安裝程式。";

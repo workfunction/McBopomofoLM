@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <condition_variable>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -253,9 +254,117 @@ std::vector<std::string> DecoderRuntimeFiles();
 // Hex sha256 of a file; false when it cannot be read.
 bool Sha256File(const std::string& path, std::string* hexDigest,
                 uint64_t* size);
+// A parsed runtime-manifest.txt: the entries and the set id (the first 16 hex characters of the sha256 of the file's
+// bytes, taken from the SAME bytes that were parsed). A runtime keeps one of these from its start-up check on and uses it
+// for every later check (v3.4p, Sol r49): the manifest file at the bundle path can be replaced by an update while an
+// older input method process is still running on the files it verified.
+struct RuntimeManifestEntry {
+  std::string name;
+  std::string sha;
+  uint64_t size = 0;
+};
+struct ModelManifest {
+  std::string setId;
+  std::vector<RuntimeManifestEntry> entries;
+};
+// Reads `<bundleDir>/runtime-manifest.txt` once.
+bool LoadModelManifest(const std::string& bundleDir, ModelManifest* manifest, std::string* error);
+
+// `manifestPath` (v3.4p): the manifest the files are checked against; empty = the one in `resourceDir`. A model
+// store copy is always checked against the BUNDLE's manifest (the app's signature seals it), never its own.
 bool VerifyRuntimeFiles(const std::string& resourceDir,
                         const std::vector<std::string>& names,
-                        std::string* error);
+                        std::string* error,
+                        const std::string& manifestPath = std::string());
+// The same against a manifest that was read earlier (the snapshot of a running input method): the file is not read.
+bool VerifyRuntimeFiles(const std::string& resourceDir,
+                        const std::vector<std::string>& names,
+                        std::string* error,
+                        const ModelManifest& manifest);
+
+// ---------------------------------------------------------------- model store (v3.4p)
+//
+// The Core ML / Neural Engine compile cache follows the model FILES (path plus file identity), not the executable or
+// the app bundle (reports/ane-cache-keying.md). A copy of the bundle's runtime files in a stable place outside the app
+// keeps the cache valid across app updates whose models are unchanged: `<root>/<set id>/`, where `<root>` is
+// `Application Support/McBopomofoLM[.dev]/Models` and the set id is the first 16 hex characters of the sha256 of the
+// bundle's runtime-manifest.txt (which lists every runtime file with its sha256).
+//
+// A store directory is NEVER modified after it was published: changing it would invalidate the cache.
+//
+// Folders (Sol r49):
+//  - `<root>/.lock` serialises creating, repairing and cleaning (flock);
+//  - `<root>/.leases/<set id>.lock` is a LEASE: every runtime that loads from a set holds a shared flock on it for its
+//    whole life (outside the set directory, so the set's files are never touched). Clean-up and repair need an exclusive,
+//    non-blocking flock on the lease, so a set somebody still reads is never deleted or replaced;
+//  - the store folder may be (or sit below) a symlink: followed on purpose (user decision 2026-10-14: the user points
+//    `Models` somewhere else for testing). Removal is the careful part: a clean-up or repair removes only direct entries of
+//    the root that lstat shows to be real directories named like a set / `.tmp-*` / `.corrupt-*`, and never follows a
+//    symlink inside what it removes (removefile).
+// The files are cloned (clonefile(2)) when the store and the bundle are on one APFS volume, else copied.
+
+// A shared lease on one set; the lock is released when the last copy goes away.
+struct ModelSetLease {
+  explicit ModelSetLease(int descriptor) : fd(descriptor) {}
+  ~ModelSetLease();
+  ModelSetLease(const ModelSetLease&) = delete;
+  ModelSetLease& operator=(const ModelSetLease&) = delete;
+  int fd = -1;
+};
+
+struct ModelStoreResult {
+  bool ok = false;
+  // true = this call copied the files in (first install, new models, a damaged copy replaced); false = an existing,
+  // intact store was reused (its identity is untouched).
+  bool created = false;
+  std::string setId;
+  std::string directory;  // <root>/<setId>, when ok
+  std::string error;      // when !ok
+  // When ok: the shared lease on this set. Whoever loads from the set keeps it for as long as it does.
+  std::shared_ptr<ModelSetLease> lease;
+  // How the files got into a newly created set (both 0 when it was reused).
+  size_t clonedFiles = 0;
+  size_t copiedFiles = 0;
+};
+
+struct ModelStoreOptions {
+  // Test hook: copy the files instead of cloning them (as on a volume without clones).
+  bool disableCloneForTesting = false;
+  // Test hook, with the lock held: the copy is complete and verified, nothing is published yet.
+  std::function<void(const std::string& temporaryDirectory)> beforePublish;
+};
+
+// The first 16 hex characters of the sha256 of `<bundleDir>/runtime-manifest.txt`.
+bool ModelSetId(const std::string& bundleDir, std::string* setId, std::string* error);
+
+// Makes sure `<storeRoot>/<set id>` holds an intact copy of the bundle's runtime files and takes a lease on it:
+//  - exists and every file matches the BUNDLE's manifest (size + sha256, read only): reused, nothing touched;
+//  - else (missing, damaged, not a directory): a damaged one is replaced ONLY if nobody holds its lease (exclusive,
+//    non-blocking); a busy one is an error ("in use") and nothing is touched. Replacing = renamed aside and deleted, the
+//    files copied to `<storeRoot>/.tmp-<pid>-<random>`, verified against the bundle's manifest, and published with
+//    renamex_np(RENAME_EXCL), so a concurrent winner is detected and never clobbered.
+// The intermediate directories are created first. It deletes no other set (see CollectModelStoreGarbage).
+// The overload with a manifest uses that snapshot (the runtime's) instead of reading the file.
+ModelStoreResult EnsureModelStore(const std::string& bundleDir, const std::string& storeRoot,
+                                  const ModelStoreOptions& options = ModelStoreOptions());
+ModelStoreResult EnsureModelStore(const ModelManifest& manifest, const std::string& bundleDir,
+                                  const std::string& storeRoot,
+                                  const ModelStoreOptions& options = ModelStoreOptions());
+
+struct ModelStoreCleanup {
+  size_t sets = 0;         // other set directories deleted
+  size_t temporaries = 0;  // .tmp-* and .corrupt-* leftovers deleted
+  size_t leased = 0;       // sets kept because a runtime still holds their lease
+  size_t protectedSets = 0;  // sets kept because they are this runtime's own or the one the bundle on disk now names
+};
+
+// Deletes the other 16-hex set directories of `storeRoot` and stale `.tmp-*` / `.corrupt-*` leftovers, under the lock,
+// except: `keepSetId`; the set the manifest at `bundleDir` names NOW (re-read here: an update may have installed it
+// since this runtime started; if that manifest cannot be read no set is deleted); and any set whose lease is held.
+// Only real directories with those names are removed (a symlink named like one is left alone), and no symlink inside
+// them is followed. Only the RUNTIME calls it, once, after its own successful load; `install` never does.
+ModelStoreCleanup CollectModelStoreGarbage(const std::string& storeRoot, const std::string& keepSetId,
+                                           const std::string& bundleDir);
 
 }  // namespace McBopomofoSlothE
 

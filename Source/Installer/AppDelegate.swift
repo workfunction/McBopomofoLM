@@ -517,12 +517,17 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         let userData = InstallerConstants.userDataDirectory
         let appExists = FileManager.default.fileExists(atPath: installedPath)
         let compileCache = InstallerConstants.compileCacheDirectory
+        let modelStore = (userData as NSString).appendingPathComponent(ModelStore.folderName)
         let steps = UninstallPlan.steps(
-            userDataExists: FileManager.default.fileExists(atPath: userData),
+            // v3.4p: the folder also holds the model store, which is not the user's data: the question is asked only
+            // when something else is in it
+            userDataExists: ModelStore.userDataHasContent(userDataDirectory: userData),
             appExists: appExists,
-            compileCacheExists: CompileCache.exists(at: compileCache))
+            compileCacheExists: CompileCache.exists(at: compileCache),
+            modelStoreExists: ModelStore.exists(userDataDirectory: userData))
         var userDataTrashed = false
         var compileCacheOutcome: CompileCache.Outcome?
+        var modelStoreOutcome: ModelStore.Outcome?
         var processStop = ProcessStop.Result.gone
         do {
             try await InstallRunner.runAsync(steps, willRun: { step, index, total in
@@ -568,6 +573,13 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
                             stop, cachesDirectory: InstallerConstants.cachesDirectory,
                             bundleID: InstallerConstants.bundleID)
                     }
+                case .removeModelStore:
+                    // The input method's copy of the models (about 140 MB): not user data, deleted whatever is
+                    // answered below, once the process is gone. A refusal or a failure does not fail the removal.
+                    let stop = processStop
+                    modelStoreOutcome = try await background {
+                        ModelStore.removeAfterStop(stop, userDataDirectory: userData)
+                    }
                 case .askAboutUserData:
                     if askAboutUserData(path: userData) == .moveToTrash {
                         do {
@@ -603,7 +615,17 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .notThere?, nil:
             break
         }
-        if !userDataTrashed && FileManager.default.fileExists(atPath: userData) {
+        switch modelStoreOutcome {
+        case .removed?:
+            message += "\n\n" + NSLocalizedString("The copy of the models that McBopomofo LM kept outside the app was deleted as well.", comment: "")
+        case .refused?, .failed?:
+            message += "\n\n" + String(format: NSLocalizedString("The copy of the models could not be deleted. You can delete the folder %@ yourself.", comment: ""), (modelStore as NSString).abbreviatingWithTildeInPath)
+        case .skippedProcessRunning?:
+            message += "\n\n" + String(format: NSLocalizedString("McBopomofo LM was still running, so its copy of the models was not deleted. Log out and in again, then delete the folder %@ yourself.", comment: ""), (modelStore as NSString).abbreviatingWithTildeInPath)
+        case .notThere?, nil:
+            break
+        }
+        if !userDataTrashed && ModelStore.userDataHasContent(userDataDirectory: userData) {
             message += "\n\n" + String(format: NSLocalizedString("Your user phrases and settings were kept in %@.", comment: ""), (userData as NSString).abbreviatingWithTildeInPath)
         }
         runAlertPanel(title: NSLocalizedString("McBopomofo LM Removed", comment: ""), message: message, buttonTitle: NSLocalizedString("OK", comment: ""))
@@ -646,6 +668,7 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .stopProcess: return NSLocalizedString("Stopping McBopomofo LM…", comment: "")
         case .moveToTrash: return NSLocalizedString("Moving McBopomofo LM to the Trash…", comment: "")
         case .removeCompileCache: return NSLocalizedString("Deleting the compile cache of the models…", comment: "")
+        case .removeModelStore: return NSLocalizedString("Deleting the copy of the models…", comment: "")
         case .askAboutUserData: return NSLocalizedString("Your user data", comment: "")
         }
     }

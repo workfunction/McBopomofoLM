@@ -105,6 +105,22 @@ static const size_t kMaxEndToEndSamples = 4096;
 // v3.4n: has any runtime of this process started loading models? (a destructive test must not run after that)
 static std::atomic<bool> gAnyModelLoadStarted { false };
 
+@interface SlothEModelStoreResult ()
+@property (readwrite, nonatomic) BOOL ok;
+@property (readwrite, nonatomic) BOOL created;
+@property (readwrite, nonatomic, nullable) NSString *setID;
+@property (readwrite, nonatomic, nullable) NSString *directory;
+@property (readwrite, nonatomic, nullable) NSString *error;
+@end
+
+@implementation SlothEModelStoreResult
+@synthesize ok = _ok;
+@synthesize created = _created;
+@synthesize setID = _setID;
+@synthesize directory = _directory;
+@synthesize error = _error;
+@end
+
 @implementation SlothERuntime {
     std::shared_ptr<McBopomofoSlothE::Engine> _engine;
     std::shared_ptr<McBopomofoSlothE::Decoder> _decoder;
@@ -129,6 +145,21 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
     std::atomic<NSUInteger> _prewarmDone;
     BOOL _aneCacheCleared;
     BOOL _loadAllDecoderFunctions;
+    // v3.4p: the model store. `_modelDir` is where the models are loaded from (the store copy, or the bundle).
+    BOOL _useModelStore;           // application runtimes; others only with modelStoreRootForTesting
+    BOOL _modelStorePrepared;      // load queue
+    BOOL _modelStoreCollected;     // load queue: the clean-up after the first successful load ran
+    NSString *_modelDir;           // under @synchronized(self)
+    NSString *_modelStoreStatus;   // under @synchronized(self)
+    NSString *_modelStoreSetID;    // load queue
+    NSString *_modelStoreActiveRoot;  // load queue
+    std::atomic<NSUInteger> _storeSetsCollected;
+    std::atomic<NSUInteger> _storeTemporariesCollected;
+    std::atomic<NSUInteger> _storeSetsKeptForLeases;
+    // Sol r49: the manifest as it was when this runtime started (every later check uses it, never the file again), and the
+    // lease on the model set this runtime loads from, held for the runtime's whole life
+    std::shared_ptr<const McBopomofoSlothE::ModelManifest> _manifest;
+    std::shared_ptr<McBopomofoSlothE::ModelSetLease> _lease;
     // v3.4n: probe retry ("still loading"), eager compile pass
     BOOL _encoderProbeRetried;
     BOOL _decoderProbeRetried;
@@ -204,6 +235,8 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
 @synthesize aneCacheInstallMarkerPathForTesting = _aneCacheInstallMarkerPathForTesting;
 @synthesize markerClaimedHookForTesting = _markerClaimedHookForTesting;
 @synthesize clearActionForTesting = _clearActionForTesting;
+@synthesize modelStoreRootForTesting = _modelStoreRootForTesting;
+@synthesize fallbackPublishHookForTesting = _fallbackPublishHookForTesting;
 @synthesize eagerStepHookForTesting = _eagerStepHookForTesting;
 @synthesize lazyCPUOnlyForTesting = _lazyCPUOnlyForTesting;
 @synthesize minEncoderANECostPercent = _minEncoderANECostPercent;
@@ -262,6 +295,7 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
 {
     self = [self initWithResourcePath:resourcePath logPath:logPath];
     if (self) {
+        _useModelStore = YES;  // v3.4p: the application loads its models from the model store
         _logState.store(logPath != nil && [SlothERuntime diagnosticLogPreference] ? 1 : 0);
         __weak SlothERuntime *weakSelf = self;
         _diagnosticLogObserver = [NSNotificationCenter.defaultCenter addObserverForName:SlothEDiagnosticLogPreferenceDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note) {
@@ -341,6 +375,9 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
         _eagerResumeIndex = -1;
         _probeRetryCount.store(0);
         _loadAttempts.store(0);
+        _storeSetsCollected.store(0);
+        _storeTemporariesCollected.store(0);
+        _storeSetsKeptForLeases.store(0);
         _eagerDone.store(false);
         _eagerMicroseconds.store(0);
         _eagerLog = [NSMutableArray array];
@@ -373,6 +410,11 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
 {
     self = [self initWithResourcePath:other.resourcePath logPath:logPath];
     if (self) {
+        _modelDir = other.modelDirectory;
+        _modelStoreStatus = other.modelStoreStatus;
+        _modelStorePrepared = YES;
+        _manifest = other->_manifest;
+        _lease = other->_lease;
         _engine = other->_engine;
         _decoder = other->_decoder;
         _loadMs = other->_loadMs;
@@ -645,9 +687,16 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
                 NSLog(@"McBopomofoLM: SlothE next-token function n%zu not used until the input method restarts (%s: %s); the correction window uses the T1 rule", length, info.reason.c_str(), info.detail.c_str());
             }
         };
-        std::string dir(_resourcePath.fileSystemRepresentation);
-        options.verifyBeforeLazyLoad = [dir](std::string *error) {
-            return McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), error);
+        std::string dir([self _modelDirectoryForLoad].fileSystemRepresentation);
+        std::string manifestPath = [self _bundleManifestPath];
+        std::shared_ptr<const McBopomofoSlothE::ModelManifest> snapshot = _manifest;
+        options.verifyBeforeLazyLoad = [dir, manifestPath, snapshot](std::string *error) {
+            // v3.4p: a store copy is checked against the BUNDLE's manifest as this runtime read it at start-up (Sol r49:
+            // an update may have replaced the file at the bundle path since; it is never read again), at every lazy load
+            if (snapshot != nullptr) {
+                return McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), error, *snapshot);
+            }
+            return McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), error, manifestPath);
         };
     }
     return options;
@@ -812,8 +861,9 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
     }
     gAnyModelLoadStarted.store(true);
     ++_loadAttempts;
+    [self _prepareModelStore];  // v3.4p: before the clock starts, so the load timings stay comparable
     auto t0 = std::chrono::steady_clock::now();
-    std::string dir(_resourcePath.fileSystemRepresentation);
+    std::string dir([self _modelDirectoryForLoad].fileSystemRepresentation);
     std::string error;
     NSString *reason = @"ok";
     std::unique_ptr<McBopomofoSlothE::Engine> engine;
@@ -824,7 +874,7 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
         [self _progress:[NSString stringWithFormat:@"  compile cache cleared (%@): compiling from scratch", clearWhy]];
     }
     [self _progress:@"SlothE-T 25M encoder (enc25m.mlmodelc):"];
-    bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::EncoderRuntimeFiles(), &error);
+    bool ok = [self _verifyFilesInDirectory:dir names:McBopomofoSlothE::EncoderRuntimeFiles() error:&error];
     _verifyMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     _encInfo = McBopomofoSlothE::CoreMLLoadInfo();
     if (!ok) {
@@ -901,6 +951,7 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
         _loadReason = @"ok";
         _loadedFlag.store(true, std::memory_order_release);
         [self _progress:[NSString stringWithFormat:@"  encoder ON the Neural Engine: loaded in %.1f s (ANE compile included when not cached)", elapsed / 1000.0]];
+        [self _collectModelStoreGarbageAfterLoad];  // v3.4p: only here, after this runtime's own successful load
         if ([self _loadDecoderOnLoadQueue]) {
             return;  // the decoder's latency probe was slow: it loads again after a pause, still "loading"
         }
@@ -924,13 +975,13 @@ static std::atomic<bool> gAnyModelLoadStarted { false };
 {
     ++_loadAttempts;
     auto t0 = std::chrono::steady_clock::now();
-    std::string dir(_resourcePath.fileSystemRepresentation);
+    std::string dir([self _modelDirectoryForLoad].fileSystemRepresentation);
     std::string error;
     NSString *reason = @"ok";
     [self _progress:@"SlothE decoder (dec60m.mlmodelc):"];
     _decInfo = McBopomofoSlothE::CoreMLLoadInfo();
     auto decoder = std::make_unique<McBopomofoSlothE::Decoder>();
-    bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), &error);
+    bool ok = [self _verifyFilesInDirectory:dir names:McBopomofoSlothE::DecoderRuntimeFiles() error:&error];
     if (!ok) {
         reason = @"integrity";
     } else {
@@ -1428,6 +1479,12 @@ static NSArray<NSString *> *AbandonedClaims(NSString *marker)
     return marker != nil && [self writeANECacheClearMarkerForInstallAtPath:marker];
 }
 
+// The marker itself, with the cache lock ALREADY held by the caller (or deliberately not taken).
+static BOOL WriteInstallMarkerWithoutLock(NSString *marker)
+{
+    return [@"install" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 + (BOOL)writeANECacheClearMarkerForInstallAtPath:(NSString *)marker
 {
     NSString *folder = marker.stringByDeletingLastPathComponent;
@@ -1435,7 +1492,7 @@ static NSArray<NSString *> *AbandonedClaims(NSString *marker)
     // The cache lock, only for the write: a consume in progress finishes first (at most one; it takes milliseconds).
     // Without the lock (it cannot be opened) the marker is still written: the request matters more than the order.
     int lock = AcquireCacheLock(folder);
-    BOOL ok = [@"install" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    BOOL ok = WriteInstallMarkerWithoutLock(marker);
     ReleaseCacheLock(lock);
     return ok;
 }
@@ -1499,6 +1556,241 @@ static NSArray<NSString *> *AbandonedClaims(NSString *marker)
     [NSFileManager.defaultManager removeItemAtPath:path error:nil];
     [self _appendLogLine:[NSString stringWithFormat:@"# %@ Neural Engine compile cache cleared (%@)\n", [NSDate date], why]];
     return YES;
+}
+
+#pragma mark - The model store (v3.4p)
+
+static NSString *const kBundleIdentifierPrefix = @"org.openvanilla.inputmethod.";
+
++ (NSString *)modelStoreRootForBundleIdentifier:(NSString *)bundleID
+{
+    NSString *appSupport = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+    if (appSupport == nil) {
+        appSupport = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"];
+    }
+    NSString *folder;
+    if (bundleID.length == 0) {
+        folder = @"McBopomofoLM.unknown";
+    } else if ([bundleID hasPrefix:kBundleIdentifierPrefix] && bundleID.length > kBundleIdentifierPrefix.length) {
+        folder = [bundleID substringFromIndex:kBundleIdentifierPrefix.length];  // McBopomofoLM, McBopomofoLM.dev
+    } else {
+        folder = bundleID;
+    }
+    return [[appSupport stringByAppendingPathComponent:folder] stringByAppendingPathComponent:@"Models"];
+}
+
++ (NSString *)modelStoreRoot
+{
+    if ([SlothERuntime runningUnderXCTest]) {
+        // a unit-test host never touches Application Support: a temp folder, unless a test names its own root
+        return [NSTemporaryDirectory() stringByAppendingPathComponent:@"McBopomofoLM-test-models"];
+    }
+    return [SlothERuntime modelStoreRootForBundleIdentifier:NSBundle.mainBundle.bundleIdentifier];
+}
+
+- (NSString *)_resolvedModelStoreRoot
+{
+    return _modelStoreRootForTesting.length > 0 ? _modelStoreRootForTesting : [SlothERuntime modelStoreRoot];
+}
+
+// The bundle's manifest: the one the app's signature seals. Every copy of the models (the store) is checked against it.
+- (std::string)_bundleManifestPath
+{
+    return std::string(_resourcePath.fileSystemRepresentation) + "/" + McBopomofoSlothE::kRuntimeManifestName;
+}
+
+- (NSString *)_modelDirectoryForLoad
+{
+    @synchronized(self) {
+        return _modelDir != nil ? _modelDir : _resourcePath;
+    }
+}
+
+- (nullable NSString *)modelDirectory
+{
+    @synchronized(self) {
+        return _modelDir;
+    }
+}
+
+- (nullable NSString *)modelStoreStatus
+{
+    @synchronized(self) {
+        return _modelStoreStatus;
+    }
+}
+
+- (void)_setModelDirectory:(NSString *)directory status:(NSString *)status
+{
+    @synchronized(self) {
+        _modelDir = [directory copy];
+        _modelStoreStatus = [status copy];
+    }
+}
+
+- (NSUInteger)modelStoreSetsCollected
+{
+    return _storeSetsCollected.load();
+}
+
+- (NSUInteger)modelStoreTemporariesCollected
+{
+    return _storeTemporariesCollected.load();
+}
+
+static SlothEModelStoreResult *WrapStoreResult(const McBopomofoSlothE::ModelStoreResult &r, std::shared_ptr<McBopomofoSlothE::ModelSetLease> *lease)
+{
+    SlothEModelStoreResult *result = [[SlothEModelStoreResult alloc] init];
+    result.ok = r.ok;
+    result.created = r.ok && r.created;
+    result.setID = r.setId.empty() ? nil : @(r.setId.c_str());
+    result.directory = r.ok ? @(r.directory.c_str()) : nil;
+    result.error = r.ok ? nil : @(r.error.c_str());
+    if (lease != nullptr) {
+        *lease = r.lease;
+    }
+    return result;
+}
+
+- (SlothEModelStoreResult *)ensureModelStoreAtRoot:(nullable NSString *)root
+{
+    NSString *useRoot = root.length > 0 ? root : [self _resolvedModelStoreRoot];
+    McBopomofoSlothE::ModelStoreResult r = McBopomofoSlothE::EnsureModelStore(std::string(_resourcePath.fileSystemRepresentation), std::string(useRoot.fileSystemRepresentation));
+    return WrapStoreResult(r, nullptr);
+}
+
+// Verify against the start-up snapshot of the bundle's manifest; the file only when there is no snapshot (it could not be
+// read at start-up: then the check says so, as it always did).
+- (bool)_verifyFilesInDirectory:(const std::string &)dir names:(const std::vector<std::string> &)names error:(std::string *)error
+{
+    if (_manifest != nullptr) {
+        return McBopomofoSlothE::VerifyRuntimeFiles(dir, names, error, *_manifest);
+    }
+    return McBopomofoSlothE::VerifyRuntimeFiles(dir, names, error, [self _bundleManifestPath]);
+}
+
+// Load queue, once, before the first load: read the bundle's manifest (the snapshot every later check uses), make sure the
+// store is there (this covers an install done by `ditto` without `install`, and a store the user deleted), take the lease
+// on its set and point the loads at it. If that fails (disk full, permissions, a redirected or foreign folder, a damaged
+// set another process is still reading), the models are loaded from the bundle as before.
+- (void)_prepareModelStore
+{
+    if (_modelStorePrepared) {
+        return;
+    }
+    _modelStorePrepared = YES;
+    auto manifest = std::make_shared<McBopomofoSlothE::ModelManifest>();
+    std::string manifestError;
+    if (McBopomofoSlothE::LoadModelManifest(std::string(_resourcePath.fileSystemRepresentation), manifest.get(), &manifestError)) {
+        _manifest = manifest;
+    }
+    if (!_useModelStore && _modelStoreRootForTesting.length == 0) {
+        [self _setModelDirectory:_resourcePath status:@"off"];
+        return;
+    }
+    NSString *root = [self _resolvedModelStoreRoot];
+    auto t0 = std::chrono::steady_clock::now();
+    McBopomofoSlothE::ModelStoreResult r;
+    if (_manifest != nullptr) {
+        r = McBopomofoSlothE::EnsureModelStore(*_manifest, std::string(_resourcePath.fileSystemRepresentation), std::string(root.fileSystemRepresentation));
+    } else {
+        r.error = manifestError;
+    }
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    std::shared_ptr<McBopomofoSlothE::ModelSetLease> lease;
+    SlothEModelStoreResult *result = WrapStoreResult(r, &lease);
+    if (result.ok) {
+        _lease = lease;
+        _modelStoreSetID = result.setID;
+        _modelStoreActiveRoot = root;
+        [self _setModelDirectory:result.directory status:result.created ? @"created" : @"reused"];
+        [self _appendLogLine:[NSString stringWithFormat:@"# %@ model store %@ in %.0f ms: %@\n", [NSDate date], result.created ? @"created" : @"reused", ms, result.directory]];
+        [self _progress:[NSString stringWithFormat:@"  model store %@ (%.0f ms)", result.created ? @"created" : @"reused", ms]];
+        return;
+    }
+    [self _setModelDirectory:_resourcePath status:@"fallback"];
+    [self _appendLogLine:[NSString stringWithFormat:@"# %@ model store unavailable (%@): loading the models from the app\n", [NSDate date], result.error]];
+    NSLog(@"McBopomofoLM: model store unavailable (%@); the models are loaded from the app", result.error);
+    [self _progress:[NSString stringWithFormat:@"  model store unavailable (%@): loading from the app", result.error]];
+    [self _noteModelStoreFallback];
+}
+
+- (void)prepareModelStoreForTesting
+{
+    dispatch_sync(_loadQueue, ^{
+        [self _prepareModelStore];
+    });
+}
+
+- (void)collectModelStoreGarbageForTesting
+{
+    dispatch_sync(_loadQueue, ^{
+        [self _collectModelStoreGarbageAfterLoad];
+    });
+}
+
+- (void)noteModelStoreFallbackForTesting
+{
+    [self _noteModelStoreFallback];
+}
+
+- (NSUInteger)modelStoreSetsKeptForLeases
+{
+    return _storeSetsKeptForLeases.load();
+}
+
+// The store failed and the models load from the bundle path: its compile cache may hold entries of an older copy of
+// the files, so the install marker is written (the load that follows honours it at once). Once per CFBundleVersion
+// (`slothe-model-store-fallback-for-version` next to the markers): a Mac whose disk stays full must not recompile at
+// every start. Sol r49: the stamp is checked, the marker published and the stamp written in ONE transaction under the
+// cache lock (the same flock as the marker consume and the install writer; no nested acquisition), so two runtimes that
+// fall back together publish one marker for the version.
+- (void)_noteModelStoreFallback
+{
+    NSString *marker = [self _installMarkerPath];
+    if (marker == nil) {
+        return;
+    }
+    NSString *folder = marker.stringByDeletingLastPathComponent;
+    [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    int lock = AcquireCacheLock(folder);
+    if (lock < 0) {
+        return;  // the lock cannot be taken: no request this time (the next start tries again)
+    }
+    NSString *stamp = [folder stringByAppendingPathComponent:@"slothe-model-store-fallback-for-version"];
+    NSString *version = _bundleVersionForTesting != nil ? _bundleVersionForTesting : [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+    if (version.length == 0) {
+        version = @"?";
+    }
+    NSString *done = [NSString stringWithContentsOfFile:stamp encoding:NSUTF8StringEncoding error:nil];
+    if (![done isEqualToString:version]) {
+        dispatch_block_t hook = _fallbackPublishHookForTesting;
+        if (hook != nil) {
+            hook();
+        }
+        if (WriteInstallMarkerWithoutLock(marker)) {
+            [version writeToFile:stamp atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+    }
+    ReleaseCacheLock(lock);
+}
+
+// Only here, never in `install`: other sets and leftover temporary folders go after this runtime's own successful load,
+// except the set a runtime still holds a lease on and the one the bundle on disk names now (Sol r49). A runtime that fell
+// back to the bundle cleans nothing.
+- (void)_collectModelStoreGarbageAfterLoad
+{
+    if (_modelStoreCollected || _modelStoreSetID == nil || _modelStoreActiveRoot == nil) {
+        return;
+    }
+    _modelStoreCollected = YES;
+    McBopomofoSlothE::ModelStoreCleanup cleanup = McBopomofoSlothE::CollectModelStoreGarbage(std::string(_modelStoreActiveRoot.fileSystemRepresentation), std::string(_modelStoreSetID.UTF8String), std::string(_resourcePath.fileSystemRepresentation));
+    _storeSetsCollected.store(cleanup.sets);
+    _storeTemporariesCollected.store(cleanup.temporaries);
+    _storeSetsKeptForLeases.store(cleanup.leased);
+    if (cleanup.sets + cleanup.temporaries + cleanup.leased > 0) {
+        [self _appendLogLine:[NSString stringWithFormat:@"# %@ model store clean-up: %zu old set(s), %zu leftover folder(s) deleted, %zu set(s) kept (in use by another input method process)\n", [NSDate date], cleanup.sets, cleanup.temporaries, cleanup.leased]];
+    }
 }
 
 - (BOOL)loadForInstallWithProgress:(void (^)(NSString *line))progress

@@ -38,7 +38,8 @@ public enum InstallerConstants {
         (cachesDirectory as NSString).appendingPathComponent(bundleID)
     }
 
-    /// The input method's user data folder (user phrases, settings, the optional diagnostics log).
+    /// The input method's user data folder (user phrases, settings, the optional diagnostics log). v3.4p: also
+    /// the input method's copy of the models, in its `Models` folder (`ModelStore`), which is not user data.
     public static var userDataDirectory: String {
         (NSHomeDirectory() as NSString)
             .appendingPathComponent("Library/Application Support/McBopomofoLM")

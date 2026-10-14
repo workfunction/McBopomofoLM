@@ -11,9 +11,9 @@
 - Apple 晶片的 Mac（M1 以上）。Intel 的 Mac 不能用，安裝程式會告訴你。
 - macOS 15 以上。
 - 記憶體：8 GB 的 Mac 就夠用（細節見 [系統資源](#系統資源)）。
-- 硬碟：約 1.5 GB（app 約 160 MB，加上 Neural Engine 的編譯快取約 1.2 GB；細節見 [系統資源](#系統資源)）。
+- 硬碟：約 1.5 GB（app 約 160 MB，加上 Neural Engine 的編譯快取約 1.2 GB；輸入法另存的模型副本在 APFS 上是 clone，幾乎不多占空間；細節見 [系統資源](#系統資源)）。
 
-### 安裝（只要幾秒；AI 模型在你第一次使用時於背景準備，約 3 分鐘）
+### 安裝（只要幾秒；AI 模型在第一次使用、或模型換了的時候於背景準備，約 3 分鐘；只更新程式、模型沒變的話不用）
 
 這個輸入法沒有 Apple 的開發者簽章（沒有付 Apple 的年費），所以第一次打開安裝程式時，macOS 會擋下來，要你到「系統設定」放行一次。照下面做就好，不需要用終端機。
 
@@ -63,7 +63,10 @@ xattr -dr com.apple.quarantine
 - 記憶體（輸入法 process 的 footprint）：平常 76–200 MB；尖峰 688 MB，出現在啟動時載入、編譯模型的時候。
 - 模型檔以 mmap 映射：總共 825 MB，實際駐留約 118 MB，主要是 encoder 的嵌入表（114 MB）。這類 file-backed 記憶體不計入 footprint；記憶體吃緊時 macOS 可以先釋放，之後再從硬碟讀回來，代價是下一次打字會稍微慢一點。
 - Neural Engine 的權重由系統驅動程式管理，不算在輸入法的帳上（要有 root 權限才看得到確切數字）。Apple 晶片的 CPU 和 Neural Engine 共用同一塊記憶體，Neural Engine 不會直接讀硬碟。整體實際占用估計約 300–400 MB。
-- 硬碟：app 160 MB（其中模型 140 MB），加上 Neural Engine 的編譯快取約 1.2 GB（`~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM/com.apple.e5rt.e5bundlecache`），合計約 1.5 GB。這份快取每次安裝或更新後都會重新產生：輸入法在第一次使用時於背景做，約需 3 分鐘。安裝程式的「移除」會把它一併刪掉（它可以再生，所以不另外詢問，最後的說明裡會告訴你）；用終端機移除的話，要自己刪，指令在「開發者」那一節的「用終端機移除」。
+- 硬碟：app 160 MB（其中模型 140 MB），模型的副本（`~/Library/Application Support/McBopomofoLM/Models`，見下一點）在 APFS 上是 clone：和 app 裡的模型共用資料區塊，幾乎不多占空間（跨磁碟或檔案系統不支援 clone 時才是約 140 MB 的真實複製），加上 Neural Engine 的編譯快取約 1.2 GB（`~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM/com.apple.e5rt.e5bundlecache`），合計約 1.5 GB。
+  - Neural Engine 的編譯快取跟著「模型檔案」走，不跟著 app 或執行檔走。所以輸入法在 app 外面另存一份模型（`Models/<模型編號>/`，內容和 app 裡的一樣，建立之後不再更動；同一個 APFS 磁碟上用 clone 建立，否則複製），並從這份副本載入模型。這個資料夾也可以是符號連結（例如測試時把 `Models` 指到別的地方），輸入法會照連結走。更新 app 時，只要模型沒變，副本和編譯快取都原封不動，更新完不用再等約 3 分鐘的準備。第一次安裝、模型換了、或這份副本不見了／損壞時，才會重新複製和編譯；舊模型的副本在新模型載入成功後由輸入法自己刪掉。
+  - 磁碟空間不夠、沒辦法建立副本時，輸入法改從 app 裡載入模型（跟以前一樣），並在這個版本內要求一次乾淨的重新編譯。
+  - 安裝程式的「移除」會把編譯快取和模型副本一併刪掉（兩者都可以再生，所以不另外詢問，最後的說明裡會告訴你）；使用者資料（設定和使用者詞庫）仍然照舊詢問、預設保留。用終端機移除的話，要自己刪，指令在「開發者」那一節的「用終端機移除」。
 - CPU：閒置 0%；正常使用 31 分鐘累計約 41 秒 CPU。
 - 延遲：按鍵處理函式耗時（不含 app 重繪）P50 1.5 ms、P95 4.4 ms、P99 10.5 ms；模型在背景跑完一輪 P50 8.8 ms、P95 24 ms、P99 39 ms（見上面的「效能」）。
 - 在 macOS 的「活動監視器」裡看到的記憶體只包含第一項（footprint），所以看起來很低。
@@ -76,8 +79,8 @@ xattr -dr com.apple.quarantine
 
 ### 更新與移除
 
-- **更新**：下載新版，再打開新版的安裝程式（第一次打開一樣要放行一次）。它會先關掉舊版再安裝，目前正在使用「注音 LM」的話，會先幫你切換到 ABC。
-- **移除**：打開安裝程式，按視窗右上角的「移除」（電腦裡有裝才會出現），再按一次「移除」確認。它會關閉輸入法、把「小麥注音 LM」丟進垃圾桶，並詢問要不要一併刪除使用者資料（設定和使用者詞庫，在 `~/Library/Application Support/McBopomofoLM`）：「保留」是預設，要刪才選「移到垃圾桶」。它也會把 Neural Engine 的編譯快取（約 1.2 GB，見「系統資源」）刪掉：那是可以再生的快取，所以不另外詢問，移除完成的說明裡會寫一句。
+- **更新**：下載新版，再打開新版的安裝程式（第一次打開一樣要放行一次）。它會先關掉舊版再安裝，目前正在使用「注音 LM」的話，會先幫你切換到 ABC。新版的 AI 模型如果跟舊版一樣，更新完不用再等模型準備；模型換了才會再準備一次（約 3 分鐘，期間照常打字）。
+- **移除**：打開安裝程式，按視窗右上角的「移除」（電腦裡有裝才會出現），再按一次「移除」確認。它會關閉輸入法、把「小麥注音 LM」丟進垃圾桶，並詢問要不要一併刪除使用者資料（設定和使用者詞庫，在 `~/Library/Application Support/McBopomofoLM`；那個資料夾裡除了模型副本沒有別的東西時，就不問）：「保留」是預設，要刪才選「移到垃圾桶」。它也會把 Neural Engine 的編譯快取（約 1.2 GB，見「系統資源」）和輸入法另存的模型副本（`~/Library/Application Support/McBopomofoLM/Models`，約 140 MB）刪掉：這兩樣都不是你的資料、都可以再生，所以不管你選保留或刪除，都不另外詢問，移除完成的說明裡會寫一句。
 
 ## 做了什麼
 
@@ -132,16 +135,18 @@ cd /tmp/mcbpmf   # 裡面就是 McBopomofoLM.app
    ```bash
    ~/Library/Input\ Methods/McBopomofoLM.app/Contents/MacOS/McBopomofoLM install
    ```
-   會印出 `model files verified (size + sha256)`，並在下次啟動時清掉這個 app 的 Neural Engine 編譯快取（只寫一個標記檔，不會現在刪）。模型檔案有損壞的話，會印 `model files damaged: …`、以狀態 1 結束，而且不會註冊。AI 模型是輸入法第一次啟動時在背景編譯的（約 3 分鐘，期間用一般選字）。想像 v3.4.0 之前那樣在這裡就編譯完（約 3 分鐘，畫面會顯示進度條；想看每一步的細節就加 `--verbose`），加 `--compile-now`：`…/McBopomofoLM install --compile-now`，最後一行出現 `both models run on the Neural Engine` 就是成功了。
+   會印出 `model files verified (size + sha256)`，並確認 `~/Library/Application Support/McBopomofoLM/Models/<模型編號>/` 裡有一份完整的模型副本（沒有就複製；已經有而且完整的話原封不動）。只有在副本是新建的（第一次安裝、模型換了）或建不起來的時候，才會在下次啟動時清掉這個 app 的 Neural Engine 編譯快取（只寫一個標記檔，不會現在刪）；模型沒變的重新安裝不寫標記，編譯快取留著。`install` 不會刪掉舊模型的副本，那是輸入法載入成功後的事。模型檔案有損壞的話，會印 `model files damaged: …`、以狀態 1 結束，而且不會註冊。AI 模型是輸入法第一次啟動時在背景編譯的（約 3 分鐘，期間用一般選字）。想像 v3.4.0 之前那樣在這裡就編譯完（約 3 分鐘，畫面會顯示進度條；想看每一步的細節就加 `--verbose`），加 `--compile-now`：`…/McBopomofoLM install --compile-now`，最後一行出現 `both models run on the Neural Engine` 就是成功了。
 4. 到「系統設定 → 鍵盤 → 輸入方式 → 編輯… → ＋ → 繁體中文」，加入「注音 LM」（咖啡色 ㄅ）。
 
-裝好之後不要搬動或改名 app，因為 macOS 的 Neural Engine 編譯快取綁定 app 路徑。
+Neural Engine 的編譯快取跟著 `Application Support/McBopomofoLM/Models` 裡那份模型副本走，所以更新或重新安裝 app 不會讓它失效（模型沒換的話）；系統更新則由 macOS 決定，快取失效時輸入法會在背景重新編譯。
 
 **確認模型跑在 ANE 上**：先在輸入選單的「進階」區按「寫入診斷記錄」打開（預設不寫；打開時會立刻把目前的模型載入結果寫進去），再看 `~/Library/Application Support/McBopomofoLM/latency.log`，`R` 開頭的行會寫 `encoder ane ok`、`decoder ane ok`，後面是 ANE 執行的運算比例。
 
 **用終端機移除**：先在「系統設定 → 鍵盤 → 輸入方式」移除「注音 LM」，然後：
 ```bash
 pkill -x McBopomofoLM; rm -rf ~/Library/Input\ Methods/McBopomofoLM.app
+# 模型副本不是你的資料，建議一起刪（約 140 MB）
+rm -rf ~/Library/Application\ Support/McBopomofoLM/Models
 # 選做：連設定、詞庫、快取一起刪
 rm -rf ~/Library/Application\ Support/McBopomofoLM ~/Library/Caches/org.openvanilla.inputmethod.McBopomofoLM
 defaults delete org.openvanilla.inputmethod.McBopomofoLM

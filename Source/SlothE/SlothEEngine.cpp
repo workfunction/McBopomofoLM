@@ -7,15 +7,27 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <system_error>
 
+#include <copyfile.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <removefile.h>
+#include <sys/clonefile.h>
+#include <sys/xattr.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 
 namespace McBopomofoSlothE {
@@ -752,15 +764,21 @@ bool Sha256File(const std::string& path, std::string* hexDigest,
   return true;
 }
 
-bool VerifyRuntimeFiles(const std::string& resourceDir,
-                        const std::vector<std::string>& names,
-                        std::string* error) {
-  std::string text;
-  if (!ReadFile(JoinPath(resourceDir, kRuntimeManifestName), &text)) {
-    *error = std::string("missing ") + kRuntimeManifestName;
-    return false;
+namespace {
+
+std::string HexOfBytes(const unsigned char* bytes, size_t n) {
+  static const char kHex[] = "0123456789abcdef";
+  std::string hex;
+  for (size_t i = 0; i < n; ++i) {
+    hex.push_back(kHex[bytes[i] >> 4]);
+    hex.push_back(kHex[bytes[i] & 0xF]);
   }
-  std::unordered_map<std::string, std::pair<std::string, uint64_t>> listed;
+  return hex;
+}
+
+// The lines of a runtime manifest ("<sha256> <bytes> <path>", '#' comments), in file order.
+bool ParseManifestText(const std::string& text, std::vector<RuntimeManifestEntry>* entries,
+                       std::string* error) {
   std::istringstream in(text);
   std::string line;
   while (std::getline(in, line)) {
@@ -768,14 +786,33 @@ bool VerifyRuntimeFiles(const std::string& resourceDir,
       continue;
     }
     std::istringstream fields(line);
-    std::string sha;
+    RuntimeManifestEntry entry;
     std::string sizeText;
-    std::string name;
-    if (!(fields >> sha >> sizeText >> name) || sha.size() != 64) {
+    if (!(fields >> entry.sha >> sizeText >> entry.name) || entry.sha.size() != 64) {
       *error = std::string("malformed ") + kRuntimeManifestName;
       return false;
     }
-    listed[name] = {sha, std::strtoull(sizeText.c_str(), nullptr, 10)};
+    entry.size = std::strtoull(sizeText.c_str(), nullptr, 10);
+    entries->push_back(std::move(entry));
+  }
+  return true;
+}
+
+bool LoadManifestFile(const std::string& manifestPath, std::vector<RuntimeManifestEntry>* entries,
+                      std::string* error) {
+  std::string text;
+  if (!ReadFile(manifestPath, &text)) {
+    *error = std::string("missing ") + kRuntimeManifestName;
+    return false;
+  }
+  return ParseManifestText(text, entries, error);
+}
+
+bool VerifyAgainst(const std::string& resourceDir, const std::vector<std::string>& names,
+                   const std::vector<RuntimeManifestEntry>& entries, std::string* error) {
+  std::unordered_map<std::string, std::pair<std::string, uint64_t>> listed;
+  for (const RuntimeManifestEntry& entry : entries) {
+    listed[entry.name] = {entry.sha, entry.size};
   }
   auto check = [&](const std::string& name, const std::pair<std::string, uint64_t>& want) {
     std::string path = JoinPath(resourceDir, name);
@@ -825,6 +862,459 @@ bool VerifyRuntimeFiles(const std::string& resourceDir,
     }
   }
   return true;
+}
+
+}  // namespace
+
+bool LoadModelManifest(const std::string& bundleDir, ModelManifest* manifest, std::string* error) {
+  std::string text;
+  if (!ReadFile(JoinPath(bundleDir, kRuntimeManifestName), &text)) {
+    *error = std::string("missing ") + kRuntimeManifestName;
+    return false;
+  }
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(text.data(), static_cast<CC_LONG>(text.size()), digest);
+  manifest->setId = HexOfBytes(digest, sizeof(digest)).substr(0, 16);
+  manifest->entries.clear();
+  return ParseManifestText(text, &manifest->entries, error);
+}
+
+bool VerifyRuntimeFiles(const std::string& resourceDir,
+                        const std::vector<std::string>& names,
+                        std::string* error,
+                        const std::string& manifestPath) {
+  std::vector<RuntimeManifestEntry> entries;
+  if (!LoadManifestFile(manifestPath.empty() ? JoinPath(resourceDir, kRuntimeManifestName) : manifestPath,
+                        &entries, error)) {
+    return false;
+  }
+  return VerifyAgainst(resourceDir, names, entries, error);
+}
+
+bool VerifyRuntimeFiles(const std::string& resourceDir,
+                        const std::vector<std::string>& names,
+                        std::string* error,
+                        const ModelManifest& manifest) {
+  return VerifyAgainst(resourceDir, names, manifest.entries, error);
+}
+
+// ---------------------------------------------------------------- model store (v3.4p)
+
+ModelSetLease::~ModelSetLease() {
+  if (fd >= 0) {
+    ::flock(fd, LOCK_UN);
+    ::close(fd);
+  }
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+std::string Describe(const char* what, const std::string& path) {
+  return std::string(what) + ": " + path;
+}
+
+// open(2) a file of ours (a symlinked store folder is followed on purpose: user decision 2026-10-14, for testing).
+int OpenOwnFile(const std::string& path, int flags, std::string* error) {
+  int fd = ::open(path.c_str(), flags | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    *error = Describe("cannot open", path) + ": " + std::strerror(errno);
+    return -1;
+  }
+  struct stat st;
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    *error = Describe("not a plain file", path);
+    ::close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+// flock(2) on `<root>/.lock`, released when it goes out of scope.
+class StoreLock {
+ public:
+  explicit StoreLock(const std::string& root) {
+    fd_ = OpenOwnFile(JoinPath(root, ".lock"), O_RDWR | O_CREAT, &error_);
+    if (fd_ < 0) {
+      return;
+    }
+    while (::flock(fd_, LOCK_EX) != 0) {
+      if (errno != EINTR) {
+        error_ = std::string("cannot lock the store: ") + std::strerror(errno);
+        ::close(fd_);
+        fd_ = -1;
+        return;
+      }
+    }
+  }
+  ~StoreLock() {
+    if (fd_ >= 0) {
+      ::flock(fd_, LOCK_UN);
+      ::close(fd_);
+    }
+  }
+  StoreLock(const StoreLock&) = delete;
+  StoreLock& operator=(const StoreLock&) = delete;
+  bool held() const { return fd_ >= 0; }
+  const std::string& error() const { return error_; }
+
+ private:
+  int fd_ = -1;
+  std::string error_;
+};
+
+std::string UniqueSuffix() {
+  char buf[40];
+  std::snprintf(buf, sizeof(buf), "%d-%08x", static_cast<int>(::getpid()), arc4random());
+  return buf;
+}
+
+// A manifest name must stay inside the directory it is joined to.
+bool SafeRelativeName(const std::string& name) {
+  if (name.empty() || name[0] == '/') {
+    return false;
+  }
+  size_t start = 0;
+  while (start <= name.size()) {
+    size_t slash = name.find('/', start);
+    std::string part = name.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
+    if (part.empty() || part == "." || part == "..") {
+      return false;
+    }
+    if (slash == std::string::npos) {
+      break;
+    }
+    start = slash + 1;
+  }
+  return true;
+}
+
+bool IsSetDirectoryName(const std::string& name) {
+  if (name.size() != 16) {
+    return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+  });
+}
+
+bool IsLeftoverName(const std::string& name) {
+  return name.compare(0, 5, ".tmp-") == 0 || name.compare(0, 9, ".corrupt-") == 0;
+}
+
+// A real directory (lstat: a link to one is not): the only kind of entry of the store folder a clean-up or a repair removes.
+bool IsRealDirectory(const std::string& path) {
+  struct stat st;
+  return ::lstat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// Deletes a tree without following symlinks (removefile unlinks a link it meets, it never enters it). The caller has
+// looked at `path` with lstat.
+bool RemoveTree(const std::string& path) {
+  return ::removefile(path.c_str(), nullptr, REMOVEFILE_RECURSIVE) == 0;
+}
+
+std::string LeaseFolder(const std::string& root) { return JoinPath(root, ".leases"); }
+std::string LeasePath(const std::string& root, const std::string& setId) {
+  return JoinPath(LeaseFolder(root), setId + ".lock");
+}
+
+bool EnsureLeaseFolder(const std::string& root, std::string* error) {
+  const std::string folder = LeaseFolder(root);
+  struct stat st;
+  if (::stat(folder.c_str(), &st) == 0) {
+    if (!S_ISDIR(st.st_mode)) {
+      *error = Describe("the lease folder is not a folder", folder);
+      return false;
+    }
+    return true;
+  }
+  if (::mkdir(folder.c_str(), 0755) != 0) {
+    *error = Describe("cannot make the lease folder", folder) + ": " + std::strerror(errno);
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+bool ModelSetId(const std::string& bundleDir, std::string* setId, std::string* error) {
+  std::string hex;
+  uint64_t size = 0;
+  if (!Sha256File(JoinPath(bundleDir, kRuntimeManifestName), &hex, &size)) {
+    *error = std::string("missing ") + kRuntimeManifestName;
+    return false;
+  }
+  *setId = hex.substr(0, 16);
+  return true;
+}
+
+ModelStoreResult EnsureModelStore(const std::string& bundleDir, const std::string& storeRoot,
+                                  const ModelStoreOptions& options) {
+  ModelManifest manifest;
+  ModelStoreResult result;
+  if (!LoadModelManifest(bundleDir, &manifest, &result.error)) {
+    return result;
+  }
+  return EnsureModelStore(manifest, bundleDir, storeRoot, options);
+}
+
+ModelStoreResult EnsureModelStore(const ModelManifest& manifest, const std::string& bundleDir,
+                                  const std::string& storeRoot, const ModelStoreOptions& options) {
+  ModelStoreResult result;
+  result.setId = manifest.setId;
+  std::vector<std::string> names;
+  for (const RuntimeManifestEntry& entry : manifest.entries) {
+    if (!SafeRelativeName(entry.name)) {
+      result.error = "unsafe path in " + std::string(kRuntimeManifestName) + ": " + entry.name;
+      return result;
+    }
+    names.push_back(entry.name);
+  }
+  if (names.empty()) {
+    result.error = std::string(kRuntimeManifestName) + " lists no file";
+    return result;
+  }
+
+  // A symlinked store folder (or parent) is followed: user decision 2026-10-14, the user points `Models` somewhere else
+  // for testing. Only removal is careful (see RemoveTree / CollectModelStoreGarbage).
+  std::error_code ec;
+  fs::create_directories(storeRoot, ec);  // the intermediate directories first: the lock lives inside
+  if (ec) {
+    result.error = "cannot create " + storeRoot + ": " + ec.message();
+    return result;
+  }
+  StoreLock lock(storeRoot);
+  if (!lock.held()) {
+    result.error = lock.error();
+    return result;
+  }
+  if (!EnsureLeaseFolder(storeRoot, &result.error)) {
+    return result;
+  }
+
+  result.directory = JoinPath(storeRoot, result.setId);
+  const std::string leasePath = LeasePath(storeRoot, result.setId);
+  std::string verifyError;
+  int exclusiveLease = -1;  // held while a damaged copy is replaced
+  auto closeExclusive = [&]() {
+    if (exclusiveLease >= 0) {
+      ::close(exclusiveLease);
+      exclusiveLease = -1;
+    }
+  };
+
+  struct stat st;
+  bool reuse = false;
+  if (::stat(result.directory.c_str(), &st) == 0 || ::lstat(result.directory.c_str(), &st) == 0) {
+    if (S_ISDIR(st.st_mode) && VerifyAgainst(result.directory, names, manifest.entries, &verifyError)) {
+      reuse = true;  // reused: nothing is touched
+    } else {
+      // Damaged (or not a directory). Replacing it changes files a running input method may still read: only if nobody
+      // holds this set's lease. Busy = not repaired; the caller loads from the bundle.
+      exclusiveLease = OpenOwnFile(leasePath, O_RDWR | O_CREAT, &result.error);
+      if (exclusiveLease < 0) {
+        return result;
+      }
+      if (::flock(exclusiveLease, LOCK_EX | LOCK_NB) != 0) {
+        closeExclusive();
+        result.error = "the damaged model copy is in use by another input method process: not repaired";
+        return result;
+      }
+      std::string aside = JoinPath(storeRoot, ".corrupt-" + UniqueSuffix());
+      if (::rename(result.directory.c_str(), aside.c_str()) != 0) {
+        closeExclusive();
+        result.error = std::string("cannot move the damaged copy aside: ") + std::strerror(errno);
+        return result;
+      }
+      RemoveTree(aside);
+    }
+  }
+
+  auto takeSharedLease = [&]() -> bool {
+    int fd = exclusiveLease;
+    if (fd < 0) {
+      fd = OpenOwnFile(leasePath, O_RDWR | O_CREAT, &result.error);
+      if (fd < 0) {
+        return false;
+      }
+    }
+    exclusiveLease = -1;
+    // Converting (or a first request) under the store lock: nobody else can ask for this lease meanwhile.
+    if (::flock(fd, LOCK_SH | LOCK_NB) != 0) {
+      ::close(fd);
+      result.error = std::string("cannot take the lease of the model set: ") + std::strerror(errno);
+      return false;
+    }
+    result.lease = std::make_shared<ModelSetLease>(fd);
+    return true;
+  };
+
+  if (reuse) {
+    if (!takeSharedLease()) {
+      return result;
+    }
+    result.ok = true;
+    return result;
+  }
+
+  const std::string temporary = JoinPath(storeRoot, ".tmp-" + UniqueSuffix());
+  auto fail = [&](const std::string& why) {
+    std::error_code ignored;
+    fs::remove_all(temporary, ignored);
+    closeExclusive();
+    result.ok = false;
+    result.error = why;
+    return result;
+  };
+  fs::create_directory(temporary, ec);
+  if (ec) {
+    return fail("cannot create " + temporary + ": " + ec.message());
+  }
+  for (const std::string& name : names) {
+    const std::string from = JoinPath(bundleDir, name);
+    const std::string to = JoinPath(temporary, name);
+    fs::create_directories(fs::path(to).parent_path(), ec);
+    if (ec) {
+      return fail("cannot create the folder of " + name + ": " + ec.message());
+    }
+    // On the same APFS volume the file is CLONED (clonefile(2): a new file with its own inode that shares the data
+    // blocks, so the store costs almost no disk space; the cache keys on the file, and a clone is a new file). Any
+    // failure (another volume, a file system without clones) falls back to a normal copy of data and mode.
+    bool cloned = false;
+    if (!options.disableCloneForTesting) {
+      cloned = ::clonefile(from.c_str(), to.c_str(), CLONE_NOFOLLOW | CLONE_NOOWNERCOPY) == 0;
+    }
+    if (cloned) {
+      // a clone carries the extended attributes along: the download mark is not wanted on the store's files
+      ::removexattr(to.c_str(), "com.apple.quarantine", XATTR_NOFOLLOW);
+      ++result.clonedFiles;
+    } else {
+      if (::copyfile(from.c_str(), to.c_str(), nullptr, COPYFILE_DATA | COPYFILE_STAT) != 0) {
+        return fail("cannot copy " + name + ": " + std::strerror(errno));
+      }
+      ++result.copiedFiles;
+    }
+  }
+  if (!VerifyAgainst(temporary, names, manifest.entries, &verifyError)) {
+    return fail("the copy does not match the bundle's manifest: " + verifyError);
+  }
+  if (options.beforePublish) {
+    options.beforePublish(temporary);
+  }
+  if (::renamex_np(temporary.c_str(), result.directory.c_str(), RENAME_EXCL) != 0) {
+    const int code = errno;
+    if (code == EEXIST) {
+      // somebody published first: never clobbered. The winner is used if it is intact (and a plain directory of ours).
+      fs::remove_all(temporary, ec);
+      if (!IsRealDirectory(result.directory)) {
+        closeExclusive();
+        result.error = Describe("another model set was published first and is not a plain folder of this user", result.directory);
+        return result;
+      }
+      if (VerifyAgainst(result.directory, names, manifest.entries, &verifyError) && takeSharedLease()) {
+        result.ok = true;
+        return result;
+      }
+      closeExclusive();
+      if (result.error.empty()) {
+        result.error = "another copy was published first and does not match the manifest: " + verifyError;
+      }
+      return result;
+    }
+    return fail(std::string("cannot publish the copy: ") + std::strerror(code));
+  }
+  if (!takeSharedLease()) {
+    return result;
+  }
+  result.ok = true;
+  result.created = true;
+  return result;
+}
+
+ModelStoreCleanup CollectModelStoreGarbage(const std::string& storeRoot, const std::string& keepSetId,
+                                           const std::string& bundleDir) {
+  ModelStoreCleanup cleanup;
+  std::string error;
+  struct stat st;
+  if (::stat(storeRoot.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+    return cleanup;  // nothing to clean, and nothing is made here (a symlinked store folder is followed)
+  }
+  StoreLock lock(storeRoot);
+  if (!lock.held()) {
+    return cleanup;
+  }
+  // The set the bundle on disk names NOW: an update may have installed it after this runtime started loading.
+  std::string installedSet;
+  const bool installedKnown = ModelSetId(bundleDir, &installedSet, &error);
+
+  std::error_code ec;
+  std::vector<std::string> names;
+  for (fs::directory_iterator it(storeRoot, ec), end; !ec && it != end; it.increment(ec)) {
+    names.push_back(it->path().filename().string());
+  }
+  for (const std::string& name : names) {
+    const std::string path = JoinPath(storeRoot, name);
+    if (IsSetDirectoryName(name)) {
+      if (!IsRealDirectory(path)) {
+        continue;  // a link or a file named like a set: not ours to delete
+      }
+      if (name == keepSetId || !installedKnown || name == installedSet) {
+        ++cleanup.protectedSets;
+        continue;
+      }
+      // a lease held by a runtime that loads from this set: exclusive and non-blocking, or the set stays
+      int fd = ::open(LeasePath(storeRoot, name).c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+      if (fd < 0 && errno != ENOENT) {
+        ++cleanup.leased;  // cannot tell: kept
+        continue;
+      }
+      if (fd >= 0 && ::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        ::close(fd);
+        ++cleanup.leased;
+        continue;
+      }
+      if (RemoveTree(path)) {
+        ++cleanup.sets;
+        if (fd >= 0) {
+          ::unlink(LeasePath(storeRoot, name).c_str());
+        }
+      }
+      if (fd >= 0) {
+        ::close(fd);
+      }
+    } else if (IsLeftoverName(name)) {
+      if (IsRealDirectory(path) && RemoveTree(path)) {
+        ++cleanup.temporaries;
+      }
+    }
+  }
+  // lease files of sets that are gone and that nobody holds
+  const std::string leases = LeaseFolder(storeRoot);
+  if (IsRealDirectory(leases)) {
+    std::vector<std::string> files;
+    for (fs::directory_iterator it(leases, ec), end; !ec && it != end; it.increment(ec)) {
+      files.push_back(it->path().filename().string());
+    }
+    for (const std::string& file : files) {
+      if (file.size() != 21 || file.compare(16, 5, ".lock") != 0 || !IsSetDirectoryName(file.substr(0, 16))) {
+        continue;
+      }
+      struct stat gone;
+      if (::lstat(JoinPath(storeRoot, file.substr(0, 16)).c_str(), &gone) == 0) {
+        continue;
+      }
+      int fd = ::open(JoinPath(leases, file).c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
+      if (fd >= 0) {
+        if (::flock(fd, LOCK_EX | LOCK_NB) == 0) {
+          ::unlink(JoinPath(leases, file).c_str());
+        }
+        ::close(fd);
+      }
+    }
+  }
+  return cleanup;
 }
 
 }  // namespace McBopomofoSlothE

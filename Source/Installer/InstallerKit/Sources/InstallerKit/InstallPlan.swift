@@ -76,13 +76,19 @@ public enum UninstallStep: String, Equatable, CaseIterable, Sendable {
     /// v3.3k: delete the Neural Engine compile cache (`CompileCache`), a regenerable cache, so no
     /// question; only after the input sources are off and the process is stopped.
     case removeCompileCache
+    /// v3.4p: delete the input method's copy of the models (`ModelStore`, `Application Support/McBopomofoLM/Models`).
+    /// Not user data: it runs always, before and independent of the question below, with the same checks and the
+    /// same condition (the process is stopped) as the compile cache.
+    case removeModelStore
     /// Ask whether to delete `~/Library/Application Support/McBopomofoLM`; the default is keep.
     case askAboutUserData
 }
 
 public enum UninstallPlan {
+    /// - `userDataExists`: the folder holds something besides the model store (`ModelStore.userDataHasContent`).
     public static func steps(
-        userDataExists: Bool, appExists: Bool = true, compileCacheExists: Bool = false
+        userDataExists: Bool, appExists: Bool = true, compileCacheExists: Bool = false,
+        modelStoreExists: Bool = false
     ) -> [UninstallStep] {
         // The switch to ABC is always planned; it does nothing unless McBopomofoLM is current
         // when it runs.
@@ -95,6 +101,9 @@ public enum UninstallPlan {
         // one question the user is asked.
         if compileCacheExists {
             steps.append(.removeCompileCache)
+        }
+        if modelStoreExists {
+            steps.append(.removeModelStore)
         }
         if userDataExists {
             steps.append(.askAboutUserData)

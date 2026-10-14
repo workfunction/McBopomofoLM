@@ -22,6 +22,19 @@ FOUNDATION_EXPORT NSNotificationName const SlothEPreferencesDidChangeNotificatio
 /// `initForApplicationWithResourcePath:logPath:`) follow it: they open the log or close it at once.
 FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChangeNotification NS_SWIFT_NAME(slothEDiagnosticLogPreferenceDidChange);
 
+/// v3.4p: the outcome of making sure the model store holds an intact copy of the bundle's models
+/// (`McBopomofoSlothE::EnsureModelStore`).
+@interface SlothEModelStoreResult : NSObject
+/// YES = `directory` holds an intact copy (created now, or reused).
+@property (readonly, nonatomic) BOOL ok;
+/// YES = this call copied the files in (first install, new models, a damaged copy replaced). NO with `ok` = an
+/// existing intact copy was reused and not touched.
+@property (readonly, nonatomic) BOOL created;
+@property (readonly, nonatomic, nullable) NSString *setID;
+@property (readonly, nonatomic, nullable) NSString *directory;
+@property (readonly, nonatomic, nullable) NSString *error;
+@end
+
 @interface SlothERuntime : NSObject
 
 /// The process-wide runtime (bundle resources, real latency log). Under
@@ -174,6 +187,43 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 @property (copy, nonatomic, nullable) NSString *bundleVersionForTesting;
 @property (copy, nonatomic, nullable) NSString *aneCacheClearMarkerPathForTesting;
 @property (copy, nonatomic, nullable) NSString *aneCacheInstallMarkerPathForTesting;
+/// ---- the model store (v3.4p)
+///
+/// The Core ML / Neural Engine compile cache follows the model FILES (path plus file identity), not the executable or
+/// the app bundle (reports/ane-cache-keying.md). So the application runtime keeps a copy of the bundle's runtime files
+/// outside the app, `Application Support/McBopomofoLM[.dev]/Models/<set id>/`, never modifies it after it was created,
+/// and loads its models from there: an app update with unchanged models finds the store, and with it the compile cache,
+/// as it was. The app keeps its own copy too (it stays loadable for self-repair and for a manual install).
+/// The store root of a bundle identifier: the production id uses `McBopomofoLM`, the dev id `McBopomofoLM.dev`, so a
+/// dev host never creates, verifies or cleans the production store; under XCTest the default is a temp folder.
++ (NSString *)modelStoreRootForBundleIdentifier:(nullable NSString *)bundleID;
+/// The root for the running app's bundle identifier.
+@property (class, readonly, nonatomic) NSString *modelStoreRoot;
+/// The store root this runtime uses; setting it turns the store ON for a runtime made with `initWithResourcePath:`
+/// (tests). Application runtimes use the default root. nil = the default.
+@property (copy, nonatomic, nullable) NSString *modelStoreRootForTesting;
+/// Makes sure the store holds an intact copy of this runtime's bundle models (shared by `install` and the load).
+/// `root` nil = this runtime's root. Under flock on `<root>/.lock`; deletes no other set (the runtime does that after
+/// its first successful load, `install` never does).
+- (SlothEModelStoreResult *)ensureModelStoreAtRoot:(nullable NSString *)root;
+/// Where the models are loaded from: the store copy, or the bundle (store off, or it failed). nil before the first load.
+@property (readonly, nonatomic, nullable) NSString *modelDirectory;
+/// "off", "created", "reused" or "fallback" (the store failed: loaded from the bundle); nil before the first load.
+@property (readonly, nonatomic, nullable) NSString *modelStoreStatus;
+/// How many old sets / leftover temporary folders the runtime's own clean-up (after its first successful load) deleted,
+/// and how many sets it kept because another runtime still holds their lease.
+@property (readonly, nonatomic) NSUInteger modelStoreSetsCollected;
+@property (readonly, nonatomic) NSUInteger modelStoreTemporariesCollected;
+@property (readonly, nonatomic) NSUInteger modelStoreSetsKeptForLeases;
+/// Tests: the store step of the first load alone (reads the manifest snapshot, makes the store, takes the lease, or falls
+/// back), the clean-up alone, and the fallback marker alone.
+- (void)prepareModelStoreForTesting;
+- (void)collectModelStoreGarbageForTesting;
+- (void)noteModelStoreFallbackForTesting;
+/// Called inside the fallback transaction (under the cache lock), after the stamp says this version has not asked yet and
+/// before the marker is published: a test makes two runtimes meet here.
+@property (copy, nonatomic, nullable) dispatch_block_t fallbackPublishHookForTesting;
+
 /// Called after a marker was claimed (renamed), while the cache lock is held and before the clear: a test
 /// writes a new marker here (without the lock: a writer that takes it would wait for this very consume).
 @property (copy, nonatomic, nullable) dispatch_block_t markerClaimedHookForTesting;
