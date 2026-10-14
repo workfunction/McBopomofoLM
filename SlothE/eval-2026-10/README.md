@@ -6,7 +6,9 @@
 
 1. **decoder 改成整句打分**：打分字串用「候選字＋後面的 buffer 文字」，前文要套用前面已決定的 pin，λ 1、τ 0.5。在新測試集上，聊天和新聞都比現行版高 **+0.34pt**，95% CI 都是 [+0.18, +0.50]。「再」的選對率從約 67% 提高到約 79%。
 2. **補「再」雙胞胎詞**：在詞庫補上「<前綴>再」。這次加了 18 個，例如 會再、就再、你再、應該再。在 ㄗㄞˋ 的位置修好 28 個、改壞 1 個，p < 0.001；一般句子不受影響。
-3. **不導入 D512**（0c 的 `Funmula/0c-sequence-d512`）。疊在現行 decoder 上，聊天多 +0.15pt、新聞多 +0.25pt，兩個都顯著，但聊天沒達到事先定的 0.2pt 門檻。這是成本上的取捨：導入要多跑一個 130 MB 的 runtime（ONNX CPU 或轉 Core ML）。D512 單獨取代 decoder 時，在 dev 上不比現行版好。
+3. **D512（0c 的 `Funmula/0c-sequence-d512`）分兩種用法看：**
+   - **放在 decoder 的位置：不導入。** 疊在現行 decoder 上，聊天 +0.15pt、新聞 +0.25pt，都顯著，但聊天沒達到事先定的 0.2pt 門檻；導入要多跑一個 130 MB 的 runtime（ONNX CPU 或轉 Core ML）。D512 單獨取代 decoder 時，在 dev 上不比現行版好。
+   - **拿掉 encoder 和詞庫斷詞、只用 D512 解碼（事後追加）：** 聊天組跟設定 D 打平（96.44%），新聞組 97.53%，比設定 D 高 +1.14pt [+0.80, +1.48]。「再」選對率 84%／80%，但「在」被錯改成「再」也變多（聊天 34 → 48）。要上線需要 KV cache 加上 ANE 的增量解碼，還要保留使用者詞庫等功能。建議的下一步是「兩案並陳」混合版，詳見 [D512.md](D512.md) 第 4.6 節和第 5 節。
 4. **斷詞零碎**（例如「那週是馬丁路德金連假」被打成「那州市馬丁路德金蓮價」）是詞庫的詞頻和收詞問題，例如「連假」−7.47、「廉價」−4.90，而且沒收「馬丁路德金」。換哪個 decoder 都修不好，要靠更新詞頻和使用者詞庫。
 
 在 Mac 上要實作和驗證的項目，見最後一節「app 修改規格」。
@@ -136,9 +138,10 @@ python3 -I <repo>/SlothE/eval-2026-10/tools/analyze_fresh.py news_lab.jsonl news
 
 ## 檔案
 
+- `D512.md`：0c D512 reranker 的完整評估報告。
 - `PLAN.md`：背景、發現、事先登記的設定和判定規則（英文）。
 - `results/`：彙總數字，不含任何原文。
 - `testset/{news,chat}_index.jsonl`：每句的 id、來源、網址、發布日期、所屬組別（`general`／`zai`）、長度、SHA-1、注音。新聞和 PTT 原文有著作權，所以不放進 repo。
 - `collect/`：收集測試句用的程式和收集說明（`COLLECTION.md`，有每一步過濾的數量），只供參考，裡面的路徑是當時的工作目錄。
-- `tools/`：離線評估工具，路徑設定在 `evalcfg.py`。早期的實驗腳本 `score_d512.py`、`evaluate.py`、`zai_dev.py`、`zai_chunks.py` 讀的是 `d512_scores.jsonl` 和 fixture，只供參考。
+- `tools/`：離線評估工具，路徑設定在 `evalcfg.py`。D512 單獨解碼用 `d512_beam.py`（可以中斷後接著跑，執行緒數用環境變數 `D512_THREADS` 設定），分析用 `analyze_d512only.py`。早期的實驗腳本 `score_d512.py`、`evaluate.py`、`zai_dev.py`、`zai_chunks.py` 讀的是 `d512_scores.jsonl` 和 fixture，只供參考。
 - 模型授權：Sloth 模型（`Luigi/sloth-ime-models` @ `e7d13c9`）是 Apache-2.0；D512（`Funmula/0c-sequence-d512` @ `d512-pf512-20260926`）是 MIT；g2pW（`G2PWModel-v2-onnx`）是 Apache-2.0。

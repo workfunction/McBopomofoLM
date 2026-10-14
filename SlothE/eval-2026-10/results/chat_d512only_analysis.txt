@@ -1,0 +1,12 @@
+general n=1497; D512only undecodable units (counted wrong): 0
+  A         char=93.69%  sent=58.0%
+  B         char=96.10%  sent=71.1%
+  C         char=96.44%  sent=73.8%
+  D         char=96.44%  sent=73.8%
+  E         char=96.59%  sent=74.9%
+  D512only  char=96.44%  sent=74.9%
+  D512only vs B: +0.34pt [-0.01, +0.70]
+  D512only vs D: +0.00pt [-0.36, +0.36]
+  ㄗㄞˋ B         acc=86.3%  再 recall=919/1353 (68%)  在→再 31
+  ㄗㄞˋ D         acc=91.0%  再 recall=1082/1353 (80%)  在→再 34
+  ㄗㄞˋ D512only  acc=92.1%  再 recall=1131/1353 (84%)  在→再 48
