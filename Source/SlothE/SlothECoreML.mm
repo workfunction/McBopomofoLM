@@ -19,6 +19,8 @@ namespace McBopomofoSlothE {
 namespace {
 
 std::atomic<uint64_t> gLastUse{0};
+// Test hook (v3.4n): the next N placement checks (MLComputePlan) fail as if Core ML had failed them.
+std::atomic<int> gPlanFailuresToInject{0};
 
 void NoteUse() { gLastUse.store(MonotonicNanoseconds()); }
 
@@ -47,6 +49,10 @@ void Progress(const CoreMLLoadOptions &options, NSString *line) {
 // from MLComputePlan. Returns false when the plan cannot be made.
 bool PlanANEPercent(NSURL *url, MLModelConfiguration *cfg, NSString *function, double *percent,
                     std::string *error) API_AVAILABLE(macos(15.0)) {
+  if (gPlanFailuresToInject.load() > 0 && gPlanFailuresToInject.fetch_sub(1) > 0) {
+    *error = "simulated plan failure";
+    return false;
+  }
   __block MLComputePlan *plan = nil;
   __block NSError *planError = nil;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
@@ -371,7 +377,7 @@ class CoreMLDecoderBackend : public DecoderBackend {
         info.reason = "integrity";  // changed since start-up: never hand the files to Core ML
         info.detail = error;
       } else if (@available(macOS 15.0, *)) {
-        ok = loadFunction(length, options.lazyUnits, &info);
+        ok = loadFunctionRetrying(length, options.lazyUnits, &info);
       }
       {
         std::lock_guard<std::mutex> lock(mu);
@@ -380,6 +386,43 @@ class CoreMLDecoderBackend : public DecoderBackend {
       }
       if (options.onLazyLoad) options.onLazyLoad(length, info);
     });
+  }
+
+  // v3.4n: the t* functions get the same one retry of a failed MLComputePlan as the n* functions (one false 0 %
+  // plan in 32 checks, reports/ane-dec.md). The runtime hears of a failure (and may ask the next start-up to clear
+  // the compile cache) only when the retry failed too.
+  bool loadFunctionRetrying(size_t T, ComputeUnits units, CoreMLLoadInfo *info) API_AVAILABLE(macos(15.0)) {
+    if (loadFunction(T, units, info) || info->reason != "plan_failed") {
+      return info->ok;
+    }
+    *info = CoreMLLoadInfo();
+    return loadFunction(T, units, info);
+  }
+
+  // v3.4n eager pass: compile t{T} / n{T} into the Neural Engine cache and release it at once. Nothing stays
+  // resident, no placement check is made, and a failure here never marks the function failed: the lazy path
+  // (requestLoad / requestNextLoad) stays exactly as it was and loads the function, from the cache, when it is needed.
+  bool precompileFunction(bool nextToken, size_t T, std::string *detail) override {
+    if (options.verifyBeforeLazyLoad && !options.verifyBeforeLazyLoad(detail)) {
+      return false;
+    }
+    if (@available(macOS 15.0, *)) {
+      @autoreleasepool {
+        CoreMLLoadOptions o = options;
+        o.units = options.lazyUnits;
+        NSString *name = [NSString stringWithFormat:nextToken ? @"n%zu" : @"t%zu", T];
+        NSError *error = nil;
+        MLModel *model = [MLModel modelWithContentsOfURL:url configuration:Config(o, name) error:&error];
+        if (model == nil) {
+          *detail = error != nil ? std::string(error.localizedDescription.UTF8String) : "load failed";
+          return false;
+        }
+        model = nil;  // released: the compile is in the cache, the memory is not held
+        return true;
+      }
+    }
+    *detail = "needs macOS 15";
+    return false;
   }
 
   // Loads one function and checks its placement (MLComputePlan + probe).
@@ -545,6 +588,8 @@ void CoreMLDecoderBackend::CheckPlacement(NSURL *url, const std::vector<NSString
 }  // namespace
 
 uint64_t MonotonicNanoseconds() { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
+
+void SetPlanFailuresForTesting(int count) { gPlanFailuresToInject.store(count); }
 
 uint64_t LastModelUseNanoseconds() { return gLastUse.load(); }
 

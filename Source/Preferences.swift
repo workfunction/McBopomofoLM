@@ -489,6 +489,11 @@ extension Preferences {
 
     @objc static func toggleSlothERerankEnabled() -> Bool {
         slothERerankEnabled = !slothERerankEnabled
+        if !slothERerankEnabled {
+            // v3.4n: the background work that is left (the eager compile steps, a delayed probe retry) stops before it
+            // does anything more; turning the switch on calls `slothEStartLoading`, which goes on with it.
+            SlothERuntime.shared.suspendBackgroundWork()
+        }
         // Key handlers drop model state and re-walk at once (KeyHandler.mm).
         NotificationCenter.default.post(name: .slothEPreferencesDidChange, object: nil)
         return slothERerankEnabled

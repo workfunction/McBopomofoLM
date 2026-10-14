@@ -489,6 +489,28 @@ std::vector<size_t> Decoder::loadedLengths() const {
   return backend_ != nullptr ? backend_->loadedLengths() : std::vector<size_t> {};
 }
 
+bool Decoder::isFunctionLoaded(bool nextToken, size_t length) const {
+  if (backend_ == nullptr) return false;
+  return nextToken ? backend_->isNextLoaded(length) : backend_->isLoaded(length);
+}
+
+void Decoder::requestFunction(bool nextToken, size_t length) {
+  if (backend_ == nullptr) return;
+  if (nextToken) {
+    backend_->requestNextLoad(length);
+  } else {
+    backend_->requestLoad(length);
+  }
+}
+
+bool Decoder::precompileFunction(bool nextToken, size_t length, std::string* detail) {
+  if (backend_ == nullptr) {
+    *detail = "no decoder";
+    return false;
+  }
+  return backend_->precompileFunction(nextToken, length, detail);
+}
+
 size_t Decoder::largestLength() const {
   return backend_ != nullptr && !backend_->lengths().empty() ? backend_->lengths().back() : 0;
 }

@@ -135,19 +135,60 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 @property (assign, nonatomic) BOOL computeUnitsCPUOnlyForTesting;
 /// Test hook: the same for the decoder only (the encoder stays on the ANE).
 @property (assign, nonatomic) BOOL decoderCPUOnlyForTesting;
-/// `McBopomofoLM install`: load both models synchronously from their final
-/// in-bundle paths (this compiles them for the ANE under this executable),
-/// verify placement, and report progress lines. YES when both are on the ANE.
+/// `McBopomofoLM install --compile-now` (developers, the README's terminal path): load both models
+/// synchronously from their final in-bundle paths (this compiles them for the ANE under this
+/// executable), verify placement, and report progress lines. YES when both are on the ANE.
 /// It first clears this app's Neural Engine compile cache (aneCachePath).
+/// v3.4n: the plain `install` no longer does this; it only writes the clear-at-next-start marker
+/// (`writeANECacheClearMarkerForInstall`) and verifies the model files, and the input method
+/// compiles the models in the background at its first start.
 - (BOOL)loadForInstallWithProgress:(nullable void (^)(NSString *line))progress;
+/// v3.4n: what the plain `install` does for the models. Asks the NEXT start-up of the input method to
+/// clear this app's compile cache (stale entries of the previous executable could fail a placement
+/// check): it writes the INSTALL marker (`aneCacheInstallMarkerPath`, always honoured, no cap, written by
+/// nothing else). Nothing is deleted now, and nothing is compiled. The start-up consumes it as one sequence under
+/// flock(2) on `slothe-ane-cache.lock` next to the markers (claim by rename(2), clear, cap, delete the claims; an
+/// abandoned claim left by a killed start-up counts as a pending request); this writer takes the same lock only
+/// around the write and so waits for at most one consume. YES when the marker was written.
++ (BOOL)writeANECacheClearMarkerForInstall;
+/// v3.4n: checks the model files (size + sha256, about 100 ms). YES when they are intact. `detail`
+/// is the first problem found (file names only) when not; `milliseconds` the time taken.
+- (BOOL)verifyModelFilesWithDetail:(NSString * _Nullable * _Nullable)detail milliseconds:(nullable double *)milliseconds;
 /// ~/Library/Caches/<bundle id>/com.apple.e5rt.e5bundlecache (Core ML's ANE
 /// compile cache for this app). Cleared at install, and once per process if
 /// MLComputePlan fails or puts < 1% of a model on the ANE (a damaged or stale
 /// cache); the load is then retried.
 @property (class, readonly, nonatomic, nullable) NSString *aneCachePath;
-/// Marker file next to it: a lazily loaded decoder function failed with a
-/// failed plan or < 1% on the ANE; the next start-up clears the cache once.
+/// The SELF-HEAL marker next to it (v3.4n: kept apart from the install marker, and written only by the runtime):
+/// a lazily loaded decoder function failed with a failed plan or < 1% on the ANE even after one retry, so the next
+/// start-up clears the cache, at most once per CFBundleVersion (a Mac that keeps flaking cannot loop through a
+/// 3-minute recompile at every start). Older builds wrote their marker here too.
 @property (class, readonly, nonatomic, nullable) NSString *aneCacheClearMarkerPath;
+/// The INSTALL marker next to it (v3.4n): written only by `install`, always honoured, no cap.
+@property (class, readonly, nonatomic, nullable) NSString *aneCacheInstallMarkerPath;
+/// Has any runtime of this process started loading models? (A test that deletes the compile cache must not run after.)
+@property (class, readonly, nonatomic) BOOL anyModelLoadStartedInThisProcess;
+/// Test hooks: the bundle version the once-per-version cap compares (default CFBundleVersion); the marker file
+/// this runtime reads (default `aneCacheClearMarkerPath`, in the real cache folder); and the marker consumption
+/// alone (YES = the cache would be cleared now, `why` says why), without clearing anything.
+@property (copy, nonatomic, nullable) NSString *bundleVersionForTesting;
+@property (copy, nonatomic, nullable) NSString *aneCacheClearMarkerPathForTesting;
+@property (copy, nonatomic, nullable) NSString *aneCacheInstallMarkerPathForTesting;
+/// Called after a marker was claimed (renamed), while the cache lock is held and before the clear: a test
+/// writes a new marker here (without the lock: a writer that takes it would wait for this very consume).
+@property (copy, nonatomic, nullable) dispatch_block_t markerClaimedHookForTesting;
+/// Replaces the actual clearing of the compile cache inside the locked consume: called with the reason, after the claim
+/// and before the cap is written and the claims are deleted; NO = the clear did not complete (the claims then stay).
+/// `consumeANECacheClearMarkerForTesting:` clears nothing when this is nil.
+@property (copy, nonatomic, nullable) BOOL (^clearActionForTesting)(NSString *why);
+/// Called at the start of every eager step, on the load queue, before its work.
+@property (copy, nonatomic, nullable) dispatch_block_t eagerStepHookForTesting;
+- (BOOL)consumeANECacheClearMarkerForTesting:(NSString * _Nullable * _Nullable)why;
++ (BOOL)writeANECacheClearMarkerForInstallAtPath:(NSString *)path;
+/// Test hooks (v3.4n): the next `count` placement checks (MLComputePlan) of any load fail as if Core ML had failed
+/// them (process-wide); queue the load of t{length} / n{length} as a request that needs it would.
++ (void)setPlanFailuresForTesting:(NSInteger)count;
+- (void)requestDecoderFunctionForTesting:(NSInteger)length next:(BOOL)next;
 /// Test hook: report a lazy decoder load failure as if Core ML had returned it.
 - (void)noteLazyLoadFailureForTesting:(NSInteger)length reason:(NSString *)reason anePercent:(double)anePercent;
 /// Test hook: install without clearing the cache (keeps the test suite fast).
@@ -155,6 +196,38 @@ FOUNDATION_EXPORT NSNotificationName const SlothEDiagnosticLogPreferenceDidChang
 /// Test hook: the first encoder placement check reports this reason
 /// ("plan_failed", or "not_on_ane" with 0% on the ANE = a collapsed placement).
 @property (copy, nonatomic, nullable) NSString *simulatePlacementFailureOnceForTesting;
+/// v3.4n: a failed latency probe (probe_slow) of a start-up load is not final: the runtime stays "loading"
+/// (not failed) and loads that model once more after `probeRetryDelaySeconds` (30 s: the probe may have
+/// been slow because the user was typing during the compile), then fails as before. Test hooks: the first
+/// encoder / decoder load reports probe_slow once; the delay is shortened.
+@property (assign, nonatomic) BOOL simulateProbeSlowOnceForTesting;
+@property (assign, nonatomic) BOOL simulateDecoderProbeSlowOnceForTesting;
+@property (assign, nonatomic) NSTimeInterval probeRetryDelaySeconds;
+/// How many probe retries were scheduled (encoder + decoder).
+@property (readonly, nonatomic) NSUInteger probeRetryCount;
+/// Test hooks (Sol r48): how many loads (encoder or decoder, start-up or retry) have started, and the serial load
+/// queue (a test parks a block on it to line a resume block up behind a suspend).
+@property (readonly, nonatomic) NSUInteger loadAttemptsForTesting;
+@property (readonly, nonatomic) dispatch_queue_t loadQueueForTesting;
+/// v3.4n eager pass: after a successful start-up load the remaining decoder functions are compiled into the
+/// Neural Engine cache, one at a time and in need order (t32, n16, t64, n32, t96, n64, n96), and released at
+/// once, on the same utility-QoS load queue, so that the lazy loads that follow are cache hits and not a
+/// compile in the middle of typing. A user-triggered lazy load queues behind the function being compiled (at
+/// most one). A flake here never marks a function failed. On for `startLoading` (the input method); tests
+/// set it before `loadSynchronously`. Off for the install's `--compile-now` (it loads every function).
+@property (assign, nonatomic) BOOL eagerCompileAfterLoad;
+/// The master switch (v3.4n): AI selection turned off suspends the background work that is left: the eager steps
+/// and the delayed probe retry stop before doing any work; turned on again, `startLoading` (or
+/// `resumeBackgroundWork`) goes on with the remaining steps or the pending retry.
+- (void)suspendBackgroundWork;
+- (void)resumeBackgroundWork;
+@property (readonly, nonatomic) BOOL backgroundWorkSuspended;
+/// Test hook: start the pass now, on an already loaded runtime (to measure it apart from the load).
+- (void)startEagerCompilePassForTesting;
+@property (readonly, nonatomic) BOOL eagerCompileDone;
+@property (readonly, nonatomic) double eagerCompileMilliseconds;
+/// One entry per function in the order tried: @{@"name": @"t32", @"ms": @(..), @"ok": @YES/@NO, @"skipped": @YES/@NO}.
+@property (readonly, nonatomic) NSArray<NSDictionary<NSString *, id> *> *eagerCompileLog;
 @property (copy, nonatomic, nullable) void (^installProgress)(NSString *line);
 
 /// Loads the model on a background queue. Idempotent.

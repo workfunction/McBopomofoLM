@@ -140,31 +140,26 @@ public final class PayloadInstaller: @unchecked Sendable {
         }
     }
 
-    /// What `McBopomofoLM install` reported about the models.
+    /// What `McBopomofoLM install` reported about the model files (v3.4n: it no longer compiles the
+    /// models; that happens in the background at the input method's first start).
     public struct InstallCommandResult: Equatable, Sendable {
-        public enum ModelStatus: Equatable, Sendable {
-            /// "both models run on the Neural Engine".
-            case bothOnNeuralEngine
-            /// The warning: not every model can run on the Neural Engine, those are not used (no
-            /// encoder = stock McBopomofo, no decoder = encoder only). The exit status is still 0.
-            case degraded
-            /// Neither line was seen (an IME that words it differently).
+        public enum ModelFiles: Equatable, Sendable {
+            /// "model files verified (size + sha256)".
+            case verified
+            /// The line was not seen (an IME that words it differently).
             case unknown
         }
-        public var modelStatus: ModelStatus
+        public var modelFiles: ModelFiles
     }
 
-    /// `<installed app>/Contents/MacOS/McBopomofoLM install --progress-lines` as a child process.
-    /// Its stdout is a pipe, not a terminal, so the child prints every detailed line (registration,
-    /// the Neural Engine compile of the models), and `--progress-lines` adds the PROGRESS lines
-    /// that drive the window's bar (an IME that does not know the flag ignores it and prints none:
-    /// the bar then stays indeterminate). Each stdout line is parsed into an `InstallOutput.Event`
-    /// for `onEvent` (called from background threads); the raw lines are not handed out, because
-    /// they are English text for a terminal. PROGRESS lines are not kept for the error tail: twice
-    /// a second they would push out the lines that say what went wrong. Throws when the command
-    /// exits with a status other than 0; exit status 0 with the Neural Engine warning is a success
-    /// whose result says `.degraded`. The dry run never gets here, and no test points it at a
-    /// real input method.
+    /// `<installed app>/Contents/MacOS/McBopomofoLM install` as a child process. It verifies the model
+    /// files, asks the input method to clear its compile cache at its next start, and registers the
+    /// input source; it takes seconds. Each stdout line is parsed into an `InstallOutput.Event` for
+    /// `onEvent` (called from background threads); the raw lines are not handed out, because they are
+    /// English text for a terminal. Throws when the command exits with a status other than 0: with
+    /// `InstallerError.modelFilesDamaged` when it said so (nothing was registered; the orchestrator
+    /// puts the old version back), else `installCommandFailed`. The dry run never gets here, and no
+    /// test points it at a real input method.
     @discardableResult
     public func runInstallCommand(
         onEvent: @escaping @Sendable (InstallOutput.Event) -> Void = { _ in }
@@ -177,15 +172,20 @@ public final class PayloadInstaller: @unchecked Sendable {
         let flags = ModelFlags()
         let status = try ProcessRunner.runStreaming(executable, InstallerConstants.installArguments) {
             line in
-            if line.isError || ModelProgress.parse(line.text) == nil { tail.add(line.text) }
+            tail.add(line.text)
             guard !line.isError, let event = InstallOutput.parse(line.text) else { return }
             flags.see(event)
             onEvent(event)
         }
+        // Damaged model files fail the install whatever the status says: a damaged download must be
+        // downloaded again, not registered.
+        if let detail = flags.damagedDetail {
+            throw InstallerError.modelFilesDamaged(detail: detail)
+        }
         guard status == 0 else {
             throw InstallerError.installCommandFailed(status: status, tail: tail.snapshot)
         }
-        return InstallCommandResult(modelStatus: flags.status)
+        return InstallCommandResult(modelFiles: flags.modelFiles)
     }
 
     /// Removes the staging folder if it is still there (a failed run).
@@ -196,24 +196,31 @@ public final class PayloadInstaller: @unchecked Sendable {
     }
 }
 
-/// The two lines that decide the model status, set from the reader threads.
+/// The two lines that tell about the model files, set from the reader threads.
 private final class ModelFlags: @unchecked Sendable {
     private let lock = NSLock()
-    private var degraded = false
-    private var allOK = false
+    private var verified = false
+    private var damaged: String?
 
     func see(_ event: InstallOutput.Event) {
         lock.lock()
         defer { lock.unlock() }
-        if event == .degraded { degraded = true }
-        if event == .allOnNeuralEngine { allOK = true }
+        switch event {
+        case .modelFilesVerified: verified = true
+        case .modelFilesDamaged(let detail): damaged = detail
+        }
     }
 
-    var status: PayloadInstaller.InstallCommandResult.ModelStatus {
+    var modelFiles: PayloadInstaller.InstallCommandResult.ModelFiles {
         lock.lock()
         defer { lock.unlock() }
-        if degraded { return .degraded }
-        return allOK ? .bothOnNeuralEngine : .unknown
+        return verified ? .verified : .unknown
+    }
+
+    var damagedDetail: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return damaged
     }
 }
 

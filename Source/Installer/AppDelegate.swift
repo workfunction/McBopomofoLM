@@ -58,17 +58,8 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
 
     private var removeButton: NSButton?
     private var statusSpinner: NSProgressIndicator?
-    /// The model progress panel (v3.3i): a sentence, the percentage and a determinate bar, above
-    /// the log. Built in code, like the controls above.
-    private var progressPanelStack: NSStackView?
-    private var modelProgressBar: NSProgressIndicator?
-    private var modelProgressLabel: NSTextField?
-    private var modelProgressPercent: NSTextField?
-    private var modelProgress = ModelProgressState()
-    /// The title of the step that runs now: the sentence while the bar is still indeterminate.
-    private var currentStepTitle = ""
-    /// The install command exited 0 but said not every model runs on the Neural Engine.
-    private var modelsDegraded = false
+    /// (v3.4n: the model progress panel of v3.3i is gone. `install` takes seconds now: the input method compiles
+    /// its models in the background at its first start.)
     /// The install button title and the line under the license, as the xib has them.
     private var installButtonTitle = ""
     private var installAgreementLine = ""
@@ -143,7 +134,6 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         installAgreementLine = agreeText.stringValue
         makeRemoveButton()
         makeStatusSpinner()
-        makeModelProgressPanel()
         refreshExistingInstall()
 
         #if DEBUG
@@ -259,142 +249,6 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         statusSpinner = spinner
     }
 
-    /// The progress panel sits between the welcome line and the log. It lives in a stack view
-    /// whose only view is hidden until an install starts, which makes it take no room: the window
-    /// looks as the xib has it until then.
-    private func makeModelProgressPanel() {
-        guard let content = window?.contentView, let scroll = textView.enclosingScrollView else { return }
-        // The two xibs fix the log's top differently: Base ties it to the welcome line (which is
-        // pinned to the top), zh-Hant ties it to the welcome line and to the window's top (so the
-        // welcome line is pinned only through the log). Both are replaced by "log below the panel
-        // below the welcome line", with the welcome line kept where it was.
-        let isScrollTop: (NSLayoutConstraint, AnyObject?) -> Bool = { c, item in
-            ((c.firstItem as AnyObject?) === item && c.firstAttribute == .top)
-                || ((c.secondItem as AnyObject?) === item && c.secondAttribute == .top)
-        }
-        let oldTops = content.constraints.filter { isScrollTop($0, scroll) }
-        guard !oldTops.isEmpty else { return }
-        var gapBelowWelcome: CGFloat = 8
-        var scrollTopFromWindowTop: CGFloat?
-        for c in oldTops {
-            let other = ((c.firstItem as AnyObject?) === scroll ? c.secondItem : c.firstItem) as AnyObject?
-            if other === welcomeText {
-                gapBelowWelcome = c.constant
-            } else if other === content {
-                scrollTopFromWindowTop = c.constant
-            }
-        }
-        let welcomeHasTop = content.constraints.contains { isScrollTop($0, welcomeText) }
-
-        let label = NSTextField(labelWithString: "")
-        label.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let percent = NSTextField(labelWithString: "")
-        percent.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        percent.alignment = .right
-        percent.translatesAutoresizingMaskIntoConstraints = false
-        percent.setContentHuggingPriority(.required, for: .horizontal)
-        percent.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let bar = NSProgressIndicator()
-        bar.style = .bar
-        bar.minValue = 0
-        bar.maxValue = 1
-        bar.isIndeterminate = true
-        bar.translatesAutoresizingMaskIntoConstraints = false
-
-        let panel = NSView()
-        panel.translatesAutoresizingMaskIntoConstraints = false
-        panel.isHidden = true
-        for view in [label, percent, bar] { panel.addSubview(view) }
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
-            label.topAnchor.constraint(equalTo: panel.topAnchor, constant: 10),
-            percent.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 8),
-            percent.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
-            percent.firstBaselineAnchor.constraint(equalTo: label.firstBaselineAnchor),
-            bar.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
-            bar.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
-            bar.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 6),
-            bar.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
-        ])
-
-        let stack = NSStackView(views: [panel])
-        stack.orientation = .vertical
-        stack.alignment = .width
-        stack.spacing = 0
-        stack.detachesHiddenViews = true
-        // Exactly as tall as what it holds (nothing while hidden): the log takes all the rest.
-        stack.setContentHuggingPriority(.required, for: .vertical)
-        stack.setContentCompressionResistancePriority(.required, for: .vertical)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-
-        NSLayoutConstraint.deactivate(oldTops)
-        var added = [
-            stack.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: welcomeText.bottomAnchor),
-            scroll.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: gapBelowWelcome),
-        ]
-        if !welcomeHasTop, let fromTop = scrollTopFromWindowTop {
-            // zh-Hant: the welcome line sat (log top - gap - its height) below the window's top.
-            added.append(welcomeText.topAnchor.constraint(
-                equalTo: content.topAnchor, constant: fromTop - gapBelowWelcome - welcomeText.frame.height))
-        }
-        NSLayoutConstraint.activate(added)
-        progressPanelStack = stack
-        modelProgressBar = bar
-        modelProgressLabel = label
-        modelProgressPercent = percent
-    }
-
-    private func setModelProgressVisible(_ visible: Bool) {
-        progressPanelStack?.arrangedSubviews.first?.isHidden = !visible
-    }
-
-    /// Shows `modelProgress`: indeterminate with the step's title until the first PROGRESS line,
-    /// then a determinate bar, one sentence for what runs now and the percentage.
-    private func refreshModelProgress() {
-        guard let bar = modelProgressBar, let label = modelProgressLabel,
-              let percent = modelProgressPercent
-        else { return }
-        let sentence: String
-        switch modelProgress.phase {
-        case .waiting:
-            sentence = currentStepTitle
-        case .compiling:
-            sentence = NSLocalizedString("Compiling the models for the Neural Engine (about 3 minutes)…", comment: "")
-        case .placementCheck:
-            sentence = NSLocalizedString("Checking that the models run on the Neural Engine…", comment: "")
-        case .finishing:
-            sentence = NSLocalizedString("Almost done…", comment: "")
-        case .done:
-            sentence = modelsDegraded
-                ? NSLocalizedString("The models are prepared, but not all of them run on the Neural Engine.", comment: "")
-                : NSLocalizedString("The models are ready.", comment: "")
-        case .failed:
-            sentence = NSLocalizedString("Install Failed", comment: "")
-        }
-        label.stringValue = sentence
-        label.textColor = modelProgress.phase == .failed ? NSColor.systemRed : NSColor.labelColor
-        bar.setAccessibilityLabel(sentence)
-        if modelProgress.isIndeterminate {
-            percent.stringValue = ""
-            bar.isIndeterminate = true
-            bar.startAnimation(self)
-        } else {
-            bar.stopAnimation(self)
-            bar.isIndeterminate = false
-            bar.doubleValue = modelProgress.fraction ?? 0
-            percent.stringValue = String(format: "%d%%", modelProgress.percent)
-        }
-        percent.textColor = modelProgress.phase == .failed ? NSColor.systemRed : NSColor.secondaryLabelColor
-    }
-
     /// While something runs the status line moves right to make room for the spinner.
     private func setBusy(_ value: Bool) {
         busy = value
@@ -446,11 +300,6 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
             welcomeText.stringValue = NSLocalizedString("Installing McBopomofo LM…", comment: "")
         }
         textView.textStorage?.setAttributedString(NSAttributedString())
-        modelProgress = ModelProgressState()
-        modelsDegraded = false
-        currentStepTitle = ""
-        setModelProgressVisible(true)
-        refreshModelProgress()
         Task { @MainActor in
             let result = await self.runInstall()
             self.finishInstall(result)
@@ -513,18 +362,9 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
             moveToTrash: { try await self.recycle($0.path) },
             willRun: { step, index, total in
                 self.showStep(self.title(for: step), index: index, total: total)
-                if step == .runInstall {
-                    self.appendLog(NSLocalizedString("Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open.", comment: ""))
-                }
             },
             // Delivered on the main actor by the orchestrator, in the order the child printed them.
-            onEvent: { event in self.show(event) },
-            // The install command exited 0: the bar goes to 100 %.
-            onInstallCommandSucceeded: { status in
-                self.modelsDegraded = (status == .degraded)
-                self.modelProgress.markSucceeded()
-                self.refreshModelProgress()
-            })
+            onEvent: { event in self.show(event) })
         do {
             return .done(
                 try await InstallOrchestrator.run(
@@ -554,30 +394,12 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
     }
 
     private func show(_ event: InstallOutput.Event) {
-        func seconds(_ value: Double) -> Int { Int(value.rounded()) }
         switch event {
-        case .progress:
-            // About twice a second: the bar moves, the log does not get a line for each.
-            modelProgress.apply(event)
-            refreshModelProgress()
-        case .preparing, .functionReady:
-            break
-        case .cacheCleared:
-            appendLog(NSLocalizedString("The compile cache of the models was cleared; they are prepared from scratch.", comment: ""), monospaced: true)
-        case .encoderStarted:
-            appendLog(NSLocalizedString("Preparing the encoder model…", comment: ""), monospaced: true)
-        case .decoderStarted:
-            appendLog(NSLocalizedString("Preparing the decoder model…", comment: ""), monospaced: true)
-        case .modelLoaded(.encoder, let value):
-            appendLog(String(format: NSLocalizedString("Encoder model ready (%d s).", comment: ""), seconds(value)), monospaced: true)
-        case .modelLoaded(.decoder, let value):
-            appendLog(String(format: NSLocalizedString("Decoder model ready (%d s).", comment: ""), seconds(value)), monospaced: true)
-        case .modelsReady(let value):
-            appendLog(String(format: NSLocalizedString("The models are ready (%d s).", comment: ""), seconds(value)), monospaced: true)
-        case .allOnNeuralEngine:
-            appendLog(NSLocalizedString("Both models run on the Neural Engine.", comment: ""), monospaced: true)
-        case .degraded:
-            appendLog(NSLocalizedString("Warning: not every model can run on the Neural Engine.", comment: ""), monospaced: true)
+        case .modelFilesVerified:
+            appendLog(NSLocalizedString("The model files are intact.", comment: ""), monospaced: true)
+        case .modelFilesDamaged:
+            // The install fails right after this line, with its own message.
+            appendLog(NSLocalizedString("Warning: the model files are damaged.", comment: ""), monospaced: true)
         }
     }
 
@@ -610,8 +432,6 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .done(let outcome):
             showSuccess(outcome)
         case .failed(let title, let message):
-            modelProgress.markFailed()  // the panel shows the error state behind the alert
-            refreshModelProgress()
             runAlertPanel(title: title, message: message, buttonTitle: NSLocalizedString("Cancel", comment: ""))
             endAppWithDelay()
         }
@@ -635,14 +455,14 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
             message.append(NSAttributedString(string: "\n\n" + text, attributes: bodyAttr))
         }
         paragraph(NSLocalizedString("McBopomofo is ready to use.", comment: ""))
+        // v3.4n: the models are compiled by the input method, in the background, the first time it starts.
+        paragraph(NSLocalizedString("The first time you use McBopomofo LM, the AI model is prepared in the background (about 3 minutes); until then the usual candidate selection is used.", comment: ""))
         // Both the log-out notice and the warnings are shown: neither hides the other.
         if outcome.needsRelogin {
             paragraph(NSLocalizedString("McBopomofo is upgraded, but please log out or reboot for the new version to be fully functional.", comment: ""))
         }
         for warning in outcome.warnings {
             switch warning {
-            case .degradedModels:
-                paragraph(NSLocalizedString("Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts.", comment: ""))
             case .modeNotEnabled:
                 paragraph(NSLocalizedString("Input method may not be fully enabled. Please enable it through System Preferences > Keyboard > Input Sources.", comment: ""))
             case .otherModesStillOn:
@@ -813,7 +633,7 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .copy: return NSLocalizedString("Copying to ~/Library/Input Methods…", comment: "")
         case .removeQuarantine: return NSLocalizedString("Removing the download mark…", comment: "")
         case .verifyQuarantineFree: return NSLocalizedString("Checking the installed files…", comment: "")
-        case .runInstall: return NSLocalizedString("Registering the input method and preparing its models…", comment: "")
+        case .runInstall: return NSLocalizedString("Registering the input method…", comment: "")
         case .enableBopomofoMode: return NSLocalizedString("Turning on the Bopomofo input mode…", comment: "")
         case .discardOldBackup: return NSLocalizedString("Moving the old version to the Trash…", comment: "")
         }
@@ -831,10 +651,6 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
     }
 
     private func showStep(_ title: String, index: Int, total: Int) {
-        currentStepTitle = title
-        if modelProgress.isIndeterminate, progressPanelStack?.arrangedSubviews.first?.isHidden == false {
-            refreshModelProgress()
-        }
         agreeText.stringValue = String(format: NSLocalizedString("Step %1$d of %2$d: %3$@", comment: ""), index + 1, total, title)
         appendLog(String(format: "[%d/%d] %@", index + 1, total, title), bold: true)
     }
@@ -919,6 +735,9 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         case .installCommandFailed(let code, _):
             headline = NSLocalizedString("McBopomofo LM was copied, but could not be registered as an input method.", comment: "")
             detail = status(code)
+        case .modelFilesDamaged(let problem):
+            headline = NSLocalizedString("The AI model files in this installer are damaged, so nothing was installed. Please download the installer again.", comment: "")
+            detail = problem
         case .cannotStopOldProcess:
             headline = NSLocalizedString("The installed McBopomofo LM could not be stopped, so nothing was changed. Please log out and log in again, then open the installer again.", comment: "")
             detail = nil
@@ -961,7 +780,7 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         func snap(_ name: String) {
             window.layoutIfNeeded()
             window.displayIfNeeded()
-            RunLoop.current.run(until: Date().addingTimeInterval(1.2))  // let the bar finish its fill animation
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
             window.layoutIfNeeded()
             window.displayIfNeeded()
             guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
@@ -981,38 +800,17 @@ class AppDelegate: NSWindowController, NSApplicationDelegate {
         setBusy(true)
         welcomeText.stringValue = NSLocalizedString(existing.isInstalled ? "Upgrading McBopomofo LM…" : "Installing McBopomofo LM…", comment: "")
         textView.textStorage?.setAttributedString(NSAttributedString())
-        modelProgress = ModelProgressState()
-        modelsDegraded = false
-        setModelProgressVisible(true)
-        refreshModelProgress()
         let steps: [InstallStep] = [.unzip, .copy, .removeQuarantine, .verifyQuarantineFree, .runInstall, .enableBopomofoMode]
         for (index, step) in steps.enumerated() where index < 5 {
             showStep(title(for: step), index: index, total: steps.count)
         }
-        appendLog(NSLocalizedString("Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open.", comment: ""))
-        snap("2a-installing-waiting")  // before the first PROGRESS line: indeterminate
-        show(.encoderStarted)
-        show(.progress(ModelProgress(fraction: 0.05, step: "encoder-L64")))
-        show(.modelLoaded(.encoder, seconds: 53.6))
-        show(.decoderStarted)
-        show(.progress(ModelProgress(fraction: 0.42, step: "decoder-t32")))
+        show(.modelFilesVerified(milliseconds: 98))
         snap("2-installing")
-        show(.progress(ModelProgress(fraction: 0.71, step: "placement-decoder-t96")))
-        snap("2c-placement-check")
-        modelProgress.markFailed()
-        refreshModelProgress()
-        snap("5-failed")
-        modelProgress = ModelProgressState()
-        show(.progress(ModelProgress(fraction: 0.64, step: "decoder-n32")))
-        modelProgress.markSucceeded()
-        refreshModelProgress()
 
         setBusy(false)
         showSuccess(InstallOutcome())
         snap("3-done")
-        modelsDegraded = true
-        refreshModelProgress()
-        showSuccess(InstallOutcome(warnings: [.degradedModels, .otherModesStillOn], needsRelogin: true))
+        showSuccess(InstallOutcome(warnings: [.otherModesStillOn], needsRelogin: true))
         snap("4-done-with-warnings")
     }
     #endif

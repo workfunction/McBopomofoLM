@@ -2,7 +2,12 @@
 
 #import "SlothERuntime.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <mach/mach.h>
+#include <stdio.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include "SlothECoreML.h"
 
@@ -97,6 +102,8 @@ static const char *const kLogQueueSpecificKey = "org.openvanilla.McBopomofoLM.sl
 
 static const unsigned long long kMaxLatencyLogBytes = 4ull * 1024ull * 1024ull;
 static const size_t kMaxEndToEndSamples = 4096;
+// v3.4n: has any runtime of this process started loading models? (a destructive test must not run after that)
+static std::atomic<bool> gAnyModelLoadStarted { false };
 
 @implementation SlothERuntime {
     std::shared_ptr<McBopomofoSlothE::Engine> _engine;
@@ -122,6 +129,22 @@ static const size_t kMaxEndToEndSamples = 4096;
     std::atomic<NSUInteger> _prewarmDone;
     BOOL _aneCacheCleared;
     BOOL _loadAllDecoderFunctions;
+    // v3.4n: probe retry ("still loading"), eager compile pass
+    BOOL _encoderProbeRetried;
+    BOOL _decoderProbeRetried;
+    // v3.4n: the master switch. suspendBackgroundWork bumps the generation and sets _suspended; the eager steps and
+    // the delayed probe retries carry the generation they were scheduled under and do nothing under another one while
+    // suspended, recording what is left; startLoading / resumeBackgroundWork continue it.
+    std::atomic<uint64_t> _workGeneration;
+    std::atomic<bool> _suspended;
+    BOOL _encoderRetryPending;     // load queue
+    BOOL _decoderRetryPending;     // load queue
+    NSInteger _eagerResumeIndex;   // load queue; -1 = nothing left over
+    std::atomic<NSUInteger> _probeRetryCount;
+    std::atomic<NSUInteger> _loadAttempts;  // encoder + decoder loads that actually started (tests)
+    std::atomic<bool> _eagerDone;
+    std::atomic<uint64_t> _eagerMicroseconds;
+    NSMutableArray<NSDictionary<NSString *, id> *> *_eagerLog;  // under _lazyMutex
     std::atomic<NSUInteger> _lazyLoadsRequested;
     std::atomic<NSUInteger> _lazyLoadsDone;
     std::atomic<NSUInteger> _lazyLoadsFailed;
@@ -172,6 +195,16 @@ static const size_t kMaxEndToEndSamples = 4096;
 @synthesize installProgress = _installProgress;
 @synthesize keepANECacheForTesting = _keepANECacheForTesting;
 @synthesize simulatePlacementFailureOnceForTesting = _simulatePlacementFailureOnceForTesting;
+@synthesize simulateProbeSlowOnceForTesting = _simulateProbeSlowOnceForTesting;
+@synthesize simulateDecoderProbeSlowOnceForTesting = _simulateDecoderProbeSlowOnceForTesting;
+@synthesize probeRetryDelaySeconds = _probeRetryDelaySeconds;
+@synthesize eagerCompileAfterLoad = _eagerCompileAfterLoad;
+@synthesize bundleVersionForTesting = _bundleVersionForTesting;
+@synthesize aneCacheClearMarkerPathForTesting = _aneCacheClearMarkerPathForTesting;
+@synthesize aneCacheInstallMarkerPathForTesting = _aneCacheInstallMarkerPathForTesting;
+@synthesize markerClaimedHookForTesting = _markerClaimedHookForTesting;
+@synthesize clearActionForTesting = _clearActionForTesting;
+@synthesize eagerStepHookForTesting = _eagerStepHookForTesting;
 @synthesize lazyCPUOnlyForTesting = _lazyCPUOnlyForTesting;
 @synthesize minEncoderANECostPercent = _minEncoderANECostPercent;
 @synthesize minDecoderANECostPercent = _minDecoderANECostPercent;
@@ -302,6 +335,15 @@ static const size_t kMaxEndToEndSamples = 4096;
         _prewarmIdleSeconds = 1.0;
         _minEncoderANECostPercent = 99.0;
         _minDecoderANECostPercent = 80.0;
+        _probeRetryDelaySeconds = 30.0;
+        _workGeneration.store(0);
+        _suspended.store(false);
+        _eagerResumeIndex = -1;
+        _probeRetryCount.store(0);
+        _loadAttempts.store(0);
+        _eagerDone.store(false);
+        _eagerMicroseconds.store(0);
+        _eagerLog = [NSMutableArray array];
         _lastPrewarmNs.store(0);
         _prewarmDone.store(0);
         _lazyLoadsRequested.store(0);
@@ -543,9 +585,11 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 - (void)startLoading
 {
+    [self resumeBackgroundWork];  // v3.4n: the master switch is on again: the work it interrupted goes on
     if (_loadedFlag.load() || _failedFlag.load() || _loadingFlag.exchange(true)) {
         return;
     }
+    _eagerCompileAfterLoad = YES;  // v3.4n: the input method compiles every decoder function in the background
     dispatch_async(_loadQueue, ^{
         [self _loadOnLoadQueue];
     });
@@ -621,7 +665,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         // A failed plan or a collapsed placement points at a damaged compile
         // cache: ask the NEXT start-up to clear it and recompile (once).
         if (!_lazyCPUOnlyForTesting && [self _looksLikeABadANECache:info]) {
-            NSString *marker = [SlothERuntime aneCacheClearMarkerPath];
+            NSString *marker = [self _markerPath];
             if (marker != nil) {
                 [NSFileManager.defaultManager createDirectoryAtPath:marker.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
                 [@"t" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -759,20 +803,25 @@ static const size_t kMaxEndToEndSamples = 4096;
 - (void)_loadOnLoadQueue
 {
     if (_loadedFlag.load() || _failedFlag.load()) {
-        _loadingFlag.store(false);
+        // v3.4n: the start-up operation is more than the encoder: while the decoder's delayed retry is pending (a
+        // second entry such as loadSynchronously must not end "still loading", or the ready / partial notice is lost)
+        if (!_encoderRetryPending && !_decoderRetryPending) {
+            _loadingFlag.store(false);
+        }
         return;
     }
+    gAnyModelLoadStarted.store(true);
+    ++_loadAttempts;
     auto t0 = std::chrono::steady_clock::now();
     std::string dir(_resourcePath.fileSystemRepresentation);
     std::string error;
     NSString *reason = @"ok";
     std::unique_ptr<McBopomofoSlothE::Engine> engine;
-    NSString *marker = [SlothERuntime aneCacheClearMarkerPath];
-    if (marker != nil && [NSFileManager.defaultManager fileExistsAtPath:marker]) {
-        [NSFileManager.defaultManager removeItemAtPath:marker error:nil];
-        [self _clearANECacheOnce:@"a decoder function failed its check last run"];
+    NSString *clearWhy = nil;
+    // v3.4n: claim, clear, cap and delete are one sequence under one lock (see _consumeANECacheClearMarker)
+    if ([self _consumeANECacheClearMarker:&clearWhy clear:nil] && clearWhy != nil) {
         _aneCacheCleared = NO;  // this load may still self-heal once
-        [self _progress:@"  a decoder function failed its Neural Engine check last run: compile cache cleared, compiling again"];
+        [self _progress:[NSString stringWithFormat:@"  compile cache cleared (%@): compiling from scratch", clearWhy]];
     }
     [self _progress:@"SlothE-T 25M encoder (enc25m.mlmodelc):"];
     bool ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::EncoderRuntimeFiles(), &error);
@@ -795,6 +844,39 @@ static const size_t kMaxEndToEndSamples = 4096;
         if (backend == nullptr && [self _looksLikeABadANECache:_encInfo] && [self _clearANECacheOnce:@(("encoder " + _encInfo.reason).c_str())]) {
             [self _progress:@"  placement check failed or collapsed to the CPU (damaged or stale Neural Engine cache?): cache cleared, compiling again"];
             backend = McBopomofoSlothE::LoadCoreMLEncoder(dir, [self _loadOptionsForDecoder:NO], &_encInfo);
+        }
+        if (backend != nullptr && _simulateProbeSlowOnceForTesting) {
+            backend.reset();
+            _encInfo.ok = false;
+            _encInfo.reason = "probe_slow";
+            _encInfo.probeMs = 99;
+            _encInfo.detail = "simulated for a test";
+            _simulateProbeSlowOnceForTesting = NO;
+        }
+        if (backend == nullptr && _encInfo.reason == "probe_slow" && !_encoderProbeRetried && !_loadAllDecoderFunctions) {
+            // v3.4n: a slow probe may be contention (the user typing during the compile), not the model: the
+            // runtime stays "loading" (not failed) and loads the encoder once more after a pause.
+            _encoderProbeRetried = YES;
+            ++_probeRetryCount;
+            _encoderRetryPending = YES;
+            [self _appendLogLine:[NSString stringWithFormat:@"# %@ encoder latency probe slow (%.2f ms): loading again in %.0f s\n", [NSDate date], _encInfo.probeMs, _probeRetryDelaySeconds]];
+            [self _progress:[NSString stringWithFormat:@"  encoder latency probe slow (%.2f ms): loading again in %.0f s", _encInfo.probeMs, _probeRetryDelaySeconds]];
+            const uint64_t generation = _workGeneration.load();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_probeRetryDelaySeconds * NSEC_PER_SEC)), _loadQueue, ^{
+                // Sol r48: the switch is checked ON ITS OWN, before the generation (a retry scheduled while the switch
+                // is already off captures the already-current generation): the retry stays pending and the next
+                // resumeBackgroundWork runs it. A generation that moved on means a suspend -> resume cycle happened
+                // meanwhile, whose resume block runs the pending retry itself.
+                if (self->_suspended.load() || self->_workGeneration.load() != generation) {
+                    return;
+                }
+                if (!self->_encoderRetryPending) {
+                    return;  // already run by a resume
+                }
+                self->_encoderRetryPending = NO;
+                [self _loadOnLoadQueue];
+            });
+            return;  // _loadingFlag stays set
         }
         if (backend == nullptr) {
             ok = false;
@@ -819,7 +901,9 @@ static const size_t kMaxEndToEndSamples = 4096;
         _loadReason = @"ok";
         _loadedFlag.store(true, std::memory_order_release);
         [self _progress:[NSString stringWithFormat:@"  encoder ON the Neural Engine: loaded in %.1f s (ANE compile included when not cached)", elapsed / 1000.0]];
-        [self _loadDecoderOnLoadQueue];
+        if ([self _loadDecoderOnLoadQueue]) {
+            return;  // the decoder's latency probe was slow: it loads again after a pause, still "loading"
+        }
     } else {
         _loadReason = reason;
         _loadErrorString = [NSString stringWithFormat:@"%@: %s", reason, error.c_str()];
@@ -834,8 +918,11 @@ static const size_t kMaxEndToEndSamples = 4096;
 
 // The decoder, after the encoder; until it is loaded (or if it cannot be)
 // the key handler runs the encoder-only in-walk path.
-- (void)_loadDecoderOnLoadQueue
+// Returns YES when a slow latency probe made it schedule one more load of the decoder (v3.4n): the caller then
+// leaves `loading` set. NO otherwise (the decoder is loaded, or failed for good).
+- (BOOL)_loadDecoderOnLoadQueue
 {
+    ++_loadAttempts;
     auto t0 = std::chrono::steady_clock::now();
     std::string dir(_resourcePath.fileSystemRepresentation);
     std::string error;
@@ -855,6 +942,32 @@ static const size_t kMaxEndToEndSamples = 4096;
         if (tokenizer != nullptr && backend == nullptr && [self _looksLikeABadANECache:_decInfo] && [self _clearANECacheOnce:@(("decoder " + _decInfo.reason).c_str())]) {
             [self _progress:@"  placement check failed or collapsed to the CPU (damaged or stale Neural Engine cache?): cache cleared, compiling again"];
             backend = McBopomofoSlothE::LoadCoreMLDecoder(dir, [self _loadOptionsForDecoder:YES], &_decInfo);
+        }
+        if (backend != nullptr && _simulateDecoderProbeSlowOnceForTesting) {
+            backend.reset();
+            _decInfo.ok = false;
+            _decInfo.reason = "probe_slow";
+            _decInfo.probeMs = 99;
+            _decInfo.detail = "simulated for a test";
+            _simulateDecoderProbeSlowOnceForTesting = NO;
+        }
+        if (tokenizer != nullptr && backend == nullptr && _decInfo.reason == "probe_slow" && !_decoderProbeRetried && !_loadAllDecoderFunctions) {
+            _decoderProbeRetried = YES;
+            ++_probeRetryCount;
+            _decoderRetryPending = YES;
+            [self _appendLogLine:[NSString stringWithFormat:@"# %@ decoder latency probe slow (%.2f ms): loading again in %.0f s\n", [NSDate date], _decInfo.probeMs, _probeRetryDelaySeconds]];
+            [self _progress:[NSString stringWithFormat:@"  decoder latency probe slow (%.2f ms): loading again in %.0f s", _decInfo.probeMs, _probeRetryDelaySeconds]];
+            const uint64_t generation = _workGeneration.load();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(_probeRetryDelaySeconds * NSEC_PER_SEC)), _loadQueue, ^{
+                if (self->_suspended.load() || self->_workGeneration.load() != generation) {
+                    return;  // as the encoder's retry: stays pending, resumeBackgroundWork runs it
+                }
+                if (!self->_decoderRetryPending) {
+                    return;
+                }
+                [self _runDecoderRetry];
+            });
+            return YES;
         }
         if (tokenizer == nullptr) {
             ok = false;
@@ -891,6 +1004,7 @@ static const size_t kMaxEndToEndSamples = 4096;
         _decoderLoadReason = @"ok";
         _decoderLoadedFlag.store(true, std::memory_order_release);
         [self _progress:[NSString stringWithFormat:@"  decoder ON the Neural Engine: loaded in %.1f s", elapsed / 1000.0]];
+        [self _startEagerCompilePass];
     } else {
         _decoderLoadReason = reason;
         _decoderLoadErrorString = [NSString stringWithFormat:@"%@: %s", reason, error.c_str()];
@@ -898,6 +1012,178 @@ static const size_t kMaxEndToEndSamples = 4096;
         NSLog(@"McBopomofoLM: SlothE decoder not used (%@); encoder-only in-walk", _decoderLoadErrorString);
         [self _progress:[NSString stringWithFormat:@"  decoder NOT used (%@): encoder-only choices", _decoderLoadErrorString]];
     }
+    return NO;
+}
+
+// ---------------------------------------------------------------- v3.4n: the eager compile pass
+
+// Need order: the functions the typing reaches first. Every step is its own block on the load queue, queued only
+// after the previous one finished, so a lazy load requested by the user's typing in between waits for at most
+// the one function being compiled.
+struct EagerStep {
+    bool next;
+    size_t length;
+};
+static const EagerStep kEagerOrder[] = { { false, 32 }, { true, 16 }, { false, 64 }, { true, 32 }, { false, 96 }, { true, 64 }, { true, 96 } };
+
+- (void)_startEagerCompilePass
+{
+    if (!_eagerCompileAfterLoad || _loadAllDecoderFunctions || _decoder == nullptr) {
+        return;
+    }
+    _eagerMicroseconds.store(0);
+    _eagerDone.store(false);
+    if (_suspended.load()) {
+        _eagerResumeIndex = 0;  // AI selection is off: the pass waits for the switch
+        return;
+    }
+    [self _eagerCompileStep:0 decoder:_decoder];
+}
+
+// A step that finds the switch off records where the pass stopped (`_eagerResumeIndex`) and does nothing; when the
+// switch is on again (resumeBackgroundWork) the pass goes on from there.
+- (void)_eagerCompileStep:(NSUInteger)index decoder:(std::shared_ptr<McBopomofoSlothE::Decoder>)decoder
+{
+    if (index >= sizeof(kEagerOrder) / sizeof(kEagerOrder[0])) {
+        _eagerDone.store(true, std::memory_order_release);
+        [self _appendLogLine:[NSString stringWithFormat:@"# %@ eager compile pass finished in %.1f s\n", [NSDate date], _eagerMicroseconds.load() / 1e6]];
+        return;
+    }
+    __weak SlothERuntime *weakSelf = self;
+    dispatch_async(_loadQueue, ^{
+        SlothERuntime *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        // Sol r48: suspension is checked on its own, first, whatever the generation says (a pass that started while the
+        // switch was already off carries the already-current generation).
+        if (strongSelf->_suspended.load()) {
+            strongSelf->_eagerResumeIndex = static_cast<NSInteger>(index);
+            return;
+        }
+        // The pass is a chain with one live block at a time. A block that finds the switch off parks the pass (the
+        // index) and ends; the resume block restarts it from there. A block queued before a suspend -> resume cycle
+        // that finds the switch on again is the pass's only live block (the resume block ran first and found nothing
+        // parked, or runs after it and will find nothing): ending it would lose the pass, so it goes on. The
+        // generation therefore needs no check here; the retry and resume blocks, which can be doubled, have one.
+        if (strongSelf->_eagerResumeIndex == static_cast<NSInteger>(index)) {
+            strongSelf->_eagerResumeIndex = -1;
+        }
+        dispatch_block_t hook = strongSelf->_eagerStepHookForTesting;
+        if (hook != nil) {
+            hook();
+        }
+        const EagerStep step = kEagerOrder[index];
+        NSString *name = [NSString stringWithFormat:@"%c%zu", step.next ? 'n' : 't', step.length];
+        BOOL skipped = decoder->isFunctionLoaded(step.next, step.length);  // a lazy load got there first
+        BOOL ok = YES;
+        double ms = 0;
+        std::string detail;
+        if (!skipped) {
+            auto t0 = std::chrono::steady_clock::now();
+            ok = decoder->precompileFunction(step.next, step.length, &detail);
+            ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            strongSelf->_eagerMicroseconds.fetch_add(static_cast<uint64_t>(ms * 1000.0));
+        }
+        {
+            std::lock_guard<std::mutex> lock(strongSelf->_lazyMutex);
+            [strongSelf->_eagerLog addObject:@{ @"name" : name, @"ms" : @(ms), @"ok" : @(ok), @"skipped" : @(skipped) }];
+        }
+        if (!skipped) {
+            [strongSelf _appendLogLine:[NSString stringWithFormat:@"# %@ eager compile %@ %.0f ms %@\n", [NSDate date], name, ms, ok ? @"ok" : [NSString stringWithFormat:@"failed (%s)", detail.c_str()]]];
+            if (!ok) {
+                NSLog(@"McBopomofoLM: SlothE eager compile of decoder %@ failed (%s); it loads on first need", name, detail.c_str());
+            }
+        }
+        [strongSelf _eagerCompileStep:index + 1 decoder:decoder];
+    });
+}
+
+// ---- the master switch (v3.4n)
+
+- (void)suspendBackgroundWork
+{
+    _suspended.store(true);
+    ++_workGeneration;
+}
+
+- (BOOL)backgroundWorkSuspended
+{
+    return _suspended.load();
+}
+
+- (void)resumeBackgroundWork
+{
+    if (!_suspended.exchange(false)) {
+        return;
+    }
+    // Sol r48: the resume block checks the switch first, and its generation: a suspend -> resume pair that comes after
+    // this resume queued its own block, so this one is stale and does nothing.
+    const uint64_t generation = _workGeneration.load();
+    __weak SlothERuntime *weakSelf = self;
+    dispatch_async(_loadQueue, ^{
+        SlothERuntime *strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf->_suspended.load() || strongSelf->_workGeneration.load() != generation) {
+            return;
+        }
+        if (strongSelf->_encoderRetryPending) {
+            strongSelf->_encoderRetryPending = NO;
+            [strongSelf _loadOnLoadQueue];
+        } else if (strongSelf->_decoderRetryPending) {
+            [strongSelf _runDecoderRetry];
+        } else if (strongSelf->_eagerResumeIndex >= 0 && strongSelf->_decoder != nullptr) {
+            NSUInteger index = static_cast<NSUInteger>(strongSelf->_eagerResumeIndex);
+            strongSelf->_eagerResumeIndex = -1;
+            [strongSelf _eagerCompileStep:index decoder:strongSelf->_decoder];
+        }
+    });
+}
+
+// The decoder's delayed second load (load queue).
+- (void)_runDecoderRetry
+{
+    _decoderRetryPending = NO;
+    [self _loadDecoderOnLoadQueue];
+    if (!_decoderRetryPending) {
+        _loadingFlag.store(false, std::memory_order_release);
+    }
+}
+
+- (void)startEagerCompilePassForTesting
+{
+    _eagerCompileAfterLoad = YES;
+    [self _startEagerCompilePass];
+}
+
+- (BOOL)eagerCompileDone
+{
+    return _eagerDone.load(std::memory_order_acquire);
+}
+
+- (double)eagerCompileMilliseconds
+{
+    return _eagerMicroseconds.load() / 1000.0;
+}
+
+- (NSArray<NSDictionary<NSString *, id> *> *)eagerCompileLog
+{
+    std::lock_guard<std::mutex> lock(_lazyMutex);
+    return [_eagerLog copy];
+}
+
+- (NSUInteger)loadAttemptsForTesting
+{
+    return _loadAttempts.load();
+}
+
+- (dispatch_queue_t)loadQueueForTesting
+{
+    return _loadQueue;
+}
+
+- (NSUInteger)probeRetryCount
+{
+    return _probeRetryCount.load();
 }
 
 // Core ML keeps its Neural Engine compile cache for this app in
@@ -934,6 +1220,262 @@ static const size_t kMaxEndToEndSamples = 4096;
 {
     NSString *cache = [SlothERuntime aneCachePath];
     return cache == nil ? nil : [cache.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"slothe-clear-ane-cache-at-next-start"];
+}
+
++ (void)setPlanFailuresForTesting:(NSInteger)count
+{
+    McBopomofoSlothE::SetPlanFailuresForTesting(static_cast<int>(count));
+}
+
+- (void)requestDecoderFunctionForTesting:(NSInteger)length next:(BOOL)next
+{
+    if (_decoder != nullptr) {
+        _decoder->requestFunction(next, static_cast<size_t>(length));
+    }
+}
+
+- (nullable NSString *)_markerPath
+{
+    return _aneCacheClearMarkerPathForTesting != nil ? _aneCacheClearMarkerPathForTesting : [SlothERuntime aneCacheClearMarkerPath];
+}
+
+- (nullable NSString *)_installMarkerPath
+{
+    return _aneCacheInstallMarkerPathForTesting != nil ? _aneCacheInstallMarkerPathForTesting : [SlothERuntime aneCacheInstallMarkerPath];
+}
+
+// v3.4n: two markers that ask the NEXT start-up to clear the compile cache, kept apart so that neither writer can
+// touch the other's request:
+//  - the INSTALL marker (`aneCacheInstallMarkerPath`), written only by `install`: always honoured, no cap. A new
+//    executable at the same path must not meet the previous one's entries; install writes a marker instead of deleting
+//    the cache because on an upgrade a new input method process may already be compiling between the file copy and
+//    the install command.
+//  - the SELF-HEAL marker (`aneCacheClearMarkerPath`, the name older builds used), written only by the runtime when a
+//    lazily loaded decoder function failed its check even after its retry: honoured at most once per bundle version
+//    (`slothe-ane-cache-cleared-for-version` next to it, written only by the consumer), so a Mac that keeps flaking
+//    cannot loop through a 3-minute recompile at every start.
+// Consuming is ONE sequence under ONE lock (Sol r48): flock(LOCK_EX) on `slothe-ane-cache.lock` next to the markers,
+// held across claim -> clear -> write the cap -> delete the claims. Everything that consumes takes that lock, so
+//  - a `.claimed-*` file found when the lock is taken is ABANDONED (its consumer crashed or was killed after the claim
+//    and before the clear completed): it counts as a pending request of its own kind (an install claim stays an install
+//    request, a self-heal claim a self-heal request, cap and all);
+//  - the claim is deleted only after the clear has completed, so no crash can lose a request;
+//  - the cap is read and written only here, under the lock: two consumers cannot both pass the check.
+// Writers that do not take the lock (the runtime's self-heal writer) stay safe by the claim itself: a marker is CLAIMED
+// by rename(2) to a unique name in the same directory (atomic), and a writer that comes after the claim creates a new
+// file under the marker's name, which is not the claimed one and so is not deleted with it: at worst one extra compile,
+// never a lost request. `install` takes the same lock only around writing its marker (it waits for at most one consume).
+static NSString *const kCacheLockName = @"slothe-ane-cache.lock";
+
+// -1 when the lock file cannot be opened (no cache folder yet: no marker either) or locked.
+static int AcquireCacheLock(NSString *folder)
+{
+    int fd = open([folder stringByAppendingPathComponent:kCacheLockName].fileSystemRepresentation, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        return -1;
+    }
+    while (flock(fd, LOCK_EX) != 0) {
+        if (errno != EINTR) {
+            close(fd);
+            return -1;
+        }
+    }
+    return fd;
+}
+
+static void ReleaseCacheLock(int fd)
+{
+    if (fd >= 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+    }
+}
+
+// The claimed file's path, or nil (nothing there, or another process claimed it).
+- (nullable NSString *)_claimMarkerAtPath:(NSString *)path
+{
+    NSString *claimed = [path stringByAppendingFormat:@".claimed-%d-%08x", getpid(), arc4random()];
+    if (rename(path.fileSystemRepresentation, claimed.fileSystemRepresentation) != 0) {
+        return nil;
+    }
+    dispatch_block_t hook = _markerClaimedHookForTesting;
+    if (hook != nil) {
+        hook();
+    }
+    return claimed;
+}
+
+// The `.claimed-*` files of one marker found in its folder (the caller holds the lock: they are abandoned).
+static NSArray<NSString *> *AbandonedClaims(NSString *marker)
+{
+    NSString *folder = marker.stringByDeletingLastPathComponent;
+    NSString *prefix = [marker.lastPathComponent stringByAppendingString:@".claimed-"];
+    NSMutableArray<NSString *> *found = [NSMutableArray array];
+    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil]) {
+        if ([name hasPrefix:prefix]) {
+            [found addObject:[folder stringByAppendingPathComponent:name]];
+        }
+    }
+    return found;
+}
+
+// The real clear: remove this app's compile cache. YES when it is gone (or never was).
+- (BOOL)_clearANECacheForMarker:(NSString *)why
+{
+    NSString *path = [SlothERuntime aneCachePath];
+    if (path == nil) {
+        return NO;
+    }
+    NSError *error = nil;
+    BOOL removed = [NSFileManager.defaultManager removeItemAtPath:path error:&error];
+    BOOL wasNotThere = error != nil && [error.domain isEqualToString:NSCocoaErrorDomain] && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError);
+    if (!removed && !wasNotThere) {
+        [self _appendLogLine:[NSString stringWithFormat:@"# %@ Neural Engine compile cache could NOT be cleared (%@): %@\n", [NSDate date], why, error.localizedDescription]];
+        return NO;
+    }
+    _aneCacheCleared = YES;
+    [self _appendLogLine:[NSString stringWithFormat:@"# %@ Neural Engine compile cache cleared (%@)\n", [NSDate date], why]];
+    return YES;
+}
+
+// YES, with *why set: the compile cache was cleared by this call. `clear` replaces the real clearing (tests).
+- (BOOL)_consumeANECacheClearMarker:(NSString *_Nullable *_Nonnull)why clear:(nullable BOOL (^)(NSString *))clear
+{
+    *why = nil;
+    NSString *installMarker = [self _installMarkerPath];
+    NSString *healMarker = [self _markerPath];
+    NSString *folder = (installMarker != nil ? installMarker : healMarker).stringByDeletingLastPathComponent;
+    if (folder.length == 0) {
+        return NO;
+    }
+    int lock = AcquireCacheLock(folder);
+    if (lock < 0) {
+        return NO;  // no cache folder yet (so no marker), or the lock cannot be taken: the requests stay where they are
+    }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray<NSString *> *installClaims = [NSMutableArray array];
+    NSMutableArray<NSString *> *healClaims = [NSMutableArray array];
+    if (installMarker != nil) {
+        [installClaims addObjectsFromArray:AbandonedClaims(installMarker)];
+    }
+    if (healMarker != nil) {
+        [healClaims addObjectsFromArray:AbandonedClaims(healMarker)];
+    }
+    if (installClaims.count + healClaims.count > 0) {
+        [self _appendLogLine:[NSString stringWithFormat:@"# %@ found %lu claimed compile-cache request(s) a previous start-up did not finish: treated as pending\n", [NSDate date], (unsigned long)(installClaims.count + healClaims.count)]];
+    }
+    NSString *claimed = installMarker != nil ? [self _claimMarkerAtPath:installMarker] : nil;
+    if (claimed != nil) {
+        [installClaims addObject:claimed];
+    }
+    claimed = healMarker != nil ? [self _claimMarkerAtPath:healMarker] : nil;
+    if (claimed != nil) {
+        [healClaims addObject:claimed];
+    }
+
+    NSString *reason = nil;
+    NSString *capPath = healMarker != nil ? [healMarker.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"slothe-ane-cache-cleared-for-version"] : nil;
+    NSString *version = _bundleVersionForTesting != nil ? _bundleVersionForTesting : [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"];
+    if (version.length == 0) {
+        version = @"?";
+    }
+    BOOL writeCap = NO;
+    if (installClaims.count > 0) {
+        // One clear serves both; the self-heal request, if any, is satisfied by it and does not use up the version's
+        // one self-heal clear.
+        reason = @"the install asked for a clean compile";
+    } else if (healClaims.count > 0 && capPath != nil) {
+        NSString *done = [NSString stringWithContentsOfFile:capPath encoding:NSUTF8StringEncoding error:nil];
+        if ([done isEqualToString:version]) {
+            [self _appendLogLine:[NSString stringWithFormat:@"# %@ a decoder function failed its check last run, but the compile cache was already cleared once for version %@: not clearing again\n", [NSDate date], version]];
+            NSLog(@"McBopomofoLM: not clearing the Neural Engine compile cache again for version %@", version);
+        } else {
+            reason = @"a decoder function failed its check last run";
+            writeCap = YES;
+        }
+    }
+    BOOL cleared = NO;
+    BOOL finished = YES;
+    if (reason != nil) {
+        BOOL (^action)(NSString *) = clear != nil ? clear : _clearActionForTesting;
+        cleared = action != nil ? action(reason) : [self _clearANECacheForMarker:reason];
+        if (cleared) {
+            if (writeCap) {
+                [version writeToFile:capPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        } else {
+            finished = NO;  // the clear did not complete: the claims stay, and the next start-up finds them
+        }
+    }
+    if (finished) {
+        for (NSString *path in installClaims) {
+            [fm removeItemAtPath:path error:nil];
+        }
+        for (NSString *path in healClaims) {
+            [fm removeItemAtPath:path error:nil];
+        }
+    }
+    ReleaseCacheLock(lock);
+    if (cleared) {
+        *why = reason;
+    }
+    return cleared;
+}
+
++ (BOOL)writeANECacheClearMarkerForInstall
+{
+    NSString *marker = [SlothERuntime aneCacheInstallMarkerPath];
+    return marker != nil && [self writeANECacheClearMarkerForInstallAtPath:marker];
+}
+
++ (BOOL)writeANECacheClearMarkerForInstallAtPath:(NSString *)marker
+{
+    NSString *folder = marker.stringByDeletingLastPathComponent;
+    [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    // The cache lock, only for the write: a consume in progress finishes first (at most one; it takes milliseconds).
+    // Without the lock (it cannot be opened) the marker is still written: the request matters more than the order.
+    int lock = AcquireCacheLock(folder);
+    BOOL ok = [@"install" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    ReleaseCacheLock(lock);
+    return ok;
+}
+
++ (nullable NSString *)aneCacheInstallMarkerPath
+{
+    NSString *cache = [SlothERuntime aneCachePath];
+    return cache == nil ? nil : [cache.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"slothe-clear-ane-cache-after-install"];
+}
+
++ (BOOL)anyModelLoadStartedInThisProcess
+{
+    return gAnyModelLoadStarted.load();
+}
+
+- (BOOL)consumeANECacheClearMarkerForTesting:(NSString *_Nullable *_Nullable)why
+{
+    NSString *reason = nil;
+    // clearActionForTesting replaces the clearing; without one nothing is cleared (the cache would be the real one)
+    BOOL clear = [self _consumeANECacheClearMarker:&reason clear:_clearActionForTesting != nil ? _clearActionForTesting : ^BOOL(NSString *) { return YES; }];
+    if (why != nullptr) {
+        *why = reason;
+    }
+    return clear;
+}
+
+- (BOOL)verifyModelFilesWithDetail:(NSString *_Nullable *_Nullable)detail milliseconds:(nullable double *)milliseconds
+{
+    auto t0 = std::chrono::steady_clock::now();
+    std::string dir(_resourcePath.fileSystemRepresentation);
+    std::string error;
+    BOOL ok = McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::EncoderRuntimeFiles(), &error)
+        && McBopomofoSlothE::VerifyRuntimeFiles(dir, McBopomofoSlothE::DecoderRuntimeFiles(), &error);
+    if (milliseconds != nullptr) {
+        *milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    }
+    if (!ok && detail != nullptr) {
+        *detail = @(error.c_str());
+    }
+    return ok;
 }
 
 - (BOOL)_looksLikeABadANECache:(const McBopomofoSlothE::CoreMLLoadInfo &)info

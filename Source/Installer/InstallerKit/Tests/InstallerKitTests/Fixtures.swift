@@ -36,21 +36,14 @@ final class Collector<T: Sendable>: @unchecked Sendable {
     }
 }
 
-/// What the stub `install` command says about the models at the end.
+/// What the stub `install` command says about the model files (v3.4n: it verifies them and compiles nothing).
 enum StubModels: Sendable {
-    case bothOnNeuralEngine
-    case degraded
+    /// "model files verified", exit status as given.
+    case verified
+    /// "ERROR: model files damaged: ..." and exit status 1 (nothing registered).
+    case damaged
+    /// No line about the models (an IME that words it differently).
     case silent
-}
-
-/// What the stub `install` command prints for `--progress-lines` (v3.3i).
-enum StubProgress: Sendable {
-    /// Valid PROGRESS lines, as the IME prints them.
-    case normal
-    /// An IME that does not know the flag: no PROGRESS line at all.
-    case none
-    /// Valid lines mixed with malformed, out-of-range and half-written ones.
-    case noisy
 }
 
 enum Fixture {
@@ -61,8 +54,7 @@ enum Fixture {
     static func makeApp(
         in directory: String, build: String = Fixture.build, short: String = Fixture.short,
         bundleID: String = InstallerConstants.bundleID, declareBopomofoMode: Bool = true,
-        installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine,
-        installProgress: StubProgress = .normal
+        installExitStatus: Int = 0, installModels: StubModels = .verified
     ) -> String {
         let app = (directory as NSString).appendingPathComponent(InstallerConstants.appBundleName)
         let fm = FileManager.default
@@ -83,54 +75,31 @@ enum Fixture {
         // Data, not String.write: that would add a com.apple.TextEncoding attribute.
         // A stub for the real binary: `install` prints lines the way the IME does when stdout is
         // not a terminal (and says so when it is), and exits with `installExitStatus`.
-        let closing: String
+        let modelLines: String
+        let status: Int
         switch installModels {
-        case .bothOnNeuralEngine:
-            closing = #"echo "McBopomofoLM: both models run on the Neural Engine.""#
-        case .degraded:
-            closing =
-                #"echo "McBopomofoLM: WARNING: not every model can run on the Neural Engine; see above. Those models are not used (no encoder = stock McBopomofo, no decoder = encoder-only). The input method retries at every start.""#
+        case .verified:
+            modelLines = """
+                  echo "McBopomofoLM: model files verified (size + sha256) in 98 ms."
+                  echo "McBopomofoLM: the models are not compiled now; the input method prepares them in the background the first time it starts (about 3 minutes). Until they are loaded the usual candidate selection is used."
+                """
+            status = installExitStatus
+        case .damaged:
+            modelLines =
+                #"  echo "McBopomofoLM: ERROR: model files damaged: dec60m.mlmodelc/weights/weight.bin: size 1 instead of 2""#
+            status = 1
         case .silent:
-            closing = "true"
-        }
-        // PROGRESS lines are printed only when the second argument is --progress-lines (so a
-        // test sees whether the installer passed it) and the stub is not the old-IME kind.
-        let progressEnabled: Int
-        let noise: Int
-        switch installProgress {
-        case .normal: (progressEnabled, noise) = (1, 0)
-        case .none: (progressEnabled, noise) = (0, 0)
-        case .noisy: (progressEnabled, noise) = (1, 1)
+            modelLines = "  true"
+            status = installExitStatus
         }
         let stub = """
             #!/bin/sh
             if [ "$1" = install ]; then
               if [ -t 1 ]; then echo "tty"; exit 9; fi
-              P=0
-              if [ "$2" = --progress-lines ] && [ \(progressEnabled) = 1 ]; then P=1; fi
-              p() { if [ "$P" = 1 ]; then echo "PROGRESS $1 $2"; fi; }
-              junk() { if [ "$P" = 1 ] && [ \(noise) = 1 ]; then echo "$1"; fi; }
-              echo "McBopomofoLM: preparing the SlothE models for the Neural Engine (first time: about 3 minutes)..."
-              p 0.0000 encoder-L8
-              echo "SlothE-T 25M encoder (enc25m.mlmodelc):"
-              echo "  encoder L8 ready in 4.6 s"
-              p 0.0270 encoder-L16
-              junk "PROGRESS abc encoder-L16"
-              junk "PROGRESS 1.5 decoder-t16"
-              junk "PROGRESS 0.9"
-              junk "PROGRESS -0.2 decoder-t16"
-              junk "PROGRESS 0.9 bad_key"
-              junk "PROGRESS 0.9 decoder-t16 extra"
-              echo "  encoder ON the Neural Engine: loaded in 53.6 s (ANE compile included when not cached)"
-              p 0.1500 placement-encoder
-              echo "SlothE decoder (dec60m.mlmodelc):"
-              echo "  decoder t16 ready in 4.2 s"
-              p 0.3000 placement-decoder-t16
-              echo "Models ready in 184.9 s: encoder on the Neural Engine, decoder on the Neural Engine."
-              p 1.0000 done
-              \(closing)
+              if [ -n "$2" ]; then echo "unexpected argument: $2" >&2; exit 7; fi
+            \(modelLines)
               echo "registering" >&2
-              exit \(installExitStatus)
+              exit \(status)
             fi
             echo stub
 
@@ -159,14 +128,13 @@ enum Fixture {
     static func makeInstallerResources(
         in root: TempDir, build: String = Fixture.build, short: String = Fixture.short,
         installExitStatus: Int = 0,
-        installModels: StubModels = .bothOnNeuralEngine,
-        installProgress: StubProgress = .normal
+        installModels: StubModels = .verified
     ) -> String {
         let source = root.sub("source")
         try! FileManager.default.createDirectory(atPath: source, withIntermediateDirectories: true)
         let app = makeApp(
             in: source, build: build, short: short, installExitStatus: installExitStatus,
-            installModels: installModels, installProgress: installProgress)
+            installModels: installModels)
         let resources = root.sub("Resources")
         zip(
             app: app,

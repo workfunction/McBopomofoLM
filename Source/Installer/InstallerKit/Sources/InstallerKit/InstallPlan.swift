@@ -22,8 +22,8 @@ public enum InstallStep: String, Equatable, CaseIterable, Sendable {
     case copy
     case removeQuarantine
     case verifyQuarantineFree
-    /// Run `<app>/Contents/MacOS/McBopomofoLM install` (registers the input source and compiles
-    /// the models for the Neural Engine).
+    /// Run `<app>/Contents/MacOS/McBopomofoLM install` (verifies the model files and registers the
+    /// input source; the input method compiles the models in the background at its first start).
     case runInstall
     /// Enable the Bopomofo input mode and no other.
     case enableBopomofoMode

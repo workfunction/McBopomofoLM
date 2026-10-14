@@ -38,12 +38,17 @@
 "Copying to ~/Library/Input Methods…" = "正在拷貝到 ~/Library/Input Methods…";
 "Removing the download mark…" = "正在移除「從網路下載」的標記…";
 "Checking the installed files…" = "正在檢查安裝好的檔案…";
-"Registering the input method and preparing its models…" = "正在登記輸入法並準備模型…";
 "Turning on the Bopomofo input mode…" = "正在開啟注音輸入模式…";
-"Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open." = "正在為 Neural Engine 準備模型。第一次大約需要 3 分鐘，請不要關閉這個視窗。";
 "Stopping the old version. This may take up to one minute…" = "等待舊版完全停用，大約需要一分鐘…";
 "Please wait" = "請稍候";
 "The installer is still working. Quitting now could leave McBopomofo LM half installed. Please wait until it finishes." = "安裝程式還在進行中。現在結束，小麥注音 LM 可能只裝到一半，請等它完成。";
+
+/* v3.4n: install no longer compiles the models */
+"Registering the input method…" = "正在註冊輸入法…";
+"The model files are intact." = "模型檔案完整。";
+"Warning: the model files are damaged." = "警告：模型檔案已損壞。";
+"The first time you use McBopomofo LM, the AI model is prepared in the background (about 3 minutes); until then the usual candidate selection is used." = "第一次使用小麥注音 LM 時，AI 模型會在背景準備（約 3 分鐘），在那之前使用一般選字。";
+"The AI model files in this installer are damaged, so nothing was installed. Please download the installer again." = "這個安裝程式裡的 AI 模型檔案已損壞，所以沒有安裝任何東西。請重新下載安裝程式。";
 
 /* Results */
 "Installation Successful" = "安裝成功";
@@ -85,39 +90,23 @@
 /* v3.3e fixes: partial failures, warnings, removal without the app, localized details */
 "%d item(s) still carry the mark, for example: %@" = "還有 %1$d 個項目帶著標記，例如：%2$@";
 "Another McBopomofo LM mode is still turned on. Turn it off in System Settings > Keyboard > Input Sources if you do not want it." = "小麥注音 LM 的其他輸入模式（例如純注音）仍然開啟。如果不需要，請到「系統設定」>「鍵盤」>「輸入方式」關閉。";
-"Both models run on the Neural Engine." = "兩個模型都在 Neural Engine 上執行。";
-"Decoder model ready (%d s)." = "解碼器模型準備好了（%d 秒）。";
-"Encoder model ready (%d s)." = "編碼器模型準備好了（%d 秒）。";
 "Exit status: %d" = "結束狀態碼：%d";
 "Folder: %@" = "位置：%@";
 "Installed, with a warning" = "安裝完成，但有提醒";
 "McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac." = "小麥注音 LM 已經關閉。如果輸入選單裡仍然看得到，請登出或重新啟動 Mac。";
 "McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed." = "目前正在使用小麥注音 LM，安裝程式無法切換到其他輸入法。請先在輸入選單改選其他輸入法（例如 ABC），再重新打開安裝程式。目前沒有更動任何東西。";
-"Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts." = "這台 Mac 的 Neural Engine 無法執行所有模型。小麥注音 LM 仍然可以使用，但缺少無法執行的模型（沒有編碼器時，行為會接近原版小麥注音；沒有解碼器時，只用編碼器）。每次啟動時，輸入法都會再試一次。";
-"Preparing the decoder model…" = "正在準備解碼器模型…";
-"Preparing the encoder model…" = "正在準備編碼器模型…";
 "Setting the old version aside…" = "正在暫時移開舊版…";
 "Some input sources of McBopomofo LM could not be turned off. Turn them off in System Settings > Keyboard > Input Sources, then open the installer again. Nothing else was changed." = "小麥注音 LM 的部分輸入方式無法在這裡關閉。請到「系統設定」>「鍵盤」>「輸入方式」關閉，再重新打開安裝程式。其餘部分沒有更動。";
 "The McBopomofo LM app is gone, but the input method is still registered or running. This turns it off. Your user phrases and settings stay where they are unless you choose otherwise in the next question." = "小麥注音 LM 的程式已經不在了，但輸入法仍然登記在系統裡或還在執行。這會把它關閉。您的使用者詞庫與設定預設會保留，下一個問題可以選擇是否一併刪除。";
-"The compile cache of the models was cleared; they are prepared from scratch." = "模型的編譯快取已清除，將重新準備。";
 "The input method inside this installer contains a link that points outside of it, so nothing was installed. Please download the installer again." = "這個安裝程式裡的輸入法含有指向外部的連結，所以沒有安裝任何東西。請重新下載安裝程式。";
 "The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again." = "這個安裝程式裡缺少輸入法，或輸入法與安裝程式不相符，因此無法安裝。請重新下載安裝程式。";
 "The installed files could not be checked completely, so the installer cannot tell whether the input method would start." = "無法完整檢查安裝好的檔案，安裝程式無法確定輸入法能否啟動。";
 "The installed version could not be moved aside, so nothing was changed." = "無法暫時移開已安裝的版本，所以沒有更動任何東西。";
-"The models are ready (%d s)." = "模型都準備好了（%d 秒）。";
 "The previous version could not be put back automatically. You can find it here and move it back to ~/Library/Input Methods:" = "無法自動放回先前的版本。它在下面這個位置，請自行把它移回 ~/Library/Input Methods：";
 "The previous version was put back." = "已把先前的版本放回原處。";
 "This installer is incomplete" = "這個安裝程式不完整";
 "Version found: %@, expected: %@" = "找到的版本：%1$@，預期的版本：%2$@";
 "Version found: r%@, expected: r%@" = "找到的版本：r%1$@，預期的版本：r%2$@";
-"Warning: not every model can run on the Neural Engine." = "提醒：並非所有模型都能在 Neural Engine 上執行。";
-
-/* The model progress bar (v3.3i) */
-"Compiling the models for the Neural Engine (about 3 minutes)…" = "正在為 Neural Engine 編譯模型（約 3 分鐘）…";
-"Checking that the models run on the Neural Engine…" = "正在確認模型能在 Neural Engine 上執行…";
-"Almost done…" = "即將完成…";
-"The models are ready." = "模型已準備好。";
-"The models are prepared, but not all of them run on the Neural Engine." = "模型已準備好，但並非所有模型都能在 Neural Engine 上執行。";
 
 /* Removal also deletes the Neural Engine compile cache (v3.3k) */
 "Deleting the compile cache of the models…" = "正在刪除模型的編譯快取…";

@@ -38,12 +38,17 @@
 "Copying to ~/Library/Input Methods…" = "Copying to ~/Library/Input Methods…";
 "Removing the download mark…" = "Removing the download mark…";
 "Checking the installed files…" = "Checking the installed files…";
-"Registering the input method and preparing its models…" = "Registering the input method and preparing its models…";
 "Turning on the Bopomofo input mode…" = "Turning on the Bopomofo input mode…";
-"Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open." = "Preparing the models for the Neural Engine. The first time takes about 3 minutes; please keep this window open.";
 "Stopping the old version. This may take up to one minute…" = "Stopping the old version. This may take up to one minute…";
 "Please wait" = "Please wait";
 "The installer is still working. Quitting now could leave McBopomofo LM half installed. Please wait until it finishes." = "The installer is still working. Quitting now could leave McBopomofo LM half installed. Please wait until it finishes.";
+
+/* v3.4n: install no longer compiles the models */
+"Registering the input method…" = "Registering the input method…";
+"The model files are intact." = "The model files are intact.";
+"Warning: the model files are damaged." = "Warning: the model files are damaged.";
+"The first time you use McBopomofo LM, the AI model is prepared in the background (about 3 minutes); until then the usual candidate selection is used." = "The first time you use McBopomofo LM, the AI model is prepared in the background (about 3 minutes); until then the usual candidate selection is used.";
+"The AI model files in this installer are damaged, so nothing was installed. Please download the installer again." = "The AI model files in this installer are damaged, so nothing was installed. Please download the installer again.";
 
 /* Results */
 "Installation Successful" = "Installation Successful";
@@ -85,39 +90,23 @@
 /* v3.3e fixes: partial failures, warnings, removal without the app, localized details */
 "%d item(s) still carry the mark, for example: %@" = "%1$d item(s) still carry the mark, for example: %2$@";
 "Another McBopomofo LM mode is still turned on. Turn it off in System Settings > Keyboard > Input Sources if you do not want it." = "Another McBopomofo LM mode is still turned on. Turn it off in System Settings > Keyboard > Input Sources if you do not want it.";
-"Both models run on the Neural Engine." = "Both models run on the Neural Engine.";
-"Decoder model ready (%d s)." = "Decoder model ready (%d s).";
-"Encoder model ready (%d s)." = "Encoder model ready (%d s).";
 "Exit status: %d" = "Exit status: %d";
 "Folder: %@" = "Folder: %@";
 "Installed, with a warning" = "Installed, with a warning";
 "McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac." = "McBopomofo LM has been turned off. If it still shows up in the input menu, please log out or restart your Mac.";
 "McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed." = "McBopomofo LM is the input method in use and the installer could not switch away from it. Please choose another input method (for example ABC) in the input menu, then open the installer again. Nothing was changed.";
-"Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts." = "Not every model can run on the Neural Engine of this Mac. McBopomofo LM works, but without the models that cannot run there (without the encoder it behaves like McBopomofo; without the decoder it uses the encoder only). It tries again every time it starts.";
-"Preparing the decoder model…" = "Preparing the decoder model…";
-"Preparing the encoder model…" = "Preparing the encoder model…";
 "Setting the old version aside…" = "Setting the old version aside…";
 "Some input sources of McBopomofo LM could not be turned off. Turn them off in System Settings > Keyboard > Input Sources, then open the installer again. Nothing else was changed." = "Some input sources of McBopomofo LM could not be turned off. Turn them off in System Settings > Keyboard > Input Sources, then open the installer again. Nothing else was changed.";
 "The McBopomofo LM app is gone, but the input method is still registered or running. This turns it off. Your user phrases and settings stay where they are unless you choose otherwise in the next question." = "The McBopomofo LM app is gone, but the input method is still registered or running. This turns it off. Your user phrases and settings stay where they are unless you choose otherwise in the next question.";
-"The compile cache of the models was cleared; they are prepared from scratch." = "The compile cache of the models was cleared; they are prepared from scratch.";
 "The input method inside this installer contains a link that points outside of it, so nothing was installed. Please download the installer again." = "The input method inside this installer contains a link that points outside of it, so nothing was installed. Please download the installer again.";
 "The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again." = "The input method inside this installer is missing or does not belong to it, so nothing can be installed. Please download the installer again.";
 "The installed files could not be checked completely, so the installer cannot tell whether the input method would start." = "The installed files could not be checked completely, so the installer cannot tell whether the input method would start.";
 "The installed version could not be moved aside, so nothing was changed." = "The installed version could not be moved aside, so nothing was changed.";
-"The models are ready (%d s)." = "The models are ready (%d s).";
 "The previous version could not be put back automatically. You can find it here and move it back to ~/Library/Input Methods:" = "The previous version could not be put back automatically. You can find it here and move it back to ~/Library/Input Methods:";
 "The previous version was put back." = "The previous version was put back.";
 "This installer is incomplete" = "This installer is incomplete";
 "Version found: %@, expected: %@" = "Version found: %1$@, expected: %2$@";
 "Version found: r%@, expected: r%@" = "Version found: r%1$@, expected: r%2$@";
-"Warning: not every model can run on the Neural Engine." = "Warning: not every model can run on the Neural Engine.";
-
-/* The model progress bar (v3.3i) */
-"Compiling the models for the Neural Engine (about 3 minutes)…" = "Compiling the models for the Neural Engine (about 3 minutes)…";
-"Checking that the models run on the Neural Engine…" = "Checking that the models run on the Neural Engine…";
-"Almost done…" = "Almost done…";
-"The models are ready." = "The models are ready.";
-"The models are prepared, but not all of them run on the Neural Engine." = "The models are prepared, but not all of them run on the Neural Engine.";
 
 /* Removal also deletes the Neural Engine compile cache (v3.3k) */
 "Deleting the compile cache of the models…" = "Deleting the compile cache of the models…";

@@ -73,13 +73,14 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         // On again: the wait starts over, so 10 s after the first sight is not enough.
         XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(11)), [])
         XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(21)), [FirstUseNotices.preparingMessage])
-        // A failed encoder: no 'ready' however long.
+        // A failed encoder: no 'ready' however long; v3.4n: the once-per-version notice that it behaves like McBopomofo.
         var failed = Self.loadingState
         failed.failed = true
         failed.loading = false
-        XCTAssertEqual(notices.evaluate(failed, now: t0.addingTimeInterval(200)), [])
+        XCTAssertFalse(notices.isDone(failed), "the notice is still due")
+        XCTAssertEqual(notices.evaluate(failed, now: t0.addingTimeInterval(200)), [FirstUseNotices.encoderFailedMessage])
         XCTAssertTrue(notices.isDone(failed))
-        XCTAssertEqual(shown, [FirstUseNotices.preparingMessage])
+        XCTAssertEqual(shown, [FirstUseNotices.preparingMessage, FirstUseNotices.encoderFailedMessage])
     }
 
     func testTheFlagsSurviveARestartOfTheInputMethod() {
@@ -90,15 +91,15 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         // The process is killed during the compile; a new one (same defaults) starts loading again.
         notices = makeNotices()
         XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(1000)), [])
-        XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(1100)), [], "'preparing' is shown once, ever")
+        XCTAssertEqual(notices.evaluate(Self.loadingState, now: t0.addingTimeInterval(1100)), [], "'preparing' is shown once per version")
         XCTAssertFalse(notices.isDone(Self.loadingState))
         XCTAssertEqual(notices.evaluate(Self.doneState, now: t0.addingTimeInterval(1200)), [FirstUseNotices.readyMessage], "the 'ready' that is still owed")
         notices = makeNotices()
         XCTAssertEqual(notices.evaluate(Self.doneState, now: t0.addingTimeInterval(2000)), [])
         XCTAssertEqual(shown, [FirstUseNotices.preparingMessage, FirstUseNotices.readyMessage])
-        // The flags are plain booleans under fixed keys.
-        XCTAssertTrue(defaults.bool(forKey: "FirstUseModelPreparingNoticeShown"))
-        XCTAssertTrue(defaults.bool(forKey: "FirstUseModelReadyNoticeShown"))
+        // v3.4n: the flags hold the bundle version they were shown in, under fixed keys.
+        XCTAssertEqual(defaults.string(forKey: "FirstUseModelPreparingNoticeShown"), FirstUseNotices.currentVersion)
+        XCTAssertEqual(defaults.string(forKey: "FirstUseModelReadyNoticeShown"), FirstUseNotices.currentVersion)
     }
 
     func testAnEncoderOnlyResultIsNotReadyItHasItsOwnNoticeAndTheReadyFlagStaysFree() {
@@ -116,7 +117,7 @@ final class V33ModelNoticeTests: FirstUseTestCase {
         // A later start where both models load (a system update fixed it): the owed "ready" still comes.
         notices = makeNotices()
         XCTAssertEqual(notices.evaluate(Self.doneState, now: t0.addingTimeInterval(500)), [FirstUseNotices.readyMessage])
-        XCTAssertEqual(defaults.bool(forKey: "FirstUseModelPartialNoticeShown"), true)
+        XCTAssertEqual(defaults.string(forKey: "FirstUseModelPartialNoticeShown"), FirstUseNotices.currentVersion)
     }
 
     func testTheEncoderAloneNeverCountsAsReadyWhileTheDecoderIsStillLoading() {

@@ -3,8 +3,9 @@
 import Foundation
 
 public enum InstallWarning: Equatable, Sendable {
-    /// `McBopomofoLM install` exited 0 but said that not every model runs on the Neural Engine.
-    case degradedModels
+    // (v3.4n: no warning about the models any more. `install` does not compile them, so whether they run on
+    // the Neural Engine is known only at the input method's first start, which says so itself. Damaged model
+    // files fail the install: `InstallerError.modelFilesDamaged`, and the old version is put back.)
     /// The Bopomofo mode could not be enabled from here.
     case modeNotEnabled
     /// A mode other than Bopomofo is still on after the installer turned it off.
@@ -63,10 +64,6 @@ public struct InstallEnvironment {
     public var willRun: @MainActor (InstallStep, Int, Int) -> Void
     /// A line of `McBopomofoLM install` as an event. Delivered on the main actor, in order.
     public var onEvent: @MainActor (InstallOutput.Event) -> Void
-    /// `McBopomofoLM install` exited 0 (v3.3i): the models are prepared, with the status it
-    /// reported. Not called when the command fails; the failure is thrown by `run`.
-    public var onInstallCommandSucceeded:
-        @MainActor (PayloadInstaller.InstallCommandResult.ModelStatus) -> Void
 
     public init(
         inputSources: any InputSourceOperations, pause: @escaping @MainActor () -> Void,
@@ -79,10 +76,7 @@ public struct InstallEnvironment {
         waitForTranslocationRemoval: @escaping @MainActor () async -> Bool,
         moveToTrash: @escaping @MainActor (URL) async throws -> Void,
         willRun: @escaping @MainActor (InstallStep, Int, Int) -> Void = { _, _, _ in },
-        onEvent: @escaping @MainActor (InstallOutput.Event) -> Void = { _ in },
-        onInstallCommandSucceeded: @escaping @MainActor (
-            PayloadInstaller.InstallCommandResult.ModelStatus
-        ) -> Void = { _ in }
+        onEvent: @escaping @MainActor (InstallOutput.Event) -> Void = { _ in }
     ) {
         self.inputSources = inputSources
         self.pause = pause
@@ -94,7 +88,6 @@ public struct InstallEnvironment {
         self.moveToTrash = moveToTrash
         self.willRun = willRun
         self.onEvent = onEvent
-        self.onInstallCommandSucceeded = onInstallCommandSucceeded
     }
 }
 
@@ -178,18 +171,10 @@ public enum InstallOrchestrator {
                     case .verifyQuarantineFree:
                         try await env.offMain { try payload.verifyQuarantineFree() }
                     case .runInstall:
-                        let result = Box(
-                            PayloadInstaller.InstallCommandResult(modelStatus: .unknown))
                         let forwarder = EventForwarder(env.onEvent)
                         try await env.offMain {
-                            result.value = try payload.runInstallCommand(onEvent: {
-                                forwarder.receive($0)
-                            })
+                            _ = try payload.runInstallCommand(onEvent: { forwarder.receive($0) })
                         }
-                        if result.value.modelStatus == .degraded {
-                            outcome.value.warnings.append(.degradedModels)
-                        }
-                        env.onInstallCommandSucceeded(result.value.modelStatus)
                     case .enableBopomofoMode:
                         switch InputSourceFlow.enableOnlyBopomofo(
                             env.inputSources,

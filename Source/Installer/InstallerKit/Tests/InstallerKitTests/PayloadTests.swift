@@ -155,12 +155,10 @@ struct PayloadInstallerTests {
     }
 
     private func installedPayload(
-        _ root: TempDir, installExitStatus: Int = 0, installModels: StubModels = .bothOnNeuralEngine,
-        installProgress: StubProgress = .normal
+        _ root: TempDir, installExitStatus: Int = 0, installModels: StubModels = .verified
     ) throws -> PayloadInstaller {
         let resources = Fixture.makeInstallerResources(
-            in: root, installExitStatus: installExitStatus, installModels: installModels,
-            installProgress: installProgress)
+            in: root, installExitStatus: installExitStatus, installModels: installModels)
         let archive = ArchiveLocator.archivePath(
             resourcePath: resources, appName: InstallerConstants.appName, build: Fixture.build)
         let payload = PayloadInstaller(
@@ -188,91 +186,41 @@ struct PayloadInstallerTests {
         let payload = try installedPayload(root)
         let (events, result) = try collectEvents(payload)
         // The stub only prints its lines when stdout is not a terminal.
-        #expect(events.first == .preparing)
-        #expect(events.contains(.encoderStarted) && events.contains(.decoderStarted))
-        #expect(events.contains(.functionReady(.encoder, name: "L8", seconds: 4.6)))
-        #expect(events.contains(.modelLoaded(.encoder, seconds: 53.6)))
-        #expect(events.contains(.modelsReady(seconds: 184.9)))
-        #expect(events.last == .allOnNeuralEngine)
-        #expect(result.modelStatus == .bothOnNeuralEngine)
+        #expect(events == [.modelFilesVerified(milliseconds: 98)])
+        #expect(result.modelFiles == .verified)
     }
 
-    // MARK: --progress-lines (v3.3i)
+    // MARK: v3.4n: `install` does not compile the models any more
 
-    private func progressUpdates(_ events: [InstallOutput.Event]) -> [ModelProgress] {
-        events.compactMap { event in
-            if case .progress(let update) = event { return update }
-            return nil
-        }
-    }
-
-    @Test func theInstallCommandIsAskedForProgressLines() throws {
-        #expect(InstallerConstants.installArguments == ["install", "--progress-lines"])
+    @Test func theInstallCommandTakesNoArgumentsAndCompilesNothing() throws {
+        // (v3.3i asked for --progress-lines; there is no progress to report now.) The stub fails with
+        // status 7 when it is given a second argument.
+        #expect(InstallerConstants.installArguments == ["install"])
         let root = TempDir()
         defer { root.cleanUp() }
         let payload = try installedPayload(root)
-        // The stub prints PROGRESS lines only when its second argument is --progress-lines.
-        let updates = progressUpdates(try collectEvents(payload).0)
-        #expect(
-            updates == [
-                ModelProgress(fraction: 0, step: "encoder-L8"),
-                ModelProgress(fraction: 0.027, step: "encoder-L16"),
-                ModelProgress(fraction: 0.15, step: "placement-encoder"),
-                ModelProgress(fraction: 0.3, step: "placement-decoder-t16"),
-                ModelProgress(fraction: 1, step: "done"),
-            ])
+        _ = try collectEvents(payload)  // would throw installCommandFailed(status: 7) otherwise
     }
 
-    @Test func anIMEWithoutTheFlagPrintsNoProgressAndTheInstallStillSucceeds() throws {
+    @Test func damagedModelFilesThrowEvenThoughTheyAreOnlyALine() throws {
         let root = TempDir()
         defer { root.cleanUp() }
-        let payload = try installedPayload(root, installProgress: .none)
-        let (events, result) = try collectEvents(payload)
-        #expect(progressUpdates(events).isEmpty)
-        #expect(events.count == 8)
-        #expect(result.modelStatus == .bothOnNeuralEngine)
-    }
-
-    @Test func malformedAndOutOfRangeLinesAreDroppedAndTheRestStillCount() throws {
-        let root = TempDir()
-        defer { root.cleanUp() }
-        let payload = try installedPayload(root, installProgress: .noisy)
-        let (events, result) = try collectEvents(payload)
-        #expect(progressUpdates(events).count == 5)
-        #expect(events.count == 13)
-        #expect(result.modelStatus == .bothOnNeuralEngine)
-    }
-
-    @Test func progressLinesDoNotCrowdOutTheErrorTail() throws {
-        let root = TempDir()
-        defer { root.cleanUp() }
-        let payload = try installedPayload(root, installExitStatus: 3, installProgress: .noisy)
+        let payload = try installedPayload(root, installModels: .damaged)
+        let events = Collector<InstallOutput.Event>()
         do {
-            try payload.runInstallCommand()
+            _ = try payload.runInstallCommand { events.add($0) }
             Issue.record("expected the install command to fail")
-        } catch InstallerError.installCommandFailed(let status, let tail) {
-            #expect(status == 3)
-            #expect(!tail.contains { $0.hasPrefix("PROGRESS") })
-            #expect(tail.contains("  encoder L8 ready in 4.6 s"))
-            #expect(tail.contains("registering"))  // stderr is kept
+        } catch InstallerError.modelFilesDamaged(let detail) {
+            #expect(detail == "dec60m.mlmodelc/weights/weight.bin: size 1 instead of 2")
         }
-    }
-
-    @Test func aDegradedModelWarningWithExitZeroIsASuccessThatSaysSo() throws {
-        let root = TempDir()
-        defer { root.cleanUp() }
-        let payload = try installedPayload(root, installModels: .degraded)
-        let (events, result) = try collectEvents(payload)
-        #expect(events.last == .degraded)
-        #expect(!events.contains(.allOnNeuralEngine))
-        #expect(result.modelStatus == .degraded)
+        #expect(events.all == [.modelFilesDamaged(detail: "dec60m.mlmodelc/weights/weight.bin: size 1 instead of 2")])
     }
 
     @Test func noModelLineMeansUnknown() throws {
         let root = TempDir()
         defer { root.cleanUp() }
         let payload = try installedPayload(root, installModels: .silent)
-        #expect(try collectEvents(payload).1.modelStatus == .unknown)
+        #expect(try collectEvents(payload).1.modelFiles == .unknown)
     }
 
     @Test func installCommandFailureCarriesTheStatusAndTheLastLines() throws {
@@ -284,7 +232,8 @@ struct PayloadInstallerTests {
             Issue.record("expected the install command to fail")
         } catch InstallerError.installCommandFailed(let status, let tail) {
             #expect(status == 3)
-            #expect(tail.contains("  encoder L8 ready in 4.6 s"))
+            #expect(tail.contains("McBopomofoLM: model files verified (size + sha256) in 98 ms."))
+            #expect(tail.contains("registering"))  // stderr is kept too
         }
     }
 

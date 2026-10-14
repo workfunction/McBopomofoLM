@@ -83,6 +83,13 @@ class DecoderBackend {
                             std::vector<float>* lp) {
     return false;
   }
+  // v3.4n eager pass: compile function t{length} (or n{length}) into the Neural Engine
+  // cache and release it at once: nothing stays loaded, no placement check, and a failure
+  // never marks the function failed. False: the files failed their check or Core ML could
+  // not load the function (*detail says why).
+  virtual bool precompileFunction(bool nextToken, size_t length, std::string* detail) {
+    return true;
+  }
 };
 
 struct DecoderCallStats {
@@ -137,6 +144,13 @@ class Decoder {
   // v3.1b tests: nextTokenLogProbs calls made.
   uint64_t nextTokenCallCount() const { return nextCalls_.load(); }
   std::vector<size_t> loadedLengths() const;
+  // v3.4n: is t{length} / n{length} loaded (used by the eager pass to skip what is already there)?
+  bool isFunctionLoaded(bool nextToken, size_t length) const;
+  // v3.4n eager pass: compile one function into the Neural Engine cache and release it
+  // (see DecoderBackend::precompileFunction). Does not take the scoring mutex.
+  bool precompileFunction(bool nextToken, size_t length, std::string* detail);
+  // v3.4n tests: queue the background load of t{length} / n{length}, as a request that needs it does.
+  void requestFunction(bool nextToken, size_t length);
   // The largest sequence length the model accepts (96 with t16/t32/t64/t96;
   // <bos> included); 0 before load. A request longer than this gets no scores.
   size_t largestLength() const;

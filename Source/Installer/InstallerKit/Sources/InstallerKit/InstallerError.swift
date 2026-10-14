@@ -42,6 +42,8 @@ public enum InstallerError: Error, Equatable, CustomStringConvertible {
     case quarantineCheckIncomplete(path: String, status: Int32, output: String)
     case quarantineRemains(paths: [String])
     case installCommandFailed(status: Int32, tail: [String])
+    /// `McBopomofoLM install` found the model files damaged (v3.4n; it registered nothing and exited 1).
+    case modelFilesDamaged(detail: String)
     case destinationExists(path: String)
     case refusedDestination(path: String, reason: String)
     /// The old version could not be moved aside (nothing was changed).
@@ -77,6 +79,8 @@ public enum InstallerError: Error, Equatable, CustomStringConvertible {
         case .installCommandFailed(let status, let tail):
             return "McBopomofoLM install exited with status \(status): "
                 + tail.suffix(5).joined(separator: " | ")
+        case .modelFilesDamaged(let detail):
+            return "McBopomofoLM install found damaged model files: \(detail)"
         case .destinationExists(let path):
             return "\(path) already exists; the old version must be moved away first"
         case .refusedDestination(let path, let reason):

@@ -88,6 +88,8 @@ std::shared_ptr<BpeTokenizer> LoadDecoderTokenizer(const std::string& resourceDi
 // Monotonic nanoseconds of the most recent prediction of either model (0 = never).
 uint64_t LastModelUseNanoseconds();
 uint64_t MonotonicNanoseconds();
+// Test hook (v3.4n): the next `count` placement checks (MLComputePlan) fail as if Core ML had failed them.
+void SetPlanFailuresForTesting(int count);
 
 }  // namespace McBopomofoSlothE
 

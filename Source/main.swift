@@ -25,51 +25,6 @@ import Cocoa
 import InputMethodKit
 import InputSourceHelper
 
-private func install() -> Int32 {
-    guard let bundleID = Bundle.main.bundleIdentifier else {
-        return -1
-    }
-    let bundleUrl = Bundle.main.bundleURL
-    var maybeInputSource = InputSourceHelper.inputSource(for: bundleID)
-
-    if maybeInputSource == nil {
-        NSLog("Registering input source \(bundleID) at \(bundleUrl.absoluteString)");
-        // then register
-        let status = InputSourceHelper.registerInputSource(at: bundleUrl)
-
-        if !status {
-            NSLog("Fatal error: Cannot register input source \(bundleID) at \(bundleUrl.absoluteString).")
-            return -1
-        }
-
-        maybeInputSource = InputSourceHelper.inputSource(for: bundleID)
-    }
-
-    guard let inputSource = maybeInputSource else {
-        NSLog("Fatal error: Cannot find input source \(bundleID) after registration.")
-        return -1
-    }
-
-    if !InputSourceHelper.inputSourceEnabled(for: inputSource) {
-        NSLog("Enabling input source \(bundleID) at \(bundleUrl.absoluteString).")
-        let status = InputSourceHelper.enable(inputSource: inputSource)
-        if !status {
-            NSLog("Fatal error: Cannot enable input source \(bundleID).")
-            return -1
-        }
-        if !InputSourceHelper.inputSourceEnabled(for: inputSource) {
-            NSLog("Fatal error: Cannot enable input source \(bundleID).")
-            return -1
-        }
-    }
-
-    if CommandLine.arguments.dropFirst(2).contains("--all") {  // v3.1.2: `install --verbose --all` too
-        let enabled = InputSourceHelper.enableAllInputMode(for: bundleID)
-        NSLog(enabled ? "All input sources enabled for \(bundleID)" : "Cannot enable all input sources for \(bundleID), but this is ignored")
-    }
-    return 0
-}
-
 // McBopomofoLM side-by-side build: the connection name comes from Info.plist
 // (InputMethodConnectionName = McBopomofoLM_1_Connection) so it can never
 // collide with the live McBopomofo_1_Connection.
@@ -82,7 +37,15 @@ let kRunningAsTestHost = ProcessInfo.processInfo.environment["XCTestConfiguratio
     || ProcessInfo.processInfo.environment["XCTestBundlePath"] != nil
     || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
 
-/// McBopomofoLM v2: `install` first loads both SlothE models from their final
+/// McBopomofoLM v3.4n: `install` no longer compiles the models (that took about 3 minutes and blocked the
+/// installer). It verifies the model files (size + sha256), asks the next start of the input method to clear its
+/// Neural Engine compile cache (stale entries of the previous executable), and registers the input source. The
+/// input method compiles the models in the background the first time it starts (SlothERuntime.startLoading), and
+/// until they are loaded the usual McBopomofo candidate selection is used. Damaged model files make `install`
+/// exit with status 1 BEFORE it registers anything; the GUI installer then puts the previous version back.
+/// The old behaviour is `install --compile-now` (developers, the README's terminal path, the opt-in tests):
+///
+/// McBopomofoLM v2: `install --compile-now` first loads both SlothE models from their final
 /// in-bundle paths with THIS executable, so the Neural Engine compile (about a
 /// minute the first time) is cached for exactly what the input method loads
 /// later. The ANE cache is keyed by executable + model path: never move or
@@ -91,7 +54,7 @@ let kRunningAsTestHost = ProcessInfo.processInfo.environment["XCTestConfiguratio
 /// reported here; registration goes ahead either way.
 /// v3.1.2: on a terminal, one progress line and a short summary; with
 /// `--verbose` or a non-terminal stdout, every detailed line as before.
-/// v3.3i: `--progress-lines` (the GUI installer) adds PROGRESS lines; see InstallLoadOutput.
+/// v3.3i: `--progress-lines` adds PROGRESS lines; see InstallLoadOutput.
 /// `load` runs the model load, reporting each detailed line to its argument.
 private func runInstallLoad(verbose: Bool, progressLines: Bool, _ load: (@escaping (String) -> Void) -> Bool) {
     let out = FileHandle.standardOutput
@@ -145,9 +108,8 @@ if let demo = ProcessInfo.processInfo.environment["MCBPMF_LM_PROGRESS_DEMO"], !d
 
 if CommandLine.arguments.count > 1 {
     if CommandLine.arguments[1] == "install" {
-        compileModelsForInstall()
-        let exitCode = install()
-        exit(exitCode)
+        // v3.4n: see InstallCommand.swift. `--compile-now` compiles the models first, as before.
+        exit(InstallCommand.forRunningApp(compileNow: compileModelsForInstall).run(arguments: CommandLine.arguments))
     }
 }
 

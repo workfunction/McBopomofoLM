@@ -132,7 +132,9 @@
 		A34F000BB3E04D9AB1C2D3E4 /* InputSourceSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F000AB3E04D9AB1C2D3E4 /* InputSourceSwitch.swift */; };
 		A34F000DB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F000CB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift */; };
 		A34F0007B3E04D9AB1C2D3E4 /* ModeSwitchHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0006B3E04D9AB1C2D3E4 /* ModeSwitchHUD.swift */; };
+		A34F0011B3E04D9AB1C2D3E4 /* InstallCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0010B3E04D9AB1C2D3E4 /* InstallCommand.swift */; };
 		A34F0009B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */; };
+		A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */; };
 		4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -326,7 +328,9 @@
 		A34F000AB3E04D9AB1C2D3E4 /* InputSourceSwitch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceSwitch.swift; sourceTree = "<group>"; };
 		A34F000CB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputSourceSwitchTests.swift; sourceTree = "<group>"; };
 		A34F0006B3E04D9AB1C2D3E4 /* ModeSwitchHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeSwitchHUD.swift; sourceTree = "<group>"; };
+		A34F0010B3E04D9AB1C2D3E4 /* InstallCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallCommand.swift; sourceTree = "<group>"; };
 		A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModeSwitchHUDTests.swift; sourceTree = "<group>"; };
+		A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34nTests.swift; sourceTree = "<group>"; };
 		5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33EnglishIndicatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -417,6 +421,7 @@
 				466E34F1EADFAB1C8AA8FF26 /* EnglishModeIndicator.swift */,
 				A34F000AB3E04D9AB1C2D3E4 /* InputSourceSwitch.swift */,
 				A34F0006B3E04D9AB1C2D3E4 /* ModeSwitchHUD.swift */,
+				A34F0010B3E04D9AB1C2D3E4 /* InstallCommand.swift */,
 				C68012A8B5F3E546B4D9A651 /* FirstUseNotices.swift */,
 				D427F76B278CA1BA004A2160 /* AppDelegate.swift */,
 				D44FB74427915555003C80A6 /* Preferences.swift */,
@@ -616,6 +621,7 @@
 				5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */,
 				A34F000CB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift */,
 				A34F0008B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift */,
+				A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */,
 				7A63687C7CAC3A4BF7B908AB /* V33FirstUseTests.swift */,
 				967A467D1C931E6F7B13AAA3 /* V33OptionsTests.swift */,
 				0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */,
@@ -857,6 +863,7 @@
 				5F5B1FF418117FC837DB18EC /* EnglishModeIndicator.swift in Sources */,
 				A34F000BB3E04D9AB1C2D3E4 /* InputSourceSwitch.swift in Sources */,
 				A34F0007B3E04D9AB1C2D3E4 /* ModeSwitchHUD.swift in Sources */,
+				A34F0011B3E04D9AB1C2D3E4 /* InstallCommand.swift in Sources */,
 				123DD51B16A0DF512F3EEA58 /* FirstUseNotices.swift in Sources */,
 				6EFE9284706E9B473DB24AC9 /* SlothEEngine.cpp in Sources */,
 				00C8AF6043D2B00BE070BD9A /* SlothERuntime.mm in Sources */,
@@ -921,6 +928,7 @@
 				4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */,
 				A34F000DB3E04D9AB1C2D3E4 /* InputSourceSwitchTests.swift in Sources */,
 				A34F0009B3E04D9AB1C2D3E4 /* ModeSwitchHUDTests.swift in Sources */,
+				A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */,
 				7EF035FF42FF58BD8EBF0517 /* V33FirstUseTests.swift in Sources */,
 				0353026CBF7B683EB9F00D42 /* V33OptionsTests.swift in Sources */,
 				00A5F3A8A9C947CFA480A073 /* V33ReleaseTests.swift in Sources */,

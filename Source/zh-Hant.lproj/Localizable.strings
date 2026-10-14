@@ -262,7 +262,7 @@
 /* McBopomofoLM */
 "AI Candidate Selection" = "AI 選字";
 "(model failed to load)" = "（模型載入失敗）";
-"(loading)" = "（準備中）";
+"(loading)" = "（準備中，約 3 分鐘）";
 "Tap Shift to Switch Chinese/English" = "單點 Shift 切換中英文";
 "Offer Syllable Corrections in the Candidate Window" = "選字窗提供錯音修正";
 "Decoder Sentence Review" = "解碼器複查";
@@ -275,6 +275,7 @@
 "AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile." = "AI 模型準備中，約需 3 分鐘，期間使用一般選字";
 "AI model is ready" = "AI 模型已就緒";
 "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone." = "AI 模型只有一部分可用：這台 Mac 無法執行解碼器，目前只用編碼器選字";
+"The AI model cannot run on this Mac, so choices are the same as in the original McBopomofo." = "這台 Mac 無法執行 AI 模型，選字會跟小麥注音原版一樣";
 "Tap Shift to switch between Chinese and English" = "單點 Shift 可切換中英文";
 "Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ" = "可以按住 ⌘ 把選單列的「中／A」拖到「ㄅ」旁邊";
 "English Mode" = "英文模式";

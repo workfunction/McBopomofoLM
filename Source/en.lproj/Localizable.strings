@@ -264,7 +264,7 @@
 /* McBopomofoLM */
 "AI Candidate Selection" = "AI Candidate Selection";
 "(model failed to load)" = "(model failed to load)";
-"(loading)" = "(preparing)";
+"(loading)" = "(preparing, about 3 minutes)";
 "Tap Shift to Switch Chinese/English" = "Tap Shift to Switch Chinese/English";
 "Offer Syllable Corrections in the Candidate Window" = "Offer Syllable Corrections in the Candidate Window";
 "Decoder Sentence Review" = "Decoder Sentence Review";
@@ -277,6 +277,7 @@
 "AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile." = "AI model is being prepared. This takes about 3 minutes; the usual candidate selection is used meanwhile.";
 "AI model is ready" = "AI model is ready";
 "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone." = "AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone.";
+"The AI model cannot run on this Mac, so choices are the same as in the original McBopomofo." = "The AI model cannot run on this Mac, so choices are the same as in the original McBopomofo.";
 "Tap Shift to switch between Chinese and English" = "Tap Shift to switch between Chinese and English";
 "Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ" = "Hold ⌘ and drag the 中/A in the menu bar next to the ㄅ";
 "English Mode" = "English Mode";

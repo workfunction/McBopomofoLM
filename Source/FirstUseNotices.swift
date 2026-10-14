@@ -7,6 +7,12 @@
 //  - The first time English mode is entered: "單點 Shift 可切換中英文" and, on a second line (v3.4j), "可以按住 ⌘
 //    把選單列的「中／A」拖到「ㄅ」旁邊" (the menu-bar mode item can be moved with ⌘-drag).
 //
+// v3.4n: the model notices are shown once PER VERSION (CFBundleVersion): every install of a new version compiles
+// the models again, in the background at the first start (`install` no longer compiles them), so "preparing" and
+// "ready" are due again after an upgrade. Their flags hold the version they were shown in. A new notice says so
+// when the encoder cannot run at all (the input method then behaves like McBopomofo). The English-toggle notice
+// below is shown once ever.
+//
 // Each notice is shown once: its flag lives in UserDefaults. The two model notices are driven by the
 // runtime's loaded state (`SlothERuntime.loaded / loading / loadFailed`), polled once a second on the
 // main run loop while a load is pending; a load that finishes within `preparingDelay` (a start with a
@@ -20,6 +26,7 @@ final class FirstUseNotices {
         static let preparingShown = "FirstUseModelPreparingNoticeShown"
         static let readyShown = "FirstUseModelReadyNoticeShown"
         static let partialShown = "FirstUseModelPartialNoticeShown"
+        static let encoderFailedShown = "FirstUseModelEncoderFailedNoticeShown"
         static let englishToggleShown = "FirstUseEnglishToggleNoticeShown"
     }
 
@@ -55,17 +62,27 @@ final class FirstUseNotices {
     var defaults: UserDefaults
     var notify: (String) -> Void
     var preparingDelay: TimeInterval
+    /// What the model notices are keyed to (v3.4n): the app's CFBundleVersion. Tests set it.
+    var version: String
     private var loadingSince: Date?
     private var timer: Timer?
 
     init(
         defaults: UserDefaults = .standard,
         preparingDelay: TimeInterval = FirstUseNotices.defaultPreparingDelay,
+        version: String = FirstUseNotices.currentVersion,
         notify: @escaping (String) -> Void = FirstUseNotices.showOnScreen
     ) {
         self.defaults = defaults
         self.preparingDelay = preparingDelay
+        self.version = version
         self.notify = notify
+    }
+
+    /// CFBundleVersion of the running app ("?" when it has none).
+    static var currentVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return version?.isEmpty == false ? version! : "?"
     }
 
     /// The real notification window (5 s, so a two-line text can be read). Nothing under XCTest: the test
@@ -84,6 +101,10 @@ final class FirstUseNotices {
     static var partialMessage: String {
         NSLocalizedString("AI model is only partly available: the decoder cannot run on this Mac, so choices come from the encoder alone.", comment: "")
     }
+    /// v3.4n: said once per version when the encoder cannot run (the input method then behaves like McBopomofo).
+    static var encoderFailedMessage: String {
+        NSLocalizedString("The AI model cannot run on this Mac, so choices are the same as in the original McBopomofo.", comment: "")
+    }
     /// v3.4j: the second line says how to bring the menu-bar mode item next to the input menu's "ㄅ". It is part of
     /// this one notice (no extra notification).
     static var englishToggleMessage: String {
@@ -95,9 +116,15 @@ final class FirstUseNotices {
 
     // MARK: flags
 
-    var preparingShown: Bool { defaults.bool(forKey: Key.preparingShown) }
-    var readyShown: Bool { defaults.bool(forKey: Key.readyShown) }
-    var partialShown: Bool { defaults.bool(forKey: Key.partialShown) }
+    // The model notices hold the version they were shown in (a flag written by an older build is a Bool, which
+    // is never equal to a version string, so they are due once again after the first upgrade).
+    private func shownInThisVersion(_ key: String) -> Bool { defaults.object(forKey: key) as? String == version }
+    private func markShown(_ key: String) { defaults.set(version, forKey: key) }
+
+    var preparingShown: Bool { shownInThisVersion(Key.preparingShown) }
+    var readyShown: Bool { shownInThisVersion(Key.readyShown) }
+    var partialShown: Bool { shownInThisVersion(Key.partialShown) }
+    var encoderFailedShown: Bool { shownInThisVersion(Key.encoderFailedShown) }
     var englishToggleShown: Bool { defaults.bool(forKey: Key.englishToggleShown) }
 
     // MARK: the model notices
@@ -111,21 +138,30 @@ final class FirstUseNotices {
     ///  - Otherwise (a load is pending): after `preparingDelay` "preparing", once.
     @discardableResult
     func evaluate(_ state: ModelState, now: Date = Date()) -> [String] {
-        guard state.enabled, !state.failed else {
+        guard state.enabled else {
             loadingSince = nil
+            return []
+        }
+        if state.failed {  // v3.4n: the encoder cannot run: say so once per version
+            loadingSince = nil
+            if !encoderFailedShown {
+                markShown(Key.encoderFailedShown)
+                notify(Self.encoderFailedMessage)
+                return [Self.encoderFailedMessage]
+            }
             return []
         }
         if state.loaded && !state.loading {
             loadingSince = nil
             if state.decoderLoaded {
                 if preparingShown && !readyShown {
-                    defaults.set(true, forKey: Key.readyShown)
+                    markShown(Key.readyShown)
                     notify(Self.readyMessage)
                     return [Self.readyMessage]
                 }
             } else if state.decoderFailed {
                 if preparingShown && !partialShown {
-                    defaults.set(true, forKey: Key.partialShown)
+                    markShown(Key.partialShown)
                     notify(Self.partialMessage)
                     return [Self.partialMessage]
                 }
@@ -135,7 +171,7 @@ final class FirstUseNotices {
         let since = loadingSince ?? now
         loadingSince = since
         if !preparingShown && now.timeIntervalSince(since) >= preparingDelay {
-            defaults.set(true, forKey: Key.preparingShown)
+            markShown(Key.preparingShown)
             notify(Self.preparingMessage)
             return [Self.preparingMessage]
         }
@@ -143,9 +179,10 @@ final class FirstUseNotices {
     }
 
     /// True while there is nothing left to watch for in this process: the switch is off / the encoder
-    /// failed, or the load is over and the notice that is due was shown (or never was due).
+    /// failed (and the notice for it was shown), or the load is over and the notice that is due was shown (or never was due).
     func isDone(_ state: ModelState) -> Bool {
-        guard state.enabled, !state.failed else { return true }
+        guard state.enabled else { return true }
+        if state.failed { return encoderFailedShown }
         if state.loaded && !state.loading {
             guard preparingShown else { return true }
             if state.decoderLoaded { return readyShown }
