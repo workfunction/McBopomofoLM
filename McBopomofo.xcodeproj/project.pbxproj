@@ -137,6 +137,8 @@
 		A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */; };
 		A34F0015B3E04D9AB1C2D3E4 /* V34pTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0014B3E04D9AB1C2D3E4 /* V34pTests.swift */; };
 		A34F0017B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = A34F0016B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm */; };
+		A34F0019B3E04D9AB1C2D3E4 /* ANEColdStartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F0018B3E04D9AB1C2D3E4 /* ANEColdStartTests.swift */; };
+		A34F001BB3E04D9AB1C2D3E4 /* V34pCacheHitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34F001AB3E04D9AB1C2D3E4 /* V34pCacheHitTests.swift */; };
 		4A9D512D346F97286E818DC2 /* V33EnglishIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -335,6 +337,8 @@
 		A34F0012B3E04D9AB1C2D3E4 /* V34nTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34nTests.swift; sourceTree = "<group>"; };
 		A34F0014B3E04D9AB1C2D3E4 /* V34pTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34pTests.swift; sourceTree = "<group>"; };
 		A34F0016B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = SlothEModelStoreTests.mm; sourceTree = "<group>"; };
+		A34F0018B3E04D9AB1C2D3E4 /* ANEColdStartTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ANEColdStartTests.swift; sourceTree = "<group>"; };
+		A34F001AB3E04D9AB1C2D3E4 /* V34pCacheHitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V34pCacheHitTests.swift; sourceTree = "<group>"; };
 		5A7C7195E1BE8EAF523E14E9 /* V33EnglishIndicatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V33EnglishIndicatorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -603,6 +607,16 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		A34F001CB3E04D9AB1C2D3E4 /* Lab */ = {
+			isa = PBXGroup;
+			children = (
+				A34F0018B3E04D9AB1C2D3E4 /* ANEColdStartTests.swift */,
+				A34F001AB3E04D9AB1C2D3E4 /* V34pCacheHitTests.swift */,
+				A34F0003B3E04D9AB1C2D3E4 /* SlothEV34EvalTests.mm */,
+			);
+			path = Lab;
+			sourceTree = "<group>";
+		};
 		D485D3B72796A8A000657FF3 /* McBopomofoTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -633,7 +647,7 @@
 				0216FD6FDA1C14C8AB1E1A84 /* V33ReleaseTests.swift */,
 				B847A92CED4F567BEA166689 /* SlothEV32ParityTests.swift */,
 				A34F0001B3E04D9AB1C2D3E4 /* SlothEV34Tests.swift */,
-				A34F0003B3E04D9AB1C2D3E4 /* SlothEV34EvalTests.mm */,
+				A34F001CB3E04D9AB1C2D3E4 /* Lab */,
 				A34F0005B3E04D9AB1C2D3E4 /* SlothEV34TestSupport.h */,
 				657C968F3D0EC799A7A703FB /* SlothEFixtures */,
 				D4C2A9852B4309D600113711 /* McBopomofoTests-Bridging-Header.h */,
@@ -937,6 +951,8 @@
 				A34F0013B3E04D9AB1C2D3E4 /* V34nTests.swift in Sources */,
 				A34F0015B3E04D9AB1C2D3E4 /* V34pTests.swift in Sources */,
 				A34F0017B3E04D9AB1C2D3E4 /* SlothEModelStoreTests.mm in Sources */,
+				A34F0019B3E04D9AB1C2D3E4 /* ANEColdStartTests.swift in Sources */,
+				A34F001BB3E04D9AB1C2D3E4 /* V34pCacheHitTests.swift in Sources */,
 				7EF035FF42FF58BD8EBF0517 /* V33FirstUseTests.swift in Sources */,
 				0353026CBF7B683EB9F00D42 /* V33OptionsTests.swift in Sources */,
 				00A5F3A8A9C947CFA480A073 /* V33ReleaseTests.swift in Sources */,

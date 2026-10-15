@@ -1,4 +1,4 @@
-// McBopomofoLM v3.4 replication and latency harness (reports/v34-app.md). Opt-in: it does nothing unless the
+// McBopomofoLM v3.4 replication and latency harness. Lab test (McBopomofoTests/Lab, plan McBopomofoLab): opt-in, it does nothing unless the
 // environment names an output directory, so the regular run skips both tests. Run it on an optimized host
 // (GCC_OPTIMIZATION_LEVEL=s SWIFT_OPTIMIZATION_LEVEL=-O); the models are the test host's own (dev bundle id,
 // ANE), the data is the bundled data.txt. Nothing is installed or registered.
@@ -27,7 +27,7 @@
 // request with its context, candidates, scores and p), the v3.3 path (v2 gate + pause gate) against the v3.4
 // path, as one buffer and committed in chunks with carried context. Diagnosis only:
 //   TEST_RUNNER_V34_PROBE_OUT=<dir>   writes probe_<name>.txt; V34_PROBE_READINGS="r1 r2 ..." and V34_PROBE_CHUNK=<n>
-//   (the first chunk's length) default to the 舊 -> 就 case of reports/v34-app.md.
+//   (the first chunk's length) default to the 舊 -> 就 case.
 
 #import <XCTest/XCTest.h>
 
@@ -45,7 +45,7 @@
 #include "SlothEDecoder.h"
 #include "SlothEEngine.h"
 #include "SlothEPipeline.h"
-#include "SlothEV34TestSupport.h"
+#include "../SlothEV34TestSupport.h"
 #include "SlothEWalk.h"
 
 using namespace McBopomofoSlothE;
