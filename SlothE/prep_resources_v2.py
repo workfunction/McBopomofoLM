@@ -100,14 +100,16 @@ def main():
         + "".join(f"{sha256(OUT / n)} {(OUT / n).stat().st_size} {n}\n" for n in files), encoding="utf-8")
     lines = [
         "SlothE runtime files for McBopomofoLM v2 (Core ML, ANE only)",
-        f"encoder source: {ENC_PKG.relative_to(W)} tree sha256 {tree_sha(ENC_PKG)}",
-        f"decoder source: {DEC_PKG.relative_to(W)} tree sha256 {tree_sha(DEC_PKG)}",
-        f"embedding: {EMBED.relative_to(W)} sha256 {sha256(EMBED)}",
-        f"tokenizer: HF pred_q35_60m/tokenizer.json sha256 {sha256(TOKENIZER)}",
-        f"next-token first-char table: SlothE/v31b/dec_next_first.tsv sha256 {sha256(FIRST)}",
+        "encoder: SlothE-T 25M, 2-bit ternary, functions L8/L16/L32/L64/L256, compiled to enc25m.mlmodelc; "
+        f"source Core ML package tree sha256 {tree_sha(ENC_PKG)}",
+        "decoder: pred_q35_60m, fp16, scorers t16/t32/t64/t96 plus next-token n16/n32/n64/n96 with shared weights, "
+        f"compiled to dec60m.mlmodelc; source Core ML package tree sha256 {tree_sha(DEC_PKG)}",
+        f"embedding: enc25m_embed_f16.bin (fp16 table [1539, 352]) sha256 {sha256(EMBED)}",
+        "tokenizer: dec_tokenizer.json = pred_q35_60m/tokenizer.json of huggingface.co/Luigi/sloth-ime-models @ e7d13c9, "
+        f"sha256 {sha256(TOKENIZER)}",
+        f"next-token first-char table: dec_next_first.tsv (same bytes as SlothE/v31b/dec_next_first.tsv) sha256 {sha256(FIRST)}",
         "compiled with: xcrun coremlcompiler compile",
-        "config A' (walk2/frozen_final2.json): 25M, beta 0.3, gamma 0, pen -15, variant guard; decoder lambda 2, tau 0.5, top-3",
-        "",
+        "config A': 25M, beta 0.3, gamma 0, pen -15, variant guard; decoder lambda 2, tau 0.5, top-3",
     ]
     (OUT / "MANIFEST.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
