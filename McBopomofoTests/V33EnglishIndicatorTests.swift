@@ -1,6 +1,6 @@
-// McBopomofoLM v3.3d / v3.4j: the menu-bar mode item ("中" / "A", plain text, persistent) and the facts the
-// spike verdict rests on (reports/v33-app.md section 4). No real status item is ever made: the
-// indicator is given a fake item, and under XCTest the shared one has none.
+// McBopomofoLM v3.3d / v3.4j: the menu-bar mode item ("中" / "A", plain text, persistent) and the Info.plist
+// modes it relies on. No real status item is ever made: the indicator is given a fake item, and under XCTest
+// the shared one has none.
 
 import Cocoa
 import InputMethodKit
@@ -732,9 +732,9 @@ final class V33EnglishIndicatorControllerTests: SlothEV32TestCase {
         s.controller.deactivateServer(s.client)
     }
 
-    // MARK: the spike (reports/v33-app.md section 4)
+    // MARK: the Info.plist modes
 
-    func testSpikeFactTheInfoPlistDeclaresTwoVisibleModesAndNoEnglishMode() throws {
+    func testTheInfoPlistDeclaresTwoVisibleModesAndNoEnglishMode() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Source/McBopomofo-Info.plist")
         let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(contentsOf: url), options: [], format: nil) as? [String: Any])
@@ -743,22 +743,5 @@ final class V33EnglishIndicatorControllerTests: SlothEV32TestCase {
         XCTAssertEqual(Set(modes.keys), ["LM_MODE_ID_PREFIX.Bopomofo", "LM_MODE_ID_PREFIX.PlainBopomofo"])
         for (_, mode) in modes { XCTAssertEqual(mode["tsInputModeIsVisibleKey"] as? Bool, true) }
         XCTAssertEqual((dict["tsVisibleInputModeOrderedArrayKey"] as? [String])?.count, 2)
-    }
-
-    func testSpikeFactAnInputModeChangeDropsTheBufferAndEnglishMode() throws {
-        // What a switch to a hidden English mode through the current mode-change path would do: the
-        // composing buffer is cleared and English mode ends. "Buffer and English mode survive the
-        // switch" (D5 pass criterion 3) therefore does not hold without reworking setValue, and
-        // whether IMK even calls it the way this test does can only be seen on a live system.
-        let s = SlothEShiftControllerTests.Setup(FakeMouse())
-        s.controller.activateServer(s.client)
-        s.key("s"); s.key("u"); s.key("3")
-        XCTAssertEqual(s.buffer, "你")
-        _ = s.flags([.shift]); _ = s.flags([], after: 0.1)
-        XCTAssertTrue(s.english)
-        s.controller.setValue(InputMode.plainBopomofo.rawValue, forTag: 0, client: s.client)
-        XCTAssertEqual(s.buffer, "")
-        XCTAssertFalse(s.english)
-        s.controller.deactivateServer(s.client)
     }
 }

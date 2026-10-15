@@ -386,43 +386,6 @@ final class SlothEPauseGateTests: SlothEV32TestCase {
         }
         try? FileManager.default.removeItem(atPath: dir)
     }
-
-    func testScanChangedRate() throws {
-        let limit = Int(ProcessInfo.processInfo.environment["SLOTHE_V32_SCAN"] ?? "") ?? 0
-        if limit == 0 { return }  // opt-in: TEST_RUNNER_SLOTHE_V32_SCAN=500
-        let (dir, log) = tempLog()
-        let runtime = makeRuntime(logPath: log)
-        var changed = 0
-        var rows = 0
-        for (i, readings) in Self.sentences.prefix(limit).enumerated() where readings.count >= 3 {
-            let rig = Rig(runtime)
-            rig.typeReadings(readings)
-            rig.drain()
-            let perKey = rig.buffer
-            rig.firePause()
-            let paused = rig.buffer
-            rows += 1
-            if paused != perKey {
-                changed += 1
-                NSLog("SLOTHE_V32A scan %d %@ perkey=%@ pause=%@", i, readings.joined(separator: " "), perKey, paused)
-            }
-            rig.handler.clear()
-        }
-        NSLog("SLOTHE_V32A scan sentences=%d changed=%d", rows, changed)
-        // the cost of a pass, from the G lines (Debug -O0 host unless built optimized)
-        let g = try gLines(runtime, log)
-        func pct(_ v: [Double], _ p: Double) -> Double {
-            let s = v.sorted()
-            return s.isEmpty ? 0 : s[min(s.count - 1, Int(p / 100 * Double(s.count - 1) + 0.5))]
-        }
-        let e2e = g.compactMap { Double($0[11]) }
-        let dec = g.map { Double($0[10]) ?? 0 }
-        let req = g.map { Double($0[3]) ?? 0 }
-        let chars = g.map { Double($0[8]) ?? 0 }
-        NSLog("SLOTHE_V32A scan passes=%d applied=%d changed_chars_total=%d | e2e ms p50 %.1f p95 %.1f max %.1f | decoder ms p50 %.1f p95 %.1f | requests mean %.1f",
-              g.count, e2e.count, Int(chars.reduce(0, +)), pct(e2e, 50), pct(e2e, 95), pct(e2e, 100), pct(dec, 50), pct(dec, 95), req.reduce(0, +) / Double(max(g.count, 1)))
-        try? FileManager.default.removeItem(atPath: dir)
-    }
 }
 
 // MARK: - v3.2b legal-but-wrong correction entry
@@ -682,30 +645,6 @@ final class SlothETypoEntryTests: SlothEV32TestCase {
         XCTAssertEqual(list[slot].reading, r["intended"] as! String)
         XCTAssertEqual(slot, min(list.count - 1, 8))
         XCTAssertEqual(list[slot].displayText, "\(list[slot].value) \(list[slot].reading)")
-    }
-
-    func testScanForExamples() {
-        let limit = Int(ProcessInfo.processInfo.environment["SLOTHE_V32B_SCAN"] ?? "") ?? 0
-        if limit == 0 { return }  // opt-in: TEST_RUNNER_SLOTHE_V32B_SCAN=600
-        let runtime = makeRuntime()
-        var hits = 0
-        var rows = 0
-        for row in Self.rows where (row["pop"] as! String) == "L" && (row["p"] as! Int) >= 2 {
-            rows += 1
-            if rows > limit { break }
-            let rig = Rig(runtime)
-            rig.typeReadings(typedBuffer(row))
-            rig.drain()
-            rig.firePause()
-            rig.drain()
-            if let entry = rig.handler.slothELegalEntryForTesting() {
-                hits += 1
-                let ok = entry[0] == (row["intended"] as! String)
-                NSLog("SLOTHE_V32B example %@ intended=%@ offered=%@ char=%@ ok=%d buffer=%@ typed=%@", row["id"] as! String, row["intended"] as! String, entry[0], entry[1], ok ? 1 : 0, rig.buffer, (row["rd"] as! [String])[row["p"] as! Int])
-            }
-            rig.handler.clear()
-        }
-        NSLog("SLOTHE_V32B scan typos=%d offered=%d", rows, hits)
     }
 }
 
