@@ -12,8 +12,9 @@
 //   * a latency probe (median of 5 warm predictions of the smallest function)
 //     must be under the model's limit (encoder 10 ms, decoder 15 ms; ANE
 //     measures ~1 and ~3 ms, a decoder CPU fallback 18+ ms).
-// The ANE compile cache is keyed by the executable and the .mlmodelc path,
-// so the first load from a new path compiles (encoder ~30 s, decoder ~40 s).
+// The ANE compile cache follows the model files (path plus file identity), not
+// the executable, so the first load of a new model copy compiles (encoder
+// ~30 s, decoder ~40 s); see the model store in SlothEEngine.h.
 
 #ifndef SOURCE_SLOTHE_SLOTHECOREML_H_
 #define SOURCE_SLOTHE_SLOTHECOREML_H_
