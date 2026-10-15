@@ -1,0 +1,27 @@
+{
+  "configurations" : [
+    {
+      "id" : "4823F9D7-0C3C-4104-BB9C-050548617FDC",
+      "name" : "Configuration 1",
+      "options" : {}
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:McBopomofo.xcodeproj",
+        "identifier" : "D485D3B52796A8A000657FF3",
+        "name" : "McBopomofoTests"
+      },
+      "selectedTests" : [
+        "ANEColdStartTests",
+        "SlothEV34EvalTests",
+        "V34pCacheHitTests"
+      ]
+    }
+  ],
+  "version" : 1
+}

@@ -1,0 +1,83 @@
+{
+  "configurations" : [
+    {
+      "id" : "B031DB66-032E-4C25-BA12-B60A7C961D72",
+      "name" : "Configuration 1",
+      "options" : {}
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:McBopomofo.xcodeproj",
+        "identifier" : "D485D3B52796A8A000657FF3",
+        "name" : "McBopomofoTests"
+      },
+      "skippedTests" : [
+        "ANEColdStartTests",
+        "SlothEV34EvalTests",
+        "V34pCacheHitTests",
+        "SlothE12YueTests",
+        "SlothEAsyncTests",
+        "SlothEEnglishModeTests",
+        "SlothEKeyHandlerTests",
+        "SlothEKeypadLiteralTests",
+        "SlothEMemoryTests",
+        "SlothEModelFileTests",
+        "SlothEPauseGateTests",
+        "SlothEPipelineTests",
+        "SlothETypoEntryTests",
+        "SlothETypoWindowTests",
+        "SlothEV32ParityTests",
+        "SlothEV34KeyHandlerTests",
+        "V34nModelTests",
+        "V34pModelTests",
+        "SlothEDecoderTests\/testDecoderScoresMatchCoreMLReference",
+        "SlothEDecoderTests\/testEnginePathMatchesWalk2AprimeWithTheSameCoreMLModels",
+        "SlothEDecoderTests\/testFullBufferContextFollowsThePinsDecidedToTheLeft",
+        "SlothEDecoderTests\/testFullBufferOverT96FallsBackToTheCandidateNotToSkipping",
+        "SlothEDecoderTests\/testHuiZaiJiaYiTaoLunEndsAsZai",
+        "SlothEDecoderTests\/testLongCompositionsNeverOverflowTheDecoder",
+        "SlothEDecoderTests\/testPipelineDropsAJobThatGoesStaleDuringItsLastModelCall",
+        "SlothEDecoderTests\/testPipelineDropsAJobThatGoesStaleWhileTrimming",
+        "SlothEDecoderTests\/testPipelineDropsStaleWorkAndPublishesStages",
+        "SlothEDecoderTests\/testTokenizerMatchesHuggingFaceTokenizers",
+        "SlothEDecoderTests\/testUserOverridesSurviveInWalkAndDecoderGate",
+        "SlothEDecoderTests\/testV2GateOnTheTwinDataChangesAFewNodesAndAlmostNoText",
+        "SlothEInWalkTests\/testBackgroundPassTimeWithCarriedContext",
+        "SlothEInWalkTests\/testCancelledTypoJobStopsBeforeItsNextModelCall",
+        "SlothEInWalkTests\/testChunkedTypingWithCarriedContextMatchesW7",
+        "SlothEInWalkTests\/testInWalkMatchesUnkVariant1OnDevWalks",
+        "SlothEInWalkTests\/testInWalkMatchesWalk2WithTheSameCoreMLEncoderOnDevSentences",
+        "SlothEInWalkTests\/testJumpAheadSkippedOverBudget",
+        "SlothEInWalkTests\/testLegalTypoAtTheLastSyllableOfATypedBuffer",
+        "SlothEInWalkTests\/testLegalTypoOnTheRealModelsKeepsTheStudysRates",
+        "SlothEInWalkTests\/testLiteralReadingsAreSynthesizedByTheLanguageModel",
+        "SlothEInWalkTests\/testOverriddenNodeKeepsStockSemantics",
+        "SlothEInWalkTests\/testPatchedGridEqualsAFreshGridOfTheChangedReadings",
+        "SlothEInWalkTests\/testPauseGateMatchesW9FullSentenceGateOnDev",
+        "SlothEInWalkTests\/testSingleSyllableWindowMatchesW5KeyH",
+        "SlothEInWalkTests\/testStickyPinNeedsItsNodeOnTheUnpinnedPath",
+        "SlothEInWalkTests\/testTypoWindowWithTheANENextTokenFunctions",
+        "SlothEInWalkTests\/testWindowOrderMatchesW5OnDevUnits",
+        "SlothELazyDecoderTests\/testDecoderFileChangedAfterStartupIsNeverLoaded",
+        "SlothELazyDecoderTests\/testLazyFunctionNotOnTheNeuralEngineStaysUnloaded",
+        "SlothELazyDecoderTests\/testLongerFunctionsLoadOnFirstNeedAndThenMatchTheReference",
+        "SlothELazyDecoderTests\/testPipelineNodeNeedingAnUnloadedFunctionIsEncoderOnlyThenCatchesUp",
+        "SlothETests\/testBundledModelsAreTheCoreMLPackages",
+        "SlothETests\/testModelLoadScoreAndTiming",
+        "SlothETests\/testRerankParityWithPythonReference",
+        "SlothETests\/testRuntimeLoadsBothModelsOnTheNeuralEngine",
+        "V33DiagnosticLogTests\/testTurningTheLogOnWritesThePlacementOfModelsThatAlreadyLoaded()",
+        "V34nInstallCommandTests\/testACorruptedFileIsDamagedToo()",
+        "V34nInstallCommandTests\/testAMarkerThatCannotBeWrittenDoesNotFailTheInstall()",
+        "V34nInstallCommandTests\/testTheAllFlagTheRegistrarsFailureAndAMissingBundleID()",
+        "V34nInstallCommandTests\/testTheDefaultInstallVerifiesWritesTheMarkerAndRegistersWithoutLoadingAModel()"
+      ]
+    }
+  ],
+  "version" : 1
+}

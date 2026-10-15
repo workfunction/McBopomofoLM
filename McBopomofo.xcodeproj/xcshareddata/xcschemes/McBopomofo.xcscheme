@@ -28,18 +28,18 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       codeCoverageEnabled = "NO">
-      <Testables>
-         <TestableReference
-            skipped = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "D485D3B52796A8A000657FF3"
-               BuildableName = "McBopomofoTests.xctest"
-               BlueprintName = "McBopomofoTests"
-               ReferencedContainer = "container:McBopomofo.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-      </Testables>
+      <TestPlans>
+         <TestPlanReference
+            reference = "container:McBopomofo.xctestplan"
+            default = "YES">
+         </TestPlanReference>
+         <TestPlanReference
+            reference = "container:McBopomofoLab.xctestplan">
+         </TestPlanReference>
+         <TestPlanReference
+            reference = "container:McBopomofoCI.xctestplan">
+         </TestPlanReference>
+      </TestPlans>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
