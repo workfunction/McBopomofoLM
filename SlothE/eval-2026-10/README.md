@@ -36,7 +36,7 @@
   - 注音用 g2pW 標註，再對齊到詞庫的合法讀音：一 統一標成ㄧ，不 統一標成ㄅㄨˋ，遇到詞庫裡的詞就用該詞的讀音。
   - 分成兩組：「一般」是不含「再」的句子，各隨機抽 1,500 句；「ㄗㄞˋ」是所有含「在」或「再」的句子。
   - 聊天組裡用錯「在／再」的 33 句已排除。另外人工抽查 120 句，沒有發現用錯的。
-- **事先登記**：5 種設定和判定規則都先寫在 `PLAN.md`，測試集只跑一次。整個流程由另一個模型當顧問審查過 3 輪，審查意見已併入 `PLAN.md`。
+- **事先登記**：5 種設定和判定規則都先寫在 `PLAN.md`，測試集只跑一次。跑測試集之前，整個流程經過 3 輪審查，意見已併入 `PLAN.md`。
 
 ## 結果
 
@@ -142,6 +142,6 @@ python3 -I <repo>/SlothE/eval-2026-10/tools/analyze_fresh.py news_lab.jsonl news
 - `PLAN.md`：背景、發現、事先登記的設定和判定規則（英文）。
 - `results/`：彙總數字，不含任何原文。
 - `testset/{news,chat}_index.jsonl`：每句的 id、來源、網址、發布日期、所屬組別（`general`／`zai`）、長度、SHA-1、注音。新聞和 PTT 原文有著作權，所以不放進 repo。
-- `collect/`：收集測試句用的程式和收集說明（`COLLECTION.md`，有每一步過濾的數量），只供參考，裡面的路徑是當時的工作目錄。
-- `tools/`：離線評估工具，路徑設定在 `evalcfg.py`。D512 單獨解碼用 `d512_beam.py`（可以中斷後接著跑，執行緒數用環境變數 `D512_THREADS` 設定），分析用 `analyze_d512only.py`。早期的實驗腳本 `score_d512.py`、`evaluate.py`、`zai_dev.py`、`zai_chunks.py` 讀的是 `d512_scores.jsonl` 和 fixture，只供參考。
+- 收集測試句用的程式不放在 repo 裡；repo 只留 `testset/` 的索引和 `tools/rebuild_testset.py`。
+- `tools/`：離線評估工具，路徑設定在 `evalcfg.py`。D512 單獨解碼用 `d512_beam.py`（可以中斷後接著跑，執行緒數用環境變數 `D512_THREADS` 設定），分析用 `analyze_d512only.py`。
 - 模型授權：Sloth 模型（`Luigi/sloth-ime-models` @ `e7d13c9`）是 Apache-2.0；D512（`Funmula/0c-sequence-d512` @ `d512-pf512-20260926`）是 MIT；g2pW（`G2PWModel-v2-onnx`）是 Apache-2.0。
