@@ -46,7 +46,7 @@ flowchart TD
 - **decoder**（SlothE `pred_q35_60m`，60M 參數，Qwen3.5 架構）：只在有好幾個候選字的位置跑，在 encoder 前 3 名之間做最後判斷：把候選字連同前後文一起打分，只在把握夠高時才改字。打錯讀音時，也用它猜下一個字來列出修正選項。
 - 兩個模型都只跑在 Neural Engine 上，在背景執行，不會擋住打字；模型沒準備好或沒辦法用時，就退回原版小麥注音的選字。
 
-細節（模型格式、載入流程、快取、測試和評估方法）見 [DEVELOPMENT.md](DEVELOPMENT.md)。
+演算法的完整說明見 [slothe-algorithm.md](slothe-algorithm.md)；模型格式、載入流程、快取、測試和評估方法見 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
 ## 使用
 
