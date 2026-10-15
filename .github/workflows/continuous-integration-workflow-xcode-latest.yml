@@ -71,7 +71,7 @@ jobs:
         run: swift test --enable-code-coverage
         working-directory: Packages/RomanNumbers
       - name: Test McBopomofo
-        run: xcodebuild -scheme McBopomofo -configuration Debug clean test
+        run: xcodebuild -scheme McBopomofo -configuration Debug -testPlan McBopomofoCI clean test
       - name: Build McBopomofo and McBopomofoInstaller 
         run: xcodebuild -scheme McBopomofoInstaller -configuration Release clean build
       - name: Test data files
